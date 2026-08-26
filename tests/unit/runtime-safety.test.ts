@@ -148,4 +148,17 @@ describe('demo data must not reach production', () => {
   it('accepts production with seeding off and a bootstrap administrator supplied', () => {
     expect(() => assertSafeRuntimeConfiguration(productionBase)).not.toThrow();
   });
+
+  it('accepts production Google Drive configuration backed by a personal OAuth user', () => {
+    const { GOOGLE_SERVICE_ACCOUNT_JSON, ...oauthBase } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration({
+      ...oauthBase,
+      GOOGLE_DRIVE_AUTH_MODE: 'oauth-user',
+      GOOGLE_OAUTH_CLIENT_ID: 'client-id.apps.googleusercontent.com',
+      GOOGLE_OAUTH_CLIENT_SECRET: 'client-secret',
+      GOOGLE_OAUTH_REDIRECT_URI: 'https://bgrc.vercel.app/api/v1/integrations/google-drive/callback',
+      GOOGLE_OAUTH_STATE_SECRET: 'state-secret-for-production',
+      GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY: 'a'.repeat(64),
+    })).not.toThrow();
+  });
 });

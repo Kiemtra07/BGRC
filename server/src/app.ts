@@ -90,6 +90,12 @@ import {
 } from './security/access-control';
 import { hashPassword, verifyPassword } from './security/password';
 import { AuthSessionStore } from './security/session-store';
+import {
+  createGoogleDriveOAuthState,
+  decryptGoogleDriveRefreshToken,
+  encryptGoogleDriveRefreshToken,
+  verifyGoogleDriveOAuthState,
+} from './security/google-drive-oauth-state';
 import { sortWatchTargets } from './modules/workspace/workspace-priority';
 import { canAccessCampaign, validateCampaignTransition } from './modules/campaigns/campaign-service';
 
@@ -769,6 +775,14 @@ let workspaceWatchTargets: WorkspaceTargetRecord[] = [];
 let reportChannelVersions: ReportChannelVersion[] = [];
 let authSessions: AuthSessionRecord[] = [];
 
+interface GoogleDriveOAuthCredential {
+  encryptedRefreshToken: string;
+  connectedByUserId: string;
+  connectedAt: string;
+}
+
+let googleDriveOAuthCredential: GoogleDriveOAuthCredential | undefined;
+
 interface LocalAppState {
   orgUnits: OrgUnit[];
   appUsers: UserProfile[];
@@ -788,6 +802,7 @@ interface LocalAppState {
   authSessions?: AuthSessionRecord[];
   auditCampaigns?: AuditCampaign[];
   credentials?: CredentialEntry[];
+  googleDriveOAuthCredential?: GoogleDriveOAuthCredential;
 }
 
 /**
@@ -857,6 +872,7 @@ const hydratedState = await stateRepository.load({
   importBatches, slaExtensions, reportDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
   workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
   credentials: credentialDirectory,
+  googleDriveOAuthCredential,
 });
 orgUnits = hydratedState.orgUnits;
 appUsers = hydratedState.appUsers;
@@ -900,6 +916,28 @@ workspaceWatchTargets = hydratedState.workspaceWatchTargets ?? [];
 authSessions = hydratedState.authSessions ?? [];
 authSessionStore = new AuthSessionStore({ records: authSessions });
 auditCampaigns = hydratedState.auditCampaigns?.length ? hydratedState.auditCampaigns : auditCampaigns;
+googleDriveOAuthCredential = hydratedState.googleDriveOAuthCredential;
+
+function googleOAuthStateSecret(): string {
+  const secret = process.env.GOOGLE_OAUTH_STATE_SECRET;
+  if (!secret || secret.length < 16) throw new HttpProblem(503, 'GOOGLE_OAUTH_NOT_CONFIGURED', 'OAuth Google Drive chưa được cấu hình', 'Thiếu GOOGLE_OAUTH_STATE_SECRET trên máy chủ.');
+  return secret;
+}
+
+function googleOAuthEncryptionKey(): string {
+  const key = process.env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY;
+  if (!key) throw new HttpProblem(503, 'GOOGLE_OAUTH_NOT_CONFIGURED', 'OAuth Google Drive chưa được cấu hình', 'Thiếu GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY trên máy chủ.');
+  return key;
+}
+
+function hydrateGoogleDriveOAuthCredential(credential: GoogleDriveOAuthCredential | undefined): void {
+  googleDriveOAuthCredential = credential;
+  if (!credential) return;
+  try { googleDriveService.setOAuthRefreshToken(decryptGoogleDriveRefreshToken(credential.encryptedRefreshToken, googleOAuthEncryptionKey())); }
+  catch { googleDriveService.setOAuthRefreshToken(undefined); }
+}
+
+hydrateGoogleDriveOAuthCredential(googleDriveOAuthCredential);
 /**
  * Backfill the CoPlus provenance that can be derived with certainty from data already on record:
  * the đoàn code from the campaign, and the business line from the sai sót code prefix (TD… is a
@@ -1042,6 +1080,7 @@ function currentLocalState(): LocalAppState {
     importBatches, slaExtensions, reportDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
     workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
     credentials: credentialDirectory,
+    googleDriveOAuthCredential,
   };
 }
 
@@ -1067,6 +1106,7 @@ function restoreDurableLocalState(restored: LocalAppState): void {
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
   if (restored.credentials?.length) credentialDirectory = restored.credentials;
+  hydrateGoogleDriveOAuthCredential(restored.googleDriveOAuthCredential);
 }
 
 const runtimeRequestLock = new RuntimeRequestLock();
@@ -1893,6 +1933,37 @@ app.route({
   },
 });
 
+app.get('/api/v1/integrations/google-drive/connect', async (req, reply) => {
+  const user = getCurrentUser(req);
+  requireAdmin(user);
+  const state = createGoogleDriveOAuthState({ userId: user.id, secret: googleOAuthStateSecret() });
+  return reply.redirect(googleDriveService.createOAuthAuthorizationUrl(state));
+});
+
+app.get('/api/v1/integrations/google-drive/callback', async (req: FastifyRequest<{
+  Querystring: { code?: string; error?: string; state?: string };
+}>, reply) => {
+  const user = getCurrentUser(req);
+  requireAdmin(user);
+  if (req.query.error) throw new HttpProblem(422, 'GOOGLE_OAUTH_DENIED', 'Kết nối Google Drive bị từ chối', 'Tài khoản Google không chấp thuận quyền truy cập Drive.');
+  if (!req.query.code || !req.query.state) throw new HttpProblem(422, 'GOOGLE_OAUTH_CALLBACK_INVALID', 'OAuth callback không hợp lệ', 'Google không trả authorization code hoặc state.');
+  const state = verifyGoogleDriveOAuthState({ state: req.query.state, secret: googleOAuthStateSecret() });
+  if (state.userId !== user.id) throw new HttpProblem(403, 'GOOGLE_OAUTH_STATE_USER_MISMATCH', 'OAuth callback không hợp lệ', 'Kết nối Google Drive phải được hoàn tất bởi đúng quản trị viên đã bắt đầu.');
+  const refreshToken = await googleDriveService.exchangeOAuthCode(req.query.code);
+  try {
+    googleDriveOAuthCredential = {
+      encryptedRefreshToken: encryptGoogleDriveRefreshToken(refreshToken, googleOAuthEncryptionKey()),
+      connectedByUserId: user.id,
+      connectedAt: new Date().toISOString(),
+    };
+  } catch {
+    googleDriveService.setOAuthRefreshToken(undefined);
+    throw new HttpProblem(503, 'GOOGLE_OAUTH_TOKEN_STORAGE_FAILED', 'Không thể lưu kết nối Google Drive', 'Kiểm tra GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY rồi kết nối lại.');
+  }
+  await persistLocalState();
+  return reply.type('text/html; charset=utf-8').send('<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Google Drive đã kết nối</title></head><body><p>Đã kết nối Google Drive cá nhân. Bạn có thể đóng cửa sổ này và quay lại AuditBGS.</p></body></html>');
+});
+
 // Auth: Me
 app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
   const credentials = LoginSchema.parse(req.body);
@@ -1909,7 +1980,7 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   authSessions = authSessionStore.records();
   await persistLocalState();
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  reply.header('set-cookie', `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Strict; Max-Age=28800${secure}`);
+  reply.header('set-cookie', `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure}`);
   return { user, expiresAt: session.record.expiresAt };
 });
 
@@ -1919,7 +1990,7 @@ app.post('/api/v1/auth/logout', async (req, reply) => {
   authSessions = authSessionStore.records();
   await persistLocalState();
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  reply.header('set-cookie', `audit_bgs_session=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0${secure}`);
+  reply.header('set-cookie', `audit_bgs_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
   return reply.code(204).send();
 });
 
@@ -2349,13 +2420,15 @@ app.get('/api/v1/admin/channels/:id/integration-readiness', async (req: FastifyR
   requireAdmin(getCurrentUser(req));
   const channel = reportChannels.find(item => item.id === req.params.id);
   if (!channel) throw new HttpProblem(404, 'REPORT_TYPE_NOT_FOUND', 'Không tìm thấy loại báo cáo', 'Loại báo cáo không tồn tại.');
-  const googleCredentialReady = Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  const googleCredentialReady = process.env.GOOGLE_DRIVE_AUTH_MODE === 'oauth-user'
+    ? Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET && process.env.GOOGLE_OAUTH_REDIRECT_URI)
+    : Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS);
   const smtpReady = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD && process.env.EMAIL_FROM);
   return {
     googleSheets: {
       configured: !channel.integrationConfig?.googleSheets.enabled || googleCredentialReady,
       message: channel.integrationConfig?.googleSheets.enabled && !googleCredentialReady
-        ? 'Thiếu GOOGLE_SERVICE_ACCOUNT_JSON hoặc GOOGLE_APPLICATION_CREDENTIALS trên máy chủ.'
+        ? 'Thiếu cấu hình credential Google phù hợp trên máy chủ.'
         : channel.integrationConfig?.googleSheets.enabled ? 'Máy chủ đã có thông tin xác thực Google.' : 'Đang tắt.',
     },
     email: {
@@ -3296,13 +3369,20 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
   if (env.DATA_STORE_MODE !== 'postgres' || !env.DATABASE_URL) violations.push('DATA_STORE_MODE=postgres và DATABASE_URL là bắt buộc');
   if (!env.CRON_SECRET) violations.push('thiếu CRON_SECRET');
   if (env.EVIDENCE_STORAGE_MODE !== 'google-drive') violations.push('EVIDENCE_STORAGE_MODE phải là google-drive');
-  if (!(env.GOOGLE_SERVICE_ACCOUNT_JSON || env.GOOGLE_SERVICE_ACCOUNT_KEY) || !env.GOOGLE_DRIVE_ROOT_FOLDER_ID) violations.push('thiếu cấu hình Google Drive');
+  const oauthUserDrive = env.GOOGLE_DRIVE_AUTH_MODE === 'oauth-user';
+  const googleDriveConfigured = oauthUserDrive
+    ? Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && env.GOOGLE_OAUTH_REDIRECT_URI && env.GOOGLE_OAUTH_STATE_SECRET && env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY)
+    : Boolean(env.GOOGLE_SERVICE_ACCOUNT_JSON || env.GOOGLE_SERVICE_ACCOUNT_KEY);
+  if (!googleDriveConfigured || !env.GOOGLE_DRIVE_ROOT_FOLDER_ID) violations.push('thiếu cấu hình Google Drive');
   if (violations.length > 0) {
     throw new Error(`UNSAFE_PRODUCTION_CONFIGURATION: ${violations.join('; ')}`);
   }
 }
 
 export async function buildApp(): Promise<FastifyInstance> {
+  // Chạy cả trên đường serverless, không chỉ khi listen(): production thật đi qua buildApp() nên
+  // trước đây guard cấu hình không bao giờ chạy đúng ở nơi nó cần chạy nhất.
+  assertSafeRuntimeConfiguration();
   await app.ready();
   return app;
 }

@@ -1,9 +1,14 @@
+import dotenv from 'dotenv';
 import fs from 'fs';
 import path from 'path';
 import crypto from 'crypto';
 import { Readable } from 'node:stream';
-import { JWT } from 'google-auth-library';
+import { JWT, OAuth2Client } from 'google-auth-library';
 import { HttpProblem } from '../http/problem';
+
+// The Drive singleton reads configuration at module initialization. Load local .env first, but
+// keep Vitest isolated so test process variables remain authoritative.
+if (process.env.NODE_ENV !== 'test') dotenv.config();
 
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
@@ -15,7 +20,21 @@ interface DriveFileMetadata { id: string; name: string; mimeType: string; size: 
 
 export interface DriveUploadResult { driveFileId: string; driveUrl: string; sha256Checksum: string; fileSize: number; mimeType: string; folderPath: string; }
 export interface DriveResumableUploadSession { uploadMode: 'google-drive'; uploadUrl: string; driveFileId: string; fileName: string; mimeType: string; fileSize: number; sha256Checksum: string; }
-export interface EvidenceStorageOptions { storageMode?: string; googleServiceAccountKey?: string; googleDriveRootFolderId?: string; localEvidenceDir?: string; accessTokenProvider?: () => Promise<string>; fetchImpl?: typeof fetch; }
+type GoogleDriveAuthMode = 'service-account' | 'oauth-user';
+
+export interface EvidenceStorageOptions {
+  storageMode?: string;
+  googleDriveAuthMode?: GoogleDriveAuthMode;
+  googleServiceAccountKey?: string;
+  googleDriveRootFolderId?: string;
+  googleOAuthClientId?: string;
+  googleOAuthClientSecret?: string;
+  googleOAuthRedirectUri?: string;
+  googleOAuthRefreshToken?: string;
+  localEvidenceDir?: string;
+  accessTokenProvider?: () => Promise<string>;
+  fetchImpl?: typeof fetch;
+}
 export interface EvidenceStorageStatus { mode: 'local' | 'google-drive' | 'misconfigured'; durable: boolean; ready: boolean; warning?: string; }
 
 function createLocalPreviewPdf(): Buffer {
@@ -43,14 +62,24 @@ export class GoogleDriveAdapter {
   private readonly localFallbackDir: string;
   private readonly storageMode: string;
   private readonly googleDriveRootFolderId?: string;
+  private readonly googleDriveAuthMode: GoogleDriveAuthMode;
   private readonly serviceAccount: GoogleServiceAccount | null;
+  private readonly googleOAuthClientId?: string;
+  private readonly googleOAuthClientSecret?: string;
+  private readonly googleOAuthRedirectUri?: string;
+  private googleOAuthRefreshToken?: string;
   private readonly accessTokenProvider?: () => Promise<string>;
   private readonly fetchImpl: typeof fetch;
 
   constructor(options: EvidenceStorageOptions = {}) {
     this.storageMode = options.storageMode ?? process.env.EVIDENCE_STORAGE_MODE ?? 'local';
     this.googleDriveRootFolderId = options.googleDriveRootFolderId ?? process.env.GOOGLE_DRIVE_ROOT_FOLDER_ID;
+    this.googleDriveAuthMode = options.googleDriveAuthMode ?? (process.env.GOOGLE_DRIVE_AUTH_MODE === 'oauth-user' ? 'oauth-user' : 'service-account');
     this.serviceAccount = parseServiceAccount(options.googleServiceAccountKey ?? process.env.GOOGLE_SERVICE_ACCOUNT_JSON ?? process.env.GOOGLE_SERVICE_ACCOUNT_KEY);
+    this.googleOAuthClientId = options.googleOAuthClientId ?? process.env.GOOGLE_OAUTH_CLIENT_ID;
+    this.googleOAuthClientSecret = options.googleOAuthClientSecret ?? process.env.GOOGLE_OAUTH_CLIENT_SECRET;
+    this.googleOAuthRedirectUri = options.googleOAuthRedirectUri ?? process.env.GOOGLE_OAUTH_REDIRECT_URI;
+    this.googleOAuthRefreshToken = options.googleOAuthRefreshToken ?? process.env.GOOGLE_OAUTH_REFRESH_TOKEN;
     this.accessTokenProvider = options.accessTokenProvider;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.localFallbackDir = path.resolve(options.localEvidenceDir ?? process.env.LOCAL_EVIDENCE_DIR ?? path.join(process.cwd(), 'data', 'drive_storage'));
@@ -61,7 +90,7 @@ export class GoogleDriveAdapter {
     if (this.storageMode === 'local') return { mode: 'local', durable: true, ready: true };
     if (this.storageMode !== 'google-drive') return { mode: 'misconfigured', durable: false, ready: false, warning: `EVIDENCE_STORAGE_MODE=${this.storageMode} không hợp lệ; hệ thống không fallback local.` };
     if (!this.googleDriveRootFolderId) return this.googleNotReady('Thiếu cấu hình GOOGLE_DRIVE_ROOT_FOLDER_ID; hệ thống không fallback local.');
-    if (!this.accessTokenProvider && !this.serviceAccount) return this.googleNotReady('Thiếu hoặc không đọc được cấu hình credential GOOGLE_SERVICE_ACCOUNT_JSON; hệ thống không fallback local.');
+    if (!this.hasCredential()) return this.googleNotReady(this.credentialWarning());
     try { await this.requireGoogleRootFolder(); return { mode: 'google-drive', durable: true, ready: true }; }
     catch (error) { return this.googleNotReady(error instanceof HttpProblem ? error.message : 'Không thể xác minh Google Drive API v3.'); }
   }
@@ -77,6 +106,36 @@ export class GoogleDriveAdapter {
     const sanitized = baseName.normalize('NFC').replace(/[^\p{L}\p{N}._ -]/gu, '_').replace(/\s+/g, ' ').trim();
     if (!sanitized) throw new HttpProblem(415, 'UNSAFE_FILE_NAME', 'Tên tệp không an toàn', 'Tên tệp không còn ký tự hợp lệ sau khi chuẩn hóa.');
     return sanitized;
+  }
+
+  public createOAuthAuthorizationUrl(state: string): string {
+    if (!state) throw new HttpProblem(422, 'GOOGLE_OAUTH_STATE_INVALID', 'OAuth state không hợp lệ', 'Không thể bắt đầu kết nối Google Drive do thiếu OAuth state.');
+    const client = this.requireOAuthClient();
+    return client.generateAuthUrl({
+      access_type: 'offline',
+      include_granted_scopes: true,
+      prompt: 'consent',
+      scope: [DRIVE_SCOPE],
+      state,
+    });
+  }
+
+  public async exchangeOAuthCode(code: string): Promise<string> {
+    if (!code) throw new HttpProblem(422, 'GOOGLE_OAUTH_CODE_INVALID', 'OAuth code không hợp lệ', 'Google không gửi authorization code.');
+    const client = this.requireOAuthClient();
+    try {
+      const { tokens } = await client.getToken(code);
+      if (!tokens.refresh_token) throw new HttpProblem(409, 'GOOGLE_OAUTH_REFRESH_TOKEN_MISSING', 'Google chưa cấp refresh token', 'Hãy thu hồi quyền ứng dụng rồi kết nối lại để Google hiển thị màn hình chấp thuận.');
+      this.googleOAuthRefreshToken = tokens.refresh_token;
+      return tokens.refresh_token;
+    } catch (error) {
+      if (error instanceof HttpProblem) throw error;
+      throw new HttpProblem(503, 'GOOGLE_OAUTH_EXCHANGE_FAILED', 'Không thể hoàn tất kết nối Google Drive', 'Google từ chối hoặc không thể đổi authorization code.');
+    }
+  }
+
+  public setOAuthRefreshToken(refreshToken: string | undefined): void {
+    this.googleOAuthRefreshToken = refreshToken?.trim() || undefined;
   }
 
   public generateFolderPath(params: { campaignCode?: string; channelCode: string; year: number | string; clusterName: string; branchCode: string; cif: string; customerName?: string; errorCode: string }): string {
@@ -132,11 +191,43 @@ export class GoogleDriveAdapter {
   private googleNotReady(warning: string): EvidenceStorageStatus { return { mode: 'google-drive', durable: false, ready: false, warning }; }
   private invalidModeProblem(): HttpProblem { return new HttpProblem(503, 'EVIDENCE_STORAGE_MODE_INVALID', 'Chế độ lưu minh chứng không hợp lệ', `EVIDENCE_STORAGE_MODE=${this.storageMode} không được hỗ trợ; hệ thống không fallback local.`); }
   private requireChecksum(value: string): void { if (!/^[a-f0-9]{64}$/i.test(value)) throw new HttpProblem(422, 'EVIDENCE_CHECKSUM_INVALID', 'Checksum không hợp lệ', 'SHA-256 của tệp phải có đúng 64 ký tự hexadecimal.'); }
-  private requireGoogleMode(): void { if (this.storageMode !== 'google-drive') throw this.invalidModeProblem(); if (!this.googleDriveRootFolderId || (!this.accessTokenProvider && !this.serviceAccount)) throw new HttpProblem(503, 'GOOGLE_DRIVE_ADAPTER_NOT_READY', 'Google Drive chưa sẵn sàng', 'Thiếu GOOGLE_SERVICE_ACCOUNT_JSON hoặc GOOGLE_DRIVE_ROOT_FOLDER_ID; hệ thống không fallback local.'); }
-  private async getAccessToken(): Promise<string> { if (this.accessTokenProvider) return this.accessTokenProvider(); if (!this.serviceAccount) throw new HttpProblem(503, 'GOOGLE_DRIVE_ADAPTER_NOT_READY', 'Google Drive chưa sẵn sàng', 'Không đọc được GOOGLE_SERVICE_ACCOUNT_JSON.'); const client = new JWT({ email: this.serviceAccount.client_email, key: this.serviceAccount.private_key, scopes: [DRIVE_SCOPE] }); const token = await client.getAccessToken(); if (!token.token) throw new HttpProblem(503, 'GOOGLE_DRIVE_AUTH_FAILED', 'Không xác thực được Google Drive', 'Google không trả access token cho service account.'); return token.token; }
+  private hasCredential(): boolean {
+    return Boolean(this.accessTokenProvider) || (this.googleDriveAuthMode === 'oauth-user'
+      ? Boolean(this.googleOAuthClientId && this.googleOAuthClientSecret && this.googleOAuthRedirectUri && this.googleOAuthRefreshToken)
+      : Boolean(this.serviceAccount));
+  }
+  private credentialWarning(): string {
+    if (this.googleDriveAuthMode === 'oauth-user') {
+      if (!this.googleOAuthClientId || !this.googleOAuthClientSecret || !this.googleOAuthRedirectUri) {
+        return 'Thiếu GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET hoặc GOOGLE_OAUTH_REDIRECT_URI; hệ thống không fallback local.';
+      }
+      return 'Chưa kết nối Google Drive cá nhân. Quản trị viên hãy mở /api/v1/integrations/google-drive/connect sau khi đăng nhập; hệ thống không fallback local.';
+    }
+    return 'Thiếu hoặc không đọc được cấu hình credential GOOGLE_SERVICE_ACCOUNT_JSON; hệ thống không fallback local.';
+  }
+  private requireGoogleMode(): void { if (this.storageMode !== 'google-drive') throw this.invalidModeProblem(); if (!this.googleDriveRootFolderId || !this.hasCredential()) throw new HttpProblem(503, 'GOOGLE_DRIVE_ADAPTER_NOT_READY', 'Google Drive chưa sẵn sàng', `${this.credentialWarning()} GOOGLE_DRIVE_ROOT_FOLDER_ID là bắt buộc.`); }
+  private requireOAuthClient(): OAuth2Client {
+    if (this.googleDriveAuthMode !== 'oauth-user' || !this.googleOAuthClientId || !this.googleOAuthClientSecret || !this.googleOAuthRedirectUri) {
+      throw new HttpProblem(503, 'GOOGLE_OAUTH_NOT_CONFIGURED', 'OAuth Google Drive chưa được cấu hình', 'Cần GOOGLE_DRIVE_AUTH_MODE=oauth-user cùng GOOGLE_OAUTH_CLIENT_ID, GOOGLE_OAUTH_CLIENT_SECRET và GOOGLE_OAUTH_REDIRECT_URI.');
+    }
+    return new OAuth2Client(this.googleOAuthClientId, this.googleOAuthClientSecret, this.googleOAuthRedirectUri);
+  }
+  private async getAccessToken(): Promise<string> {
+    if (this.accessTokenProvider) return this.accessTokenProvider();
+    if (this.googleDriveAuthMode === 'oauth-user') {
+      if (!this.googleOAuthRefreshToken) throw new HttpProblem(503, 'GOOGLE_DRIVE_ADAPTER_NOT_READY', 'Google Drive chưa sẵn sàng', 'Chưa có refresh token OAuth cho Google Drive.');
+      const client = this.requireOAuthClient();
+      client.setCredentials({ refresh_token: this.googleOAuthRefreshToken });
+      const token = await client.getAccessToken();
+      if (!token.token) throw new HttpProblem(503, 'GOOGLE_DRIVE_AUTH_FAILED', 'Không xác thực được Google Drive', 'Google không trả access token cho tài khoản OAuth.');
+      return token.token;
+    }
+    if (!this.serviceAccount) throw new HttpProblem(503, 'GOOGLE_DRIVE_ADAPTER_NOT_READY', 'Google Drive chưa sẵn sàng', 'Không đọc được GOOGLE_SERVICE_ACCOUNT_JSON.');
+    const client = new JWT({ email: this.serviceAccount.client_email, key: this.serviceAccount.private_key, scopes: [DRIVE_SCOPE] }); const token = await client.getAccessToken(); if (!token.token) throw new HttpProblem(503, 'GOOGLE_DRIVE_AUTH_FAILED', 'Không xác thực được Google Drive', 'Google không trả access token cho service account.'); return token.token;
+  }
   private async driveFetch(url: string, init: RequestInit = {}): Promise<Response> { let response: Response; try { response = await this.fetchImpl(url, { ...init, headers: { Authorization: `Bearer ${await this.getAccessToken()}`, ...init.headers } }); } catch { throw new HttpProblem(503, 'GOOGLE_DRIVE_UNAVAILABLE', 'Google Drive không khả dụng', 'Không kết nối được Google Drive API v3.'); } if (!response.ok) throw new HttpProblem(503, 'GOOGLE_DRIVE_UNAVAILABLE', 'Google Drive không khả dụng', `Google Drive API v3 trả HTTP ${response.status}.`); return response; }
   private async driveFetchJson<T>(url: string, init?: RequestInit): Promise<T> { return (await this.driveFetch(url, init)).json() as Promise<T>; }
-  private async requireGoogleRootFolder(): Promise<void> { this.requireGoogleMode(); const folder = await this.driveFetchJson<{ id: string; driveId?: string; mimeType: string; trashed?: boolean; capabilities?: { canAddChildren?: boolean } }>(`${DRIVE_API}/files/${encodeURIComponent(this.googleDriveRootFolderId!)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`); if (folder.id !== this.googleDriveRootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, 'GOOGLE_DRIVE_ROOT_UNAVAILABLE', 'Thư mục Google Drive chưa sẵn sàng', 'Service account không có quyền thêm tệp vào thư mục gốc đã cấu hình.'); if (!folder.driveId) throw new HttpProblem(503, 'GOOGLE_DRIVE_SHARED_DRIVE_REQUIRED', 'Cần dùng Shared Drive cho Google Drive', 'Service account không có storage quota trong My Drive; hãy đặt thư mục gốc trong Shared Drive và cấp quyền Contributor hoặc Content manager.'); }
+  private async requireGoogleRootFolder(): Promise<void> { this.requireGoogleMode(); const folder = await this.driveFetchJson<{ id: string; driveId?: string; mimeType: string; trashed?: boolean; capabilities?: { canAddChildren?: boolean } }>(`${DRIVE_API}/files/${encodeURIComponent(this.googleDriveRootFolderId!)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`); if (folder.id !== this.googleDriveRootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, 'GOOGLE_DRIVE_ROOT_UNAVAILABLE', 'Thư mục Google Drive chưa sẵn sàng', 'Credential hiện tại không có quyền thêm tệp vào thư mục gốc đã cấu hình.'); if (this.googleDriveAuthMode === 'service-account' && !folder.driveId) throw new HttpProblem(503, 'GOOGLE_DRIVE_SHARED_DRIVE_REQUIRED', 'Cần dùng Shared Drive cho Google Drive', 'Service account không có storage quota trong My Drive; hãy đặt thư mục gốc trong Shared Drive và cấp quyền Contributor hoặc Content manager.'); }
   private async ensureGoogleFolderPath(folderPath: string): Promise<string> { await this.requireGoogleRootFolder(); let parentId = this.googleDriveRootFolderId!; for (const folderName of folderPath.split('/').filter(Boolean)) { const query = `name = '${escapeDriveQuery(folderName)}' and '${escapeDriveQuery(parentId)}' in parents and mimeType = '${FOLDER_MIME_TYPE}' and trashed = false`; const search = await this.driveFetchJson<{ files?: Array<{ id: string }> }>(`${DRIVE_API}/files?${new URLSearchParams({ q: query, fields: 'files(id)', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' })}`); if (search.files?.[0]?.id) { parentId = search.files[0].id; continue; } const created = await this.driveFetchJson<{ id: string }>(`${DRIVE_API}/files?supportsAllDrives=true`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: folderName, mimeType: FOLDER_MIME_TYPE, parents: [parentId] }) }); parentId = created.id; } return parentId; }
   private async generateDriveFileId(): Promise<string> { const result = await this.driveFetchJson<{ ids?: string[] }>(`${DRIVE_API}/files/generateIds?count=1&space=drive`); const id = result.ids?.[0]; if (!id) throw new HttpProblem(503, 'GOOGLE_DRIVE_ID_ALLOCATION_FAILED', 'Không tạo được ID tệp Google Drive', 'Google Drive không trả file ID cho phiên tải lên.'); return id; }
 }

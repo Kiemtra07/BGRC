@@ -1,8 +1,11 @@
 {
   "compilerOptions": {
-    "target": "ES2020",
+    /* ES2022 vì mã nguồn dùng String.prototype.replaceAll (ES2021). Vercel chạy một lượt
+       typecheck riêng cho api/** bằng chính tệp này, nên để ES2020 ở đây sẽ báo TS2550 khi build
+       trên Vercel dù npm run typecheck tại máy vẫn xanh — tsconfig.server.json đã ghi đè ES2022. */
+    "target": "ES2022",
     "useDefineForClassFields": true,
-    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
     "module": "ESNext",
     "skipLibCheck": true,
 

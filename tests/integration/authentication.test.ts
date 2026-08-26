@@ -28,6 +28,7 @@ describe('local credential authentication', () => {
       expect(response.statusCode, username).toBe(200);
       expect(response.json().user.roles, username).toEqual(roles);
       expect(response.cookies.find(cookie => cookie.name === 'audit_bgs_session')?.httpOnly).toBe(true);
+      expect(response.headers['set-cookie']).toContain('SameSite=Lax');
     }
   });
 

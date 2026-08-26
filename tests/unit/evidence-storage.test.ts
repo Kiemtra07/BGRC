@@ -130,6 +130,32 @@ describe('local evidence upload guard', () => {
     });
   });
 
+  it('accepts a personal My Drive root when an OAuth user credential is configured', async () => {
+    const adapter = new GoogleDriveAdapter({
+      storageMode: 'google-drive',
+      googleDriveAuthMode: 'oauth-user',
+      googleDriveRootFolderId: 'my-drive-folder',
+      googleOAuthClientId: 'client-id.apps.googleusercontent.com',
+      googleOAuthClientSecret: 'client-secret',
+      googleOAuthRedirectUri: 'http://localhost:3001/api/v1/integrations/google-drive/callback',
+      googleOAuthRefreshToken: 'refresh-token',
+      accessTokenProvider: async () => 'token-for-test',
+      fetchImpl: async () => Response.json({
+        id: 'my-drive-folder',
+        mimeType: 'application/vnd.google-apps.folder',
+        trashed: false,
+        capabilities: { canAddChildren: true },
+      }),
+    });
+
+    await expect(adapter.getStorageStatus()).resolves.toMatchObject({
+      mode: 'google-drive',
+      durable: true,
+      ready: true,
+    });
+    expect(adapter.createOAuthAuthorizationUrl('signed-state')).toContain('client_id=client-id.apps.googleusercontent.com');
+  });
+
   it('creates and verifies a resumable Drive API v3 upload without proxying file bytes', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
     const folderQueries: string[] = [];
