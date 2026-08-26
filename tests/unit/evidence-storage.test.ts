@@ -109,16 +109,39 @@ describe('local evidence upload guard', () => {
     });
   });
 
+  it('fails readiness for a My Drive root because service accounts have no storage quota', async () => {
+    const adapter = new GoogleDriveAdapter({
+      storageMode: 'google-drive',
+      googleDriveRootFolderId: 'my-drive-folder',
+      accessTokenProvider: async () => 'token-for-test',
+      fetchImpl: async () => Response.json({
+        id: 'my-drive-folder',
+        mimeType: 'application/vnd.google-apps.folder',
+        trashed: false,
+        capabilities: { canAddChildren: true },
+      }),
+    });
+
+    await expect(adapter.getStorageStatus()).resolves.toMatchObject({
+      mode: 'google-drive',
+      durable: false,
+      ready: false,
+      warning: expect.stringMatching(/Shared Drive/i),
+    });
+  });
+
   it('creates and verifies a resumable Drive API v3 upload without proxying file bytes', async () => {
     const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const folderQueries: string[] = [];
     let folderCounter = 0;
     const fetchImpl: typeof fetch = async (input, init) => {
       const url = String(input);
       requests.push({ url, init });
       if (url.includes('/files/root-folder')) {
-        return Response.json({ id: 'root-folder', mimeType: 'application/vnd.google-apps.folder', trashed: false, capabilities: { canAddChildren: true } });
+        return Response.json({ id: 'root-folder', driveId: 'shared-drive-1', mimeType: 'application/vnd.google-apps.folder', trashed: false, capabilities: { canAddChildren: true } });
       }
       if (url.includes('/files?') && url.includes('q=')) {
+        folderQueries.push(new URL(url).searchParams.get('q') ?? '');
         folderCounter += 1;
         return Response.json({ files: [{ id: `folder-${folderCounter}` }] });
       }
@@ -159,6 +182,10 @@ describe('local evidence upload guard', () => {
       findingId: 'finding-1',
     });
     expect(session).toMatchObject({ uploadUrl: 'https://upload.example/session-123', driveFileId: 'drive-file-123' });
+    expect(folderQueries).toEqual([
+      `name = 'AUDIT_BGS' and 'root-folder' in parents and mimeType = '${'application/vnd.google-apps.folder'}' and trashed = false`,
+      `name = '2026' and 'folder-1' in parents and mimeType = '${'application/vnd.google-apps.folder'}' and trashed = false`,
+    ]);
     expect(requests.find(request => request.url.includes('/upload/drive/v3/files'))?.init?.body).not.toBeInstanceOf(Buffer);
 
     await expect(adapter.completeResumableUpload({

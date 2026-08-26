@@ -23,7 +23,8 @@
     "test:e2e:reports": "node tests/e2e/reports-smoke.mjs",
     "ci": "npm run db:migrate:dry-run && npm run typecheck && npm run test:unit && npm run test:integration && npm run test:contract && vite build",
     "demo:purge": "tsx db/purge-demo-data.ts",
-    "auth:hash-password": "tsx db/hash-password.ts"
+    "auth:hash-password": "tsx db/hash-password.ts",
+    "users:seed-test": "tsx db/create-test-users.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
