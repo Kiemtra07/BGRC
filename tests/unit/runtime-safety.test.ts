@@ -15,6 +15,10 @@ describe('runtime safety gate', () => {
       AUTH_MODE: 'oidc',
       OIDC_ISSUER_URL: 'https://issuer.example',
       OIDC_AUDIENCE: 'audit-bgs',
+      GOOGLE_OIDC_CLIENT_ID: 'client-id.apps.googleusercontent.com',
+      GOOGLE_OIDC_CLIENT_SECRET: 'client-secret',
+      GOOGLE_OIDC_REDIRECT_URI: 'https://audit.example/api/v1/auth/google/callback',
+      GOOGLE_OIDC_STATE_SECRET: 'google-oidc-state-secret-for-tests',
       DATA_STORE_MODE: 'postgres',
       DATABASE_URL: 'postgresql://example.invalid/audit_bgs',
       EVIDENCE_STORAGE_MODE: 'google-drive',
@@ -125,6 +129,10 @@ describe('demo data must not reach production', () => {
     AUTH_MODE: 'oidc',
     OIDC_ISSUER_URL: 'https://issuer.example',
     OIDC_AUDIENCE: 'audit-bgs',
+    GOOGLE_OIDC_CLIENT_ID: 'client-id.apps.googleusercontent.com',
+    GOOGLE_OIDC_CLIENT_SECRET: 'client-secret',
+    GOOGLE_OIDC_REDIRECT_URI: 'https://audit.example/api/v1/auth/google/callback',
+    GOOGLE_OIDC_STATE_SECRET: 'google-oidc-state-secret-for-tests',
     DATA_STORE_MODE: 'postgres',
     DATABASE_URL: 'postgresql://example.invalid/audit_bgs',
     CRON_SECRET: 'cron-secret-value',
@@ -143,6 +151,11 @@ describe('demo data must not reach production', () => {
   it('refuses production without a bootstrap administrator, which would lock everyone out', () => {
     const { BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_PASSWORD_HASH, ...withoutAdmin } = productionBase;
     expect(() => assertSafeRuntimeConfiguration(withoutAdmin)).toThrow(/BOOTSTRAP_ADMIN/);
+  });
+
+  it('refuses production when the Google OIDC authorization-code client is incomplete', () => {
+    const { GOOGLE_OIDC_CLIENT_SECRET, ...withoutClientSecret } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration(withoutClientSecret)).toThrow(/Google OIDC/);
   });
 
   it('accepts production with seeding off and a bootstrap administrator supplied', () => {

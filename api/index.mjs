@@ -1,5 +1,5 @@
 // server/src/app.ts
-import crypto4 from "node:crypto";
+import crypto5 from "node:crypto";
 import path4 from "node:path";
 import fastify from "fastify";
 import cors from "@fastify/cors";
@@ -2568,6 +2568,111 @@ function decryptGoogleDriveRefreshToken(storedCredential, rawKey) {
   }
 }
 
+// server/src/security/google-oidc-client.ts
+import { OAuth2Client as OAuth2Client2 } from "google-auth-library";
+
+// server/src/security/google-oidc.ts
+import crypto4 from "node:crypto";
+var STATE_TTL_MS2 = 10 * 60 * 1e3;
+function base64Url2(value) {
+  return Buffer.from(value).toString("base64url");
+}
+function decodeBase64Url2(value) {
+  return Buffer.from(value, "base64url");
+}
+function requireSecret2(value) {
+  if (!value || value.length < 16) throw new Error("Google OIDC state secret is not configured.");
+}
+function safeEqual(left, right) {
+  return left.length === right.length && crypto4.timingSafeEqual(left, right);
+}
+function requireSafeReturnTo(value) {
+  if (!value.startsWith("/") || value.startsWith("//")) throw new Error("Google OIDC return path is invalid.");
+  return value;
+}
+function createGoogleOidcState({ secret, returnTo, now = Date.now() }) {
+  requireSecret2(secret);
+  const payload = {
+    version: 1,
+    returnTo: requireSafeReturnTo(returnTo),
+    expiresAt: now + STATE_TTL_MS2,
+    nonce: crypto4.randomUUID()
+  };
+  const encodedPayload = base64Url2(JSON.stringify(payload));
+  const signature = crypto4.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
+  return `${encodedPayload}.${base64Url2(signature)}`;
+}
+function verifyGoogleOidcState({ state, secret, now = Date.now() }) {
+  requireSecret2(secret);
+  const [encodedPayload, encodedSignature, ...extra] = state.split(".");
+  if (!encodedPayload || !encodedSignature || extra.length) throw new Error("Google OIDC state is invalid.");
+  const expected = crypto4.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
+  if (!safeEqual(expected, decodeBase64Url2(encodedSignature))) throw new Error("Google OIDC state signature is invalid.");
+  let payload;
+  try {
+    payload = JSON.parse(decodeBase64Url2(encodedPayload).toString("utf8"));
+  } catch {
+    throw new Error("Google OIDC state is invalid.");
+  }
+  if (payload.version !== 1 || !Number.isSafeInteger(payload.expiresAt) || payload.expiresAt < now) throw new Error("Google OIDC state is expired or invalid.");
+  return { returnTo: requireSafeReturnTo(payload.returnTo) };
+}
+function validateGoogleOidcIdentity({
+  payload,
+  audience,
+  issuer
+}) {
+  const tokenAudience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  if (!payload.sub || !payload.email || payload.email_verified !== true) throw new Error("Google OIDC email is not verified.");
+  const acceptedIssuers = issuer === "https://accounts.google.com" ? /* @__PURE__ */ new Set(["https://accounts.google.com", "accounts.google.com"]) : /* @__PURE__ */ new Set([issuer]);
+  if (!acceptedIssuers.has(payload.iss ?? "")) throw new Error("Google OIDC issuer is invalid.");
+  if (!tokenAudience.includes(audience)) throw new Error("Google OIDC audience is invalid.");
+  return {
+    subject: payload.sub,
+    email: payload.email.trim().toLocaleLowerCase("en-US"),
+    fullName: payload.name?.trim() || payload.email
+  };
+}
+
+// server/src/security/google-oidc-client.ts
+function requireConfiguration() {
+  const configuration = {
+    clientId: process.env.GOOGLE_OIDC_CLIENT_ID ?? "",
+    clientSecret: process.env.GOOGLE_OIDC_CLIENT_SECRET ?? "",
+    redirectUri: process.env.GOOGLE_OIDC_REDIRECT_URI ?? "",
+    stateSecret: process.env.GOOGLE_OIDC_STATE_SECRET ?? "",
+    issuer: process.env.OIDC_ISSUER_URL ?? "",
+    audience: process.env.OIDC_AUDIENCE ?? ""
+  };
+  if (Object.values(configuration).some((value) => !value)) throw new Error("Google OIDC is not configured.");
+  return configuration;
+}
+function clientFor(configuration) {
+  return new OAuth2Client2(configuration.clientId, configuration.clientSecret, configuration.redirectUri);
+}
+function createAuthorizationUrl({ returnTo }) {
+  const configuration = requireConfiguration();
+  const state = createGoogleOidcState({ secret: configuration.stateSecret, returnTo });
+  return clientFor(configuration).generateAuthUrl({
+    access_type: "online",
+    prompt: "select_account",
+    scope: ["openid", "email", "profile"],
+    state
+  });
+}
+async function exchangeCode({ code, state }) {
+  const configuration = requireConfiguration();
+  const { returnTo } = verifyGoogleOidcState({ state, secret: configuration.stateSecret });
+  const client = clientFor(configuration);
+  const { tokens } = await client.getToken(code);
+  if (!tokens.id_token) throw new Error("Google OIDC did not return an ID token.");
+  const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: configuration.audience });
+  return {
+    identity: validateGoogleOidcIdentity({ payload: ticket.getPayload() ?? {}, audience: configuration.audience, issuer: configuration.issuer }),
+    returnTo
+  };
+}
+
 // server/src/modules/workspace/workspace-priority.ts
 function sortWatchTargets(items) {
   return [...items].sort((left, right) => {
@@ -2607,7 +2712,15 @@ var allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? "http://localhost:3000
 app.register(cors, { origin: allowedOrigins, credentials: true });
 app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 var internalSlaPath = "/api/v1/internal/sla/run";
-var publicPaths = /* @__PURE__ */ new Set(["/api/v1/health", "/api/v1/ready", "/api/v1/auth/login", "/api/v1/auth/logout", internalSlaPath]);
+var publicPaths = /* @__PURE__ */ new Set([
+  "/api/v1/health",
+  "/api/v1/ready",
+  "/api/v1/auth/login",
+  "/api/v1/auth/logout",
+  "/api/v1/auth/google",
+  "/api/v1/auth/google/callback",
+  internalSlaPath
+]);
 var requestUsers = /* @__PURE__ */ new WeakMap();
 var authSessionStore;
 function cookieValue(request, name) {
@@ -2619,6 +2732,14 @@ function cookieValue(request, name) {
     if (part.slice(0, separator).trim() === name) return decodeURIComponent(part.slice(separator + 1).trim());
   }
   return void 0;
+}
+async function createAuthenticatedSession(user, reply) {
+  const session = authSessionStore.create(user.id);
+  authSessions = authSessionStore.records();
+  await persistLocalState();
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  reply.header("set-cookie", `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure}`);
+  return session.record.expiresAt;
 }
 app.addHook("preHandler", async (request) => {
   if (publicPaths.has(request.url.split("?")[0])) return;
@@ -3230,11 +3351,11 @@ var DEMO_SEED_IDS = {
 };
 function generateTemporaryPassword() {
   const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
-  const bytes = crypto4.randomBytes(20);
+  const bytes = crypto5.randomBytes(20);
   return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
 }
 var credentialDirectory = [...localCredentialDirectory];
-var unknownUserPasswordHash = await hashPassword(crypto4.randomUUID());
+var unknownUserPasswordHash = await hashPassword(crypto5.randomUUID());
 if (!DEMO_SEED_ENABLED) {
   appUsers = [];
   orgUnits = [];
@@ -3248,7 +3369,7 @@ var stateRepository = createStateRepository({
   filePath: process.env.LOCAL_STATE_FILE ?? path4.join(process.cwd(), "data", "local-state.json"),
   dataStoreMode: process.env.DATA_STORE_MODE,
   persistenceEnabled: process.env.NODE_ENV !== "test",
-  snapshotId: process.env.STATE_SNAPSHOT_ID ?? (process.env.NODE_ENV === "test" ? `test-${process.pid}-${crypto4.randomUUID().slice(0, 8)}` : void 0)
+  snapshotId: process.env.STATE_SNAPSHOT_ID ?? (process.env.NODE_ENV === "test" ? `test-${process.pid}-${crypto5.randomUUID().slice(0, 8)}` : void 0)
 });
 var hydratedState = await stateRepository.load({
   orgUnits,
@@ -3626,7 +3747,7 @@ async function bootstrapAdministratorFromEnvironment() {
     return false;
   }
   const admin = {
-    id: `user-${crypto4.randomUUID()}`,
+    id: `user-${crypto5.randomUUID()}`,
     username,
     email: process.env.BOOTSTRAP_ADMIN_EMAIL?.trim() || `${username}@localhost`,
     fullName: process.env.BOOTSTRAP_ADMIN_FULLNAME?.trim() || "Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng",
@@ -3771,7 +3892,7 @@ async function addWorkspaceTarget(collection, dto, user) {
   const key = workspaceTargetKey(dto);
   let record = collection.find((item) => item.userId === user.id && workspaceTargetKey(item) === key);
   if (!record) {
-    record = { id: `workspace-${crypto4.randomUUID()}`, userId: user.id, ...dto, createdAt: (/* @__PURE__ */ new Date()).toISOString() };
+    record = { id: `workspace-${crypto5.randomUUID()}`, userId: user.id, ...dto, createdAt: (/* @__PURE__ */ new Date()).toISOString() };
     collection.push(record);
     await persistLocalState();
   }
@@ -3809,7 +3930,7 @@ function validateDynamicPayload(channel, dto) {
     }
   }
 }
-function createFindingFromDto(dto, user, id = `find-${crypto4.randomUUID()}`) {
+function createFindingFromDto(dto, user, id = `find-${crypto5.randomUUID()}`) {
   const channel = reportChannels.find((item) => item.id === dto.channelId && item.isActive);
   if (!channel) {
     throw new HttpProblem(422, "CHANNEL_NOT_ACTIVE", "K\xEAnh b\xE1o c\xE1o kh\xF4ng h\u1EE3p l\u1EC7", "K\xEAnh b\xE1o c\xE1o kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng.");
@@ -4149,7 +4270,7 @@ function idempotencyContext(request, user, body) {
     throw new HttpProblem(422, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key kh\xF4ng h\u1EE3p l\u1EC7", "Idempotency-Key kh\xF4ng \u0111\u01B0\u1EE3c d\xE0i qu\xE1 255 k\xFD t\u1EF1.");
   }
   const cacheKey = `${user.id}:${request.method}:${request.url}:${key}`;
-  const requestHash = crypto4.createHash("sha256").update(JSON.stringify(body)).digest("hex");
+  const requestHash = crypto5.createHash("sha256").update(JSON.stringify(body)).digest("hex");
   const existing = idempotencyRecords[cacheKey];
   if (existing && existing.requestHash !== requestHash) {
     throw new HttpProblem(409, "IDEMPOTENCY_CONFLICT", "Xung \u0111\u1ED9t Idempotency-Key", "Idempotency-Key \u0111\xE3 \u0111\u01B0\u1EE3c d\xF9ng v\u1EDBi n\u1ED9i dung y\xEAu c\u1EA7u kh\xE1c.");
@@ -4197,7 +4318,7 @@ function requireCronAuthorization(request) {
   }
   const expected = Buffer.from(`Bearer ${secret}`, "utf8");
   const received = Buffer.from(request.headers.authorization ?? "", "utf8");
-  const authorized = expected.length === received.length && crypto4.timingSafeEqual(expected, received);
+  const authorized = expected.length === received.length && crypto5.timingSafeEqual(expected, received);
   if (!authorized) {
     throw new HttpProblem(401, "CRON_AUTH_REQUIRED", "Kh\xF4ng th\u1EC3 x\xE1c th\u1EF1c cron", "Authorization Bearer kh\xF4ng h\u1EE3p l\u1EC7.");
   }
@@ -4237,7 +4358,38 @@ app.get("/api/v1/integrations/google-drive/callback", async (req, reply) => {
   await persistLocalState();
   return reply.type("text/html; charset=utf-8").send('<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Google Drive \u0111\xE3 k\u1EBFt n\u1ED1i</title></head><body><p>\u0110\xE3 k\u1EBFt n\u1ED1i Google Drive c\xE1 nh\xE2n. B\u1EA1n c\xF3 th\u1EC3 \u0111\xF3ng c\u1EEDa s\u1ED5 n\xE0y v\xE0 quay l\u1EA1i AuditBGS.</p></body></html>');
 });
+app.get("/api/v1/auth/google", async (req, reply) => {
+  if (process.env.AUTH_MODE !== "oidc") {
+    throw new HttpProblem(404, "OIDC_NOT_ENABLED", "\u0110\u0103ng nh\u1EADp Google ch\u01B0a \u0111\u01B0\u1EE3c b\u1EADt", "M\xE1y ch\u1EE7 hi\u1EC7n kh\xF4ng d\xF9ng Google OIDC.");
+  }
+  try {
+    return reply.redirect(createAuthorizationUrl({ returnTo: req.query.returnTo ?? "/" }));
+  } catch {
+    throw new HttpProblem(503, "OIDC_NOT_CONFIGURED", "\u0110\u0103ng nh\u1EADp Google ch\u01B0a s\u1EB5n s\xE0ng", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n ho\xE0n t\u1EA5t c\u1EA5u h\xECnh Google OIDC tr\xEAn m\xE1y ch\u1EE7.");
+  }
+});
+app.get("/api/v1/auth/google/callback", async (req, reply) => {
+  if (process.env.AUTH_MODE !== "oidc") throw new HttpProblem(404, "OIDC_NOT_ENABLED", "\u0110\u0103ng nh\u1EADp Google ch\u01B0a \u0111\u01B0\u1EE3c b\u1EADt", "M\xE1y ch\u1EE7 hi\u1EC7n kh\xF4ng d\xF9ng Google OIDC.");
+  if (req.query.error) throw new HttpProblem(401, "GOOGLE_OIDC_DENIED", "\u0110\u0103ng nh\u1EADp Google b\u1ECB t\u1EEB ch\u1ED1i", "T\xE0i kho\u1EA3n Google kh\xF4ng ch\u1EA5p thu\u1EADn y\xEAu c\u1EA7u \u0111\u0103ng nh\u1EADp.");
+  if (!req.query.code || !req.query.state) throw new HttpProblem(422, "GOOGLE_OIDC_CALLBACK_INVALID", "Callback Google kh\xF4ng h\u1EE3p l\u1EC7", "Google kh\xF4ng tr\u1EA3 authorization code ho\u1EB7c state.");
+  let oidc;
+  try {
+    oidc = await exchangeCode({ code: req.query.code, state: req.query.state });
+  } catch {
+    throw new HttpProblem(401, "GOOGLE_OIDC_INVALID", "Kh\xF4ng th\u1EC3 x\xE1c th\u1EF1c Google", "Phi\xEAn \u0111\u0103ng nh\u1EADp Google kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c \u0111\xE3 h\u1EBFt h\u1EA1n.");
+  }
+  const email = oidc.identity.email;
+  const user = appUsers.find((candidate) => candidate.isActive && [candidate.email, candidate.googleWorkspaceEmail].some((candidateEmail) => candidateEmail?.toLocaleLowerCase("en-US") === email));
+  if (!user) {
+    throw new HttpProblem(403, "GOOGLE_OIDC_USER_NOT_PROVISIONED", "T\xE0i kho\u1EA3n Google ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5p quy\u1EC1n", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n t\u1EA1o user v\xE0 g\xE1n role cho email Google n\xE0y tr\u01B0\u1EDBc.");
+  }
+  await createAuthenticatedSession(user, reply);
+  return reply.redirect(oidc.returnTo);
+});
 app.post("/api/v1/auth/login", async (req, reply) => {
+  if (process.env.AUTH_MODE === "oidc") {
+    throw new HttpProblem(405, "OIDC_LOGIN_REQUIRED", "H\xE3y \u0111\u0103ng nh\u1EADp b\u1EB1ng Google", "M\xF4i tr\u01B0\u1EDDng n\xE0y ch\u1EC9 ch\u1EA5p nh\u1EADn Google OIDC.");
+  }
   const credentials = LoginSchema.parse(req.body);
   const normalizedUsername = credentials.username.toLocaleLowerCase("vi-VN");
   const directoryEntry = credentialDirectory.find((item) => item.username === normalizedUsername);
@@ -4246,12 +4398,8 @@ app.post("/api/v1/auth/login", async (req, reply) => {
   if (!passwordValid || !user) {
     throw new HttpProblem(401, "INVALID_CREDENTIALS", "\u0110\u0103ng nh\u1EADp kh\xF4ng th\xE0nh c\xF4ng", "T\xE0i kho\u1EA3n ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng.");
   }
-  const session = authSessionStore.create(user.id);
-  authSessions = authSessionStore.records();
-  await persistLocalState();
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
-  reply.header("set-cookie", `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure}`);
-  return { user, expiresAt: session.record.expiresAt };
+  const expiresAt = await createAuthenticatedSession(user, reply);
+  return { user, expiresAt };
 });
 app.post("/api/v1/auth/logout", async (req, reply) => {
   const token = cookieValue(req, "audit_bgs_session");
@@ -4283,7 +4431,7 @@ app.post("/api/v1/admin/campaigns", async (req, reply) => {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const campaign = {
     ...body,
-    id: `campaign-${crypto4.randomUUID()}`,
+    id: `campaign-${crypto5.randomUUID()}`,
     status: "DRAFT",
     driveProvisionStatus: "NOT_CONFIGURED",
     version: 1,
@@ -4424,7 +4572,7 @@ app.post("/api/v1/admin/org-units", async (req) => {
     }
   }
   const newUnit = {
-    id: `org-${crypto4.randomUUID()}`,
+    id: `org-${crypto5.randomUUID()}`,
     code: body.code,
     name: body.name,
     type: body.type,
@@ -4481,7 +4629,7 @@ app.post("/api/v1/admin/users", async (req) => {
     departmentName: department?.name
   }] : ["ADMIN", "SUPERVISOR", "INTERNAL_APPROVER", "INTERNAL_OFFICER"].includes(body.primaryRole) ? [{ scopeType: "ALL" }] : [];
   const newUser = {
-    id: `user-${crypto4.randomUUID()}`,
+    id: `user-${crypto5.randomUUID()}`,
     username: body.username || body.email.split("@")[0],
     email: body.email,
     fullName: body.fullName,
@@ -4548,7 +4696,7 @@ app.get("/api/v1/channels/active", async () => reportChannels.filter((c) => c.is
 app.post("/api/v1/admin/channels", async (req) => {
   const user = getCurrentUser(req);
   requireAdmin(user);
-  const id = `chan-${crypto4.randomUUID()}`;
+  const id = `chan-${crypto5.randomUUID()}`;
   const payload = req.body ?? {};
   const body = CreateReportChannelSchema.parse({
     ...payload,
@@ -4794,7 +4942,7 @@ app.post("/api/v1/findings/:id/sub-items", async (req, reply) => {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const subItems = finding.subItems ?? [];
   subItems.push({
-    id: `sub-${crypto4.randomUUID()}`,
+    id: `sub-${crypto5.randomUUID()}`,
     findingId: finding.id,
     content: dto.content,
     order: subItems.length + 1,
@@ -4843,7 +4991,7 @@ app.post("/api/v1/findings/:id/sub-items/review", async (req) => {
   finding.version += 1;
   finding.updatedAt = now;
   workflowEvents.push({
-    id: `evt-${crypto4.randomUUID()}`,
+    id: `evt-${crypto5.randomUUID()}`,
     findingId: finding.id,
     command: "REVIEW_SUB_ITEMS",
     fromStatus: finding.workflowStatus,
@@ -4900,7 +5048,7 @@ app.post("/api/v1/findings", async (req) => {
   const user = getCurrentUser(req);
   requireRoles(user, ["ADMIN", "INTERNAL_OFFICER"]);
   const b = WebFormFindingSchema.parse(req.body);
-  const newFinding = createFindingFromDto(b, user, `find-${crypto4.randomUUID()}`);
+  const newFinding = createFindingFromDto(b, user, `find-${crypto5.randomUUID()}`);
   await ensureFindingDriveFolder(newFinding);
   findings.unshift(newFinding);
   await persistLocalState();
@@ -4929,7 +5077,7 @@ app.post("/api/v1/imports/findings", async (req, reply) => {
     seenKeys.add(key);
     imported.push(createFindingFromDto(row, user));
   }
-  const batchId = `batch-${crypto4.randomUUID()}`;
+  const batchId = `batch-${crypto5.randomUUID()}`;
   const channel = reportChannels.find((item) => item.id === batch.rows[0].channelId);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   findings.unshift(...imported);
@@ -4974,7 +5122,7 @@ app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
     workflowEvents.push({
-      id: `evt-${crypto4.randomUUID()}`,
+      id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "SUBMIT_BRANCH",
       fromStatus,
@@ -5004,7 +5152,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-approve", async (req, repl
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
     workflowEvents.push({
-      id: `evt-${crypto4.randomUUID()}`,
+      id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_CONTROL_APPROVE",
       fromStatus,
@@ -5033,7 +5181,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-reject", async (req, reply
     const updated = workflowService.executeBranchControlReject(finding, dto, user);
     Object.assign(finding, updated);
     workflowEvents.push({
-      id: `evt-${crypto4.randomUUID()}`,
+      id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_CONTROL_REJECT",
       fromStatus,
@@ -5064,7 +5212,7 @@ app.post("/api/v1/findings/:id/actions/internal-waive", async (req, reply) => {
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
     workflowEvents.push({
-      id: `evt-${crypto4.randomUUID()}`,
+      id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "INTERNAL_WAIVE",
       fromStatus,
@@ -5093,7 +5241,7 @@ app.post("/api/v1/findings/:id/actions/internal-reject", async (req, reply) => {
     const updated = workflowService.executeInternalReject(finding, dto, user);
     Object.assign(finding, updated);
     workflowEvents.push({
-      id: `evt-${crypto4.randomUUID()}`,
+      id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "INTERNAL_REJECT",
       fromStatus,
@@ -5136,7 +5284,7 @@ function registerEvidence(finding, user, uploadResult, fileName) {
   if (duplicate) return duplicate;
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const evidence = {
-    id: `evi-${crypto4.randomUUID()}`,
+    id: `evi-${crypto5.randomUUID()}`,
     findingId: finding.id,
     fileName,
     fileSize: uploadResult.fileSize,
@@ -5264,7 +5412,7 @@ app.post("/api/v1/reports/definitions", async (req, reply) => {
   if (body.query) assertReportConfigurationAvailable(body.query, body.exportColumns);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const definition = {
-    id: `report-${crypto4.randomUUID()}`,
+    id: `report-${crypto5.randomUUID()}`,
     name: body.name,
     description: body.description,
     filters: body.filters,
@@ -5433,6 +5581,9 @@ function assertSafeRuntimeConfiguration(env = process.env) {
     violations.push("thi\u1EBFu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH");
   }
   if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push("thi\u1EBFu OIDC_ISSUER_URL/OIDC_AUDIENCE");
+  if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
+    violations.push("thi\u1EBFu c\u1EA5u h\xECnh Google OIDC");
+  }
   if (env.DATA_STORE_MODE !== "postgres" || !env.DATABASE_URL) violations.push("DATA_STORE_MODE=postgres v\xE0 DATABASE_URL l\xE0 b\u1EAFt bu\u1ED9c");
   if (!env.CRON_SECRET) violations.push("thi\u1EBFu CRON_SECRET");
   if (env.EVIDENCE_STORAGE_MODE !== "google-drive") violations.push("EVIDENCE_STORAGE_MODE ph\u1EA3i l\xE0 google-drive");

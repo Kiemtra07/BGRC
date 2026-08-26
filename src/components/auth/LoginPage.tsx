@@ -37,6 +37,10 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
     }
   };
 
+  const startGoogleLogin = () => {
+    window.location.assign('/api/v1/auth/google');
+  };
+
   return (
     <main className="grid min-h-screen place-items-center bg-[#f3f7f7] px-4 py-8">
       <section className="w-full max-w-[420px] overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-xl shadow-teal-950/10">
@@ -48,9 +52,15 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
         </div>
 
         <form onSubmit={submit} className="space-y-5 px-7 py-7">
-          <div><h1 className="text-xl font-black text-slate-900">Đăng nhập</h1><p className="mt-1 text-xs text-slate-500">Sử dụng tài khoản được quản trị viên cấp.</p></div>
+          <div><h1 className="text-xl font-black text-slate-900">Đăng nhập</h1><p className="mt-1 text-xs text-slate-500">Dùng tài khoản Google đã được quản trị viên cấp role.</p></div>
           {error && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-3 py-2.5 text-xs font-semibold text-red-800">{error}</div>}
 
+          <button type="button" onClick={startGoogleLogin} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl border border-slate-300 bg-white px-4 text-sm font-bold text-slate-800 shadow-sm hover:border-[#006b68] hover:bg-teal-50">
+            <LogIn className="h-4 w-4 text-[#006b68]" />Đăng nhập với Google
+          </button>
+
+          {isDevelopment && <>
+          <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-400"><span className="h-px flex-1 bg-slate-200" />Hoặc tài khoản local<span className="h-px flex-1 bg-slate-200" /></div>
           <label className="block text-xs font-bold text-slate-700">Tên đăng nhập
             <span className="mt-1.5 flex items-center gap-2 rounded-xl border border-slate-200 px-3 focus-within:border-[#006b68] focus-within:ring-2 focus-within:ring-teal-100">
               <UserRound className="h-4 w-4 text-slate-400" />
@@ -71,10 +81,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
           <button type="submit" disabled={submitting || !username.trim() || !password} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 text-sm font-bold text-white shadow-sm hover:bg-[#005956] disabled:cursor-not-allowed disabled:opacity-50">
             <LogIn className="h-4 w-4" />{submitting ? 'Đang đăng nhập...' : 'Đăng nhập'}
           </button>
-          {isDevelopment && <details className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
+          <details className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
             <summary className="cursor-pointer font-bold text-slate-700">5 tài khoản dùng thử tại local</summary>
             <div className="mt-3 space-y-2">{demoUsers.map(([role, demoUsername, demoPassword]) => <button key={demoUsername} type="button" onClick={() => { setUsername(demoUsername); setPassword(demoPassword); }} className="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left hover:border-[#006b68]"><span className="block font-bold text-slate-800">{role}</span><span className="mt-0.5 block font-mono text-[10px] text-slate-500">{demoUsername} · {demoPassword}</span></button>)}</div>
-          </details>}
+          </details>
+          </>}
         </form>
       </section>
     </main>

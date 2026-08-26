@@ -96,6 +96,7 @@ import {
   encryptGoogleDriveRefreshToken,
   verifyGoogleDriveOAuthState,
 } from './security/google-drive-oauth-state';
+import { createAuthorizationUrl, exchangeCode } from './security/google-oidc-client';
 import { sortWatchTargets } from './modules/workspace/workspace-priority';
 import { canAccessCampaign, validateCampaignTransition } from './modules/campaigns/campaign-service';
 
@@ -112,7 +113,15 @@ app.register(cors, { origin: allowedOrigins, credentials: true });
 app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB max
 
 const internalSlaPath = '/api/v1/internal/sla/run';
-const publicPaths = new Set(['/api/v1/health', '/api/v1/ready', '/api/v1/auth/login', '/api/v1/auth/logout', internalSlaPath]);
+const publicPaths = new Set([
+  '/api/v1/health',
+  '/api/v1/ready',
+  '/api/v1/auth/login',
+  '/api/v1/auth/logout',
+  '/api/v1/auth/google',
+  '/api/v1/auth/google/callback',
+  internalSlaPath,
+]);
 const requestUsers = new WeakMap<FastifyRequest, UserProfile>();
 let authSessionStore: AuthSessionStore;
 
@@ -125,6 +134,15 @@ function cookieValue(request: FastifyRequest, name: string): string | undefined 
     if (part.slice(0, separator).trim() === name) return decodeURIComponent(part.slice(separator + 1).trim());
   }
   return undefined;
+}
+
+async function createAuthenticatedSession(user: UserProfile, reply: { header(name: string, value: string): unknown }): Promise<string> {
+  const session = authSessionStore.create(user.id);
+  authSessions = authSessionStore.records();
+  await persistLocalState();
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  reply.header('set-cookie', `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure}`);
+  return session.record.expiresAt;
 }
 
 app.addHook('preHandler', async (request) => {
@@ -1964,8 +1982,45 @@ app.get('/api/v1/integrations/google-drive/callback', async (req: FastifyRequest
   return reply.type('text/html; charset=utf-8').send('<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Google Drive đã kết nối</title></head><body><p>Đã kết nối Google Drive cá nhân. Bạn có thể đóng cửa sổ này và quay lại AuditBGS.</p></body></html>');
 });
 
+app.get('/api/v1/auth/google', async (req: FastifyRequest<{ Querystring: { returnTo?: string } }>, reply) => {
+  if (process.env.AUTH_MODE !== 'oidc') {
+    throw new HttpProblem(404, 'OIDC_NOT_ENABLED', 'Đăng nhập Google chưa được bật', 'Máy chủ hiện không dùng Google OIDC.');
+  }
+  try {
+    return reply.redirect(createAuthorizationUrl({ returnTo: req.query.returnTo ?? '/' }));
+  } catch {
+    throw new HttpProblem(503, 'OIDC_NOT_CONFIGURED', 'Đăng nhập Google chưa sẵn sàng', 'Quản trị viên cần hoàn tất cấu hình Google OIDC trên máy chủ.');
+  }
+});
+
+app.get('/api/v1/auth/google/callback', async (req: FastifyRequest<{
+  Querystring: { code?: string; error?: string; state?: string };
+}>, reply) => {
+  if (process.env.AUTH_MODE !== 'oidc') throw new HttpProblem(404, 'OIDC_NOT_ENABLED', 'Đăng nhập Google chưa được bật', 'Máy chủ hiện không dùng Google OIDC.');
+  if (req.query.error) throw new HttpProblem(401, 'GOOGLE_OIDC_DENIED', 'Đăng nhập Google bị từ chối', 'Tài khoản Google không chấp thuận yêu cầu đăng nhập.');
+  if (!req.query.code || !req.query.state) throw new HttpProblem(422, 'GOOGLE_OIDC_CALLBACK_INVALID', 'Callback Google không hợp lệ', 'Google không trả authorization code hoặc state.');
+
+  let oidc: Awaited<ReturnType<typeof exchangeCode>>;
+  try {
+    oidc = await exchangeCode({ code: req.query.code, state: req.query.state });
+  } catch {
+    throw new HttpProblem(401, 'GOOGLE_OIDC_INVALID', 'Không thể xác thực Google', 'Phiên đăng nhập Google không hợp lệ hoặc đã hết hạn.');
+  }
+  const email = oidc.identity.email;
+  const user = appUsers.find(candidate => candidate.isActive && [candidate.email, candidate.googleWorkspaceEmail]
+    .some(candidateEmail => candidateEmail?.toLocaleLowerCase('en-US') === email));
+  if (!user) {
+    throw new HttpProblem(403, 'GOOGLE_OIDC_USER_NOT_PROVISIONED', 'Tài khoản Google chưa được cấp quyền', 'Quản trị viên cần tạo user và gán role cho email Google này trước.');
+  }
+  await createAuthenticatedSession(user, reply);
+  return reply.redirect(oidc.returnTo);
+});
+
 // Auth: Me
 app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
+  if (process.env.AUTH_MODE === 'oidc') {
+    throw new HttpProblem(405, 'OIDC_LOGIN_REQUIRED', 'Hãy đăng nhập bằng Google', 'Môi trường này chỉ chấp nhận Google OIDC.');
+  }
   const credentials = LoginSchema.parse(req.body);
   const normalizedUsername = credentials.username.toLocaleLowerCase('vi-VN');
   const directoryEntry = credentialDirectory.find(item => item.username === normalizedUsername);
@@ -1976,12 +2031,8 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
     throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
   }
 
-  const session = authSessionStore.create(user.id);
-  authSessions = authSessionStore.records();
-  await persistLocalState();
-  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  reply.header('set-cookie', `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure}`);
-  return { user, expiresAt: session.record.expiresAt };
+  const expiresAt = await createAuthenticatedSession(user, reply);
+  return { user, expiresAt };
 });
 
 app.post('/api/v1/auth/logout', async (req, reply) => {
@@ -3366,6 +3417,9 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
     violations.push('thiếu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH');
   }
   if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push('thiếu OIDC_ISSUER_URL/OIDC_AUDIENCE');
+  if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
+    violations.push('thiếu cấu hình Google OIDC');
+  }
   if (env.DATA_STORE_MODE !== 'postgres' || !env.DATABASE_URL) violations.push('DATA_STORE_MODE=postgres và DATABASE_URL là bắt buộc');
   if (!env.CRON_SECRET) violations.push('thiếu CRON_SECRET');
   if (env.EVIDENCE_STORAGE_MODE !== 'google-drive') violations.push('EVIDENCE_STORAGE_MODE phải là google-drive');
