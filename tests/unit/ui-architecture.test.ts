@@ -14,7 +14,6 @@ describe('UI and business terminology architecture', () => {
       'server/src/modules/workflow/workflow-service.ts',
       'src/App.tsx',
       'src/components/portal/FindingDetailPage.tsx',
-      'src/components/common/Header.tsx',
       'src/components/admin/UserManager.tsx',
     ].map(read).join('\n');
 
@@ -255,6 +254,31 @@ describe('UI and business terminology architecture', () => {
     expect(deploymentGuide).toContain('Cloud SQL for PostgreSQL 16');
     expect(deploymentGuide).toContain('data/local-state.json');
     expect(deploymentGuide).toContain('chưa đủ điều kiện production');
+  });
+
+  it('ships no prototype demo surfaces or mock fixtures', () => {
+    // The prototype user switcher and its MOCK_USERS fixture let anyone assume any role from the
+    // header; production authenticates for real, so neither may come back.
+    for (const removed of [
+      'src/lib/mock-data.ts',
+      'src/components/common/Header.tsx',
+      'src/components/auth/LoginPortal.tsx',
+      'src/components/common/CustomerDetailModal.tsx',
+      'src/components/internal/ErrorCatalogModal.tsx',
+      'src/components/admin/EmailSchedulerConfig.tsx',
+    ]) {
+      expect(fs.existsSync(path.join(root, removed))).toBe(false);
+    }
+
+    const sources = fs.readdirSync(path.join(root, 'src'), { recursive: true, encoding: 'utf8' })
+      .filter(name => name.endsWith('.ts') || name.endsWith('.tsx'))
+      .map(name => read(path.join('src', name)))
+      .join('\n');
+    expect(sources).not.toMatch(/MOCK_USERS|INITIAL_CUSTOMERS|Demo RBAC|Chuyển Nhanh Quyền/);
+
+    // The mã sai sót catalog is business reference data, not a fixture — it stays, under a name
+    // that says so.
+    expect(read('src/lib/error-catalog.ts')).toContain('ERROR_CODE_CATALOG');
   });
 
   it('routes each report type to the capture screen its presentation mode calls for', () => {

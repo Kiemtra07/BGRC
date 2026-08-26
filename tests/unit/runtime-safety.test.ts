@@ -118,3 +118,34 @@ describe('runtime safety gate', () => {
     expect(readiness.message).not.toMatch(/sẵn sàng/i);
   });
 });
+
+describe('demo data must not reach production', () => {
+  const productionBase = {
+    NODE_ENV: 'production',
+    AUTH_MODE: 'oidc',
+    OIDC_ISSUER_URL: 'https://issuer.example',
+    OIDC_AUDIENCE: 'audit-bgs',
+    DATA_STORE_MODE: 'postgres',
+    DATABASE_URL: 'postgresql://example.invalid/audit_bgs',
+    CRON_SECRET: 'cron-secret-value',
+    EVIDENCE_STORAGE_MODE: 'google-drive',
+    GOOGLE_SERVICE_ACCOUNT_JSON: '{}',
+    GOOGLE_DRIVE_ROOT_FOLDER_ID: 'folder-id',
+    BOOTSTRAP_ADMIN_USERNAME: 'quantri',
+    BOOTSTRAP_ADMIN_PASSWORD_HASH: 'scrypt$salt$key',
+  };
+
+  it('refuses to start production with demo seeding enabled', () => {
+    expect(() => assertSafeRuntimeConfiguration({ ...productionBase, SEED_DEMO_DATA: 'true' }))
+      .toThrow(/SEED_DEMO_DATA/);
+  });
+
+  it('refuses production without a bootstrap administrator, which would lock everyone out', () => {
+    const { BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_PASSWORD_HASH, ...withoutAdmin } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration(withoutAdmin)).toThrow(/BOOTSTRAP_ADMIN/);
+  });
+
+  it('accepts production with seeding off and a bootstrap administrator supplied', () => {
+    expect(() => assertSafeRuntimeConfiguration(productionBase)).not.toThrow();
+  });
+});

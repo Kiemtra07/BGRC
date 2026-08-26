@@ -86,7 +86,7 @@ import {
   requireRoles,
   resolveLocalUser,
 } from './security/access-control';
-import { verifyPassword } from './security/password';
+import { hashPassword, verifyPassword } from './security/password';
 import { AuthSessionStore } from './security/session-store';
 import { sortWatchTargets } from './modules/workspace/workspace-priority';
 import { canAccessCampaign, validateCampaignTransition } from './modules/campaigns/campaign-service';
@@ -787,6 +787,50 @@ interface LocalAppState {
   auditCampaigns?: AuditCampaign[];
 }
 
+/**
+ * Demo seeding.
+ *
+ * Everything above this point is sample business data — five personas with published passwords,
+ * fabricated customers, a fabricated đoàn kiểm tra. It exists so the app is explorable locally and
+ * so the test suite has fixtures. It must never reach an environment holding real audit records,
+ * so it is opt-in and refused outright in production by assertSafeRuntimeConfiguration.
+ *
+ * Report channel configuration is deliberately not treated as demo data: those are the product's
+ * default report types, not fabricated records.
+ */
+const DEMO_SEED_ENABLED = process.env.NODE_ENV === 'production'
+  ? false
+  : process.env.SEED_DEMO_DATA !== 'false';
+
+/** Ids of the records this file seeds, so they can be listed and purged later without guessing. */
+export const DEMO_SEED_IDS = {
+  users: appUsers.map(user => user.id),
+  orgUnits: orgUnits.map(unit => unit.id),
+  campaigns: auditCampaigns.map(campaign => campaign.id),
+  findings: findings.map(finding => finding.id),
+} as const;
+
+interface CredentialEntry { userId: string; username: string; passwordHash: string }
+
+/** Live credential list. Starts from the demo directory only when demo seeding is on. */
+let credentialDirectory: CredentialEntry[] = [...localCredentialDirectory];
+
+/**
+ * Compared against when the submitted username is unknown, so a failed login costs the same time
+ * whether or not the account exists. Derived from a random secret at boot: it can never match.
+ */
+const unknownUserPasswordHash = await hashPassword(crypto.randomUUID());
+
+if (!DEMO_SEED_ENABLED) {
+  appUsers = [];
+  orgUnits = [];
+  auditCampaigns = [];
+  findings = [];
+  workflowEvents = [];
+  evidences = [];
+  credentialDirectory = [];
+}
+
 const stateRepository = createStateRepository<LocalAppState>({
   filePath: process.env.LOCAL_STATE_FILE ?? path.join(process.cwd(), 'data', 'local-state.json'),
   dataStoreMode: process.env.DATA_STORE_MODE,
@@ -1102,7 +1146,7 @@ function synchronizeUserDirectoryModel(): boolean {
 
   const creditTeam = orgUnits.find(unit => unit.id === 'org-team-credit-audit');
   for (const user of appUsers) {
-    const credential = localCredentialDirectory.find(item => item.userId === user.id);
+    const credential = credentialDirectory.find(item => item.userId === user.id);
     if (credential && user.username !== credential.username) {
       user.username = credential.username;
       changed = true;
@@ -1154,12 +1198,55 @@ function synchronizeUserDirectoryModel(): boolean {
   return changed;
 }
 
+/**
+ * With demo seeding off there is no account to sign in with, so an instance holding real data is
+ * opened by exactly one administrator supplied through the environment. The password is provided
+ * pre-hashed: a plaintext password in an environment variable would be readable from the process
+ * table and from the hosting dashboard.
+ *
+ * Generate the hash with:  node -e "import('./server/src/security/password.ts')"  — or the
+ * `npm run auth:hash-password` helper.
+ */
+async function bootstrapAdministratorFromEnvironment(): Promise<boolean> {
+  const username = process.env.BOOTSTRAP_ADMIN_USERNAME?.trim().toLocaleLowerCase('vi-VN');
+  const passwordHash = process.env.BOOTSTRAP_ADMIN_PASSWORD_HASH?.trim();
+  if (!username || !passwordHash) return false;
+
+  // Credentials live in memory, not in persisted state, so they must be re-registered on every
+  // boot — including boots where the account itself was already persisted by an earlier one.
+  const existing = appUsers.find(user => user.username.toLocaleLowerCase('vi-VN') === username);
+  if (existing) {
+    const registered = credentialDirectory.find(item => item.userId === existing.id);
+    if (registered) registered.passwordHash = passwordHash;
+    else credentialDirectory.push({ userId: existing.id, username, passwordHash });
+    return false;
+  }
+
+  const admin: UserProfile = {
+    id: `user-${crypto.randomUUID()}`,
+    username,
+    email: process.env.BOOTSTRAP_ADMIN_EMAIL?.trim() || `${username}@localhost`,
+    fullName: process.env.BOOTSTRAP_ADMIN_FULLNAME?.trim() || 'Quản trị hệ thống',
+    portal: 'INTERNAL',
+    roles: ['ADMIN'],
+    primaryRole: 'ADMIN',
+    coplusRole: 'ADMIN_HT',
+    isActive: true,
+    scopes: [{ scopeType: 'ALL' }],
+  };
+  appUsers.push(admin);
+  credentialDirectory.push({ userId: admin.id, username, passwordHash });
+  app.log.info({ username }, 'Đã tạo tài khoản quản trị khởi tạo từ biến môi trường');
+  return true;
+}
+
 if ([
   channelSlaBackfilled,
   synchronizeUserDirectoryModel(),
   backfillUserCoPlusIdentity(),
   backfillChannelFormTemplates(),
   backfillFindingProvenance(),
+  await bootstrapAdministratorFromEnvironment(),
 ].some(Boolean)) await persistLocalState();
 
 if (shouldStartEmbeddedSlaRuntime()) {
@@ -1791,9 +1878,9 @@ app.route({
 app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
   const credentials = LoginSchema.parse(req.body);
   const normalizedUsername = credentials.username.toLocaleLowerCase('vi-VN');
-  const directoryEntry = localCredentialDirectory.find(item => item.username === normalizedUsername);
-  const fallbackHash = localCredentialDirectory[0].passwordHash;
-  const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? fallbackHash);
+  const directoryEntry = credentialDirectory.find(item => item.username === normalizedUsername);
+  // Always verify a hash, even for an unknown username, so timing does not disclose existence.
+  const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? unknownUserPasswordHash);
   const user = directoryEntry ? appUsers.find(item => item.id === directoryEntry.userId && item.isActive) : undefined;
   if (!passwordValid || !user) {
     throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
@@ -3146,7 +3233,11 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
 
   const violations: string[] = [];
   if (env.AUTH_MODE !== 'oidc') violations.push('AUTH_MODE phải là oidc');
-  if (env.SEED_DEMO_USERS === 'true') violations.push('SEED_DEMO_USERS không được bật ở production');
+  if (env.SEED_DEMO_DATA === 'true' || env.SEED_DEMO_USERS === 'true') violations.push('SEED_DEMO_DATA không được bật ở production');
+  // Không seed demo thì phải có đúng một tài khoản quản trị khởi tạo, nếu không sẽ không ai vào được.
+  if (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH) {
+    violations.push('thiếu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH');
+  }
   if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push('thiếu OIDC_ISSUER_URL/OIDC_AUDIENCE');
   if (env.DATA_STORE_MODE !== 'postgres' || !env.DATABASE_URL) violations.push('DATA_STORE_MODE=postgres và DATABASE_URL là bắt buộc');
   if (!env.CRON_SECRET) violations.push('thiếu CRON_SECRET');

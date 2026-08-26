@@ -2,7 +2,7 @@ import readXlsxFile, { type Sheet } from 'read-excel-file/browser';
 import JSZip from 'jszip';
 import { CustomerRecord, AuditError, BatchUploadResult, UserProfile } from '../types';
 import type { BusinessLine, RiskLevel } from '../../shared/contracts';
-import { INITIAL_ERROR_MASTER } from './mock-data';
+import { ERROR_CODE_CATALOG } from './error-catalog';
 
 type WorkbookSheet = Pick<Sheet, 'sheet' | 'data'>;
 
@@ -261,7 +261,7 @@ export class ExcelFastIngestionService {
         });
         customersMap.set(key, customer);
       }
-      const master = INITIAL_ERROR_MASTER.find(item => item.code === code);
+      const master = ERROR_CODE_CATALOG.find(item => item.code === code);
       customer.errors.push({
         ...this.newError(customer, currentUser, fileName, r, code, master?.title || `Sai sót mã ${code}`, master?.description || `Phát hiện sai sót ${code} trong file nguồn.`, 1, 0, deadlineDate),
         ...readCoPlusProvenance(row, aliases, code),
@@ -365,7 +365,7 @@ export class ExcelFastIngestionService {
   }
 
   private static newError(customer: CustomerRecord, currentUser: UserProfile, fileName: string, rowIndex: number, code: string, title: string, description: string, quantity: number, exposure: number, deadlineDate?: string): AuditError {
-    const master = INITIAL_ERROR_MASTER.find(item => item.code === code);
+    const master = ERROR_CODE_CATALOG.find(item => item.code === code);
     return {
       id: localId('ERR', rowIndex),
       customerId: customer.id,

@@ -21,7 +21,9 @@
     "test:integration": "vitest run tests/integration",
     "test:contract": "vitest run tests/contract",
     "test:e2e:reports": "node tests/e2e/reports-smoke.mjs",
-    "ci": "npm run db:migrate:dry-run && npm run typecheck && npm run test:unit && npm run test:integration && npm run test:contract && vite build"
+    "ci": "npm run db:migrate:dry-run && npm run typecheck && npm run test:unit && npm run test:integration && npm run test:contract && vite build",
+    "demo:purge": "tsx db/purge-demo-data.ts",
+    "auth:hash-password": "tsx db/hash-password.ts"
   },
   "dependencies": {
     "@fastify/cors": "^11.3.0",
