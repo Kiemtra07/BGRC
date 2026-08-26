@@ -1,0 +1,62 @@
+import { Finding, UserProfile, UserRole } from '../../../shared/contracts';
+import { HttpProblem } from '../http/problem';
+
+const normalize = (value?: string) => value?.trim().toLocaleLowerCase('vi-VN');
+
+export function resolveLocalUser(
+  headerValue: string | string[] | undefined,
+  users: UserProfile[],
+): UserProfile {
+  const requestedId = Array.isArray(headerValue) ? headerValue[0] : headerValue;
+  if (!requestedId) {
+    throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Local API yêu cầu header x-user-id hợp lệ.');
+  }
+
+  const user = users.find(item => item.id === requestedId || item.username === requestedId);
+  if (!user) {
+    throw new HttpProblem(401, 'INVALID_LOCAL_USER', 'Tài khoản local không hợp lệ', 'Không tìm thấy tài khoản tương ứng với x-user-id.');
+  }
+  if (!user.isActive) {
+    throw new HttpProblem(403, 'USER_DISABLED', 'Tài khoản đã bị khóa', 'Tài khoản hiện không được phép truy cập.');
+  }
+  return user;
+}
+
+export function requireRoles(user: UserProfile, allowedRoles: UserRole[]): void {
+  if (!allowedRoles.some(role => user.roles.includes(role))) {
+    throw new HttpProblem(403, 'FORBIDDEN', 'Không đủ quyền thực hiện', 'Vai trò hiện tại không được phép thực hiện thao tác này.');
+  }
+}
+
+export function requireAdmin(user: UserProfile): void {
+  if (!user.roles.includes('ADMIN')) {
+    throw new HttpProblem(403, 'ADMIN_REQUIRED', 'Không đủ quyền quản trị', 'Chỉ quản trị viên được truy cập tài nguyên này.');
+  }
+}
+
+export function hasFindingAccess(user: UserProfile, finding: Finding): boolean {
+  if (!user.isActive) return false;
+  if (user.scopes.some(scope => scope.scopeType === 'ALL')) return true;
+
+  return user.scopes.some(scope => {
+    const scopedBranchCode = scope.orgUnitCode ?? user.branchCode;
+    const scopedBranchName = scope.branchName ?? user.branchName;
+    const branchMatches = scopedBranchCode
+      ? scopedBranchCode === finding.branchCode
+      : normalize(scopedBranchName) === normalize(finding.branchName);
+
+    switch (scope.scopeType) {
+      case 'CLUSTER':
+        return normalize(scope.clusterName ?? user.clusterName) === normalize(finding.clusterName);
+      case 'BRANCH':
+        return branchMatches;
+      case 'DEPARTMENT':
+        return (
+          branchMatches &&
+          normalize(scope.departmentName ?? user.department) === normalize(finding.department)
+        );
+      default:
+        return false;
+    }
+  });
+}

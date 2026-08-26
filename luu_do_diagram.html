@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Lưu đồ vận hành chi tiết - Audit BGS</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { margin: 0; width: 2560px; height: 1800px; overflow: hidden; background: #f8fafc; }
+    body { font-family: "Segoe UI", Arial, sans-serif; color: #0f172a; }
+    svg { display: block; width: 2560px; height: 1800px; }
+    .eyebrow { font-size: 16px; font-weight: 800; letter-spacing: 2px; fill: #0f766e; }
+    .title { font-size: 40px; font-weight: 800; fill: #0f172a; letter-spacing: -0.6px; }
+    .subtitle { font-size: 18px; font-weight: 500; fill: #475569; }
+    .lane-title { font-size: 17px; font-weight: 800; fill: #0f172a; }
+    .lane-subtitle { font-size: 12px; font-weight: 600; fill: #64748b; letter-spacing: .3px; }
+    .arrow-label { font-size: 13px; font-weight: 800; fill: #334155; }
+    .small-label { font-size: 12px; font-weight: 700; fill: #475569; }
+    .legend-text { font-size: 13px; font-weight: 700; fill: #334155; }
+    .card {
+      width: 100%; height: 100%; padding: 16px 18px; border-radius: 14px;
+      background: #ffffff; border: 2px solid #cbd5e1; box-shadow: 0 8px 20px rgba(15, 23, 42, .08);
+      overflow: hidden;
+    }
+    .card.blue { border-color: #60a5fa; background: #eff6ff; }
+    .card.green { border-color: #34d399; background: #ecfdf5; }
+    .card.purple { border-color: #a78bfa; background: #f5f3ff; }
+    .card.amber { border-color: #fbbf24; background: #fffbeb; }
+    .card.red { border-color: #fb7185; background: #fff1f2; }
+    .card.teal { border-color: #2dd4bf; background: #f0fdfa; }
+    .card.neutral { border-color: #cbd5e1; background: #ffffff; }
+    .card-head { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+    .step-no {
+      width: 30px; height: 30px; border-radius: 9px; display: flex; align-items: center;
+      justify-content: center; color: white; background: #0f766e; font-size: 14px; font-weight: 900; flex: 0 0 auto;
+    }
+    .step-no.blue { background: #2563eb; }
+    .step-no.green { background: #059669; }
+    .step-no.purple { background: #7c3aed; }
+    .step-no.amber { background: #d97706; }
+    .card-title { font-size: 18px; line-height: 1.2; font-weight: 800; color: #0f172a; }
+    .card-role { font-size: 11px; line-height: 1.2; font-weight: 800; letter-spacing: .5px; text-transform: uppercase; color: #64748b; margin-top: 2px; }
+    .card ul { margin: 7px 0 0 18px; padding: 0; color: #334155; font-size: 13px; line-height: 1.42; }
+    .card li { margin: 2px 0; }
+    .status {
+      display: inline-flex; margin-top: 8px; padding: 4px 8px; border-radius: 7px; font-size: 11px;
+      font-weight: 900; letter-spacing: .3px; color: #0f766e; background: #ccfbf1; border: 1px solid #5eead4;
+    }
+    .decision {
+      width: 100%; height: 100%; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; text-align: center; padding: 27px 30px 20px; color: #7c2d12;
+    }
+    .decision strong { display: block; font-size: 17px; line-height: 1.25; color: #0f172a; }
+    .decision span { display: block; margin-top: 5px; font-size: 12px; line-height: 1.35; color: #475569; font-weight: 600; }
+    .support-card {
+      width: 100%; height: 100%; padding: 18px 20px; border-radius: 16px; background: white;
+      border: 2px solid #cbd5e1; box-shadow: 0 8px 18px rgba(15, 23, 42, .06);
+    }
+    .support-title { font-size: 17px; font-weight: 900; color: #0f172a; margin-bottom: 8px; }
+    .support-card ul { margin: 0 0 0 18px; padding: 0; font-size: 13px; line-height: 1.45; color: #475569; }
+    .support-card li { margin: 3px 0; }
+    .support-note { margin-top: 9px; font-size: 11px; font-weight: 800; color: #64748b; }
+  </style>
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2560 1800" role="img" aria-labelledby="diagramTitle diagramDesc">
+  <title id="diagramTitle">Lưu đồ vận hành chi tiết hệ thống Audit BGS</title>
+  <desc id="diagramDesc">Luồng nghiệp vụ AuditBGS từ chuyên đề và loại báo cáo, nhập dữ liệu, chi nhánh khắc phục, kiểm soát chi nhánh, phê duyệt HT, cùng nhánh trả về, SLA, kho minh chứng và Audit Trail.</desc>
+  <defs>
+    <marker id="arrowBlue" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#2563eb"/>
+    </marker>
+    <marker id="arrowGreen" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#059669"/>
+    </marker>
+    <marker id="arrowRed" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#e11d48"/>
+    </marker>
+    <marker id="arrowSlate" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
+      <path d="M 0 0 L 12 6 L 0 12 z" fill="#64748b"/>
+    </marker>
+    <filter id="softShadow" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="5" stdDeviation="8" flood-color="#0f172a" flood-opacity=".08"/>
+    </filter>
+  </defs>
+
+  <rect x="0" y="0" width="2560" height="1800" fill="#f8fafc"/>
+  <rect x="0" y="0" width="2560" height="128" fill="#ffffff"/>
+  <rect x="0" y="126" width="2560" height="2" fill="#dbe4ee"/>
+  <rect x="46" y="30" width="58" height="58" rx="16" fill="#0f766e"/>
+  <text x="75" y="67" text-anchor="middle" font-size="20" font-weight="900" fill="#ffffff">BGS</text>
+  <text x="128" y="42" class="eyebrow">AUDIT BGS SYSTEM</text>
+  <text x="128" y="82" class="title">LƯU ĐỒ VẬN HÀNH CHI TIẾT - QUY TRÌNH KHẮC PHỤC &amp; PHÊ DUYỆT BỎ LỖI</text>
+  <text x="128" y="108" class="subtitle">Luồng gọn 1 cấp hoặc luồng kiểm soát 2 cấp • Có vòng trả về • SLA chạy song song</text>
+
+  <g transform="translate(1970 32)">
+    <rect x="0" y="0" width="168" height="34" rx="17" fill="#ecfdf5" stroke="#6ee7b7"/>
+    <circle cx="18" cy="17" r="5" fill="#059669"/><text x="32" y="22" font-size="13" font-weight="800" fill="#047857">Luồng phê duyệt</text>
+    <rect x="180" y="0" width="150" height="34" rx="17" fill="#fff1f2" stroke="#fda4af"/>
+    <circle cx="198" cy="17" r="5" fill="#e11d48"/><text x="212" y="22" font-size="13" font-weight="800" fill="#be123c">Luồng trả về</text>
+    <rect x="342" y="0" width="164" height="34" rx="17" fill="#f1f5f9" stroke="#cbd5e1"/>
+    <circle cx="360" cy="17" r="5" fill="#64748b"/><text x="374" y="22" font-size="13" font-weight="800" fill="#475569">Luồng song song</text>
+  </g>
+
+  <!-- Main swimlanes -->
+  <rect x="38" y="154" width="448" height="1136" rx="18" fill="#ffffff" stroke="#bfdbfe" stroke-width="2"/>
+  <rect x="38" y="154" width="448" height="76" rx="18" fill="#eff6ff"/>
+  <rect x="506" y="154" width="448" height="1136" rx="18" fill="#ffffff" stroke="#a7f3d0" stroke-width="2"/>
+  <rect x="506" y="154" width="448" height="76" rx="18" fill="#ecfdf5"/>
+  <rect x="974" y="154" width="448" height="1136" rx="18" fill="#ffffff" stroke="#99f6e4" stroke-width="2"/>
+  <rect x="974" y="154" width="448" height="76" rx="18" fill="#f0fdfa"/>
+  <rect x="1442" y="154" width="408" height="1136" rx="18" fill="#ffffff" stroke="#fde68a" stroke-width="2"/>
+  <rect x="1442" y="154" width="408" height="76" rx="18" fill="#fffbeb"/>
+  <rect x="1870" y="154" width="652" height="1136" rx="18" fill="#ffffff" stroke="#ddd6fe" stroke-width="2"/>
+  <rect x="1870" y="154" width="652" height="76" rx="18" fill="#f5f3ff"/>
+
+  <circle cx="70" cy="192" r="17" fill="#2563eb"/><text x="70" y="198" text-anchor="middle" font-size="14" font-weight="900" fill="#fff">1</text>
+  <text x="96" y="190" class="lane-title">KHỐI NỘI BỘ / KHỞI TẠO</text><text x="96" y="211" class="lane-subtitle">INTERNAL OFFICER • SUPERVISOR</text>
+  <circle cx="538" cy="192" r="17" fill="#059669"/><text x="538" y="198" text-anchor="middle" font-size="14" font-weight="900" fill="#fff">2</text>
+  <text x="564" y="190" class="lane-title">HỆ THỐNG ĐIỀU PHỐI</text><text x="564" y="211" class="lane-subtitle">VALIDATION • DISPATCH • SLA</text>
+  <circle cx="1006" cy="192" r="17" fill="#0f766e"/><text x="1006" y="198" text-anchor="middle" font-size="14" font-weight="900" fill="#fff">3</text>
+  <text x="1032" y="190" class="lane-title">CHI NHÁNH KHẮC PHỤC</text><text x="1032" y="211" class="lane-subtitle">BRANCH INPUT • PIC</text>
+  <circle cx="1474" cy="192" r="17" fill="#d97706"/><text x="1474" y="198" text-anchor="middle" font-size="14" font-weight="900" fill="#fff">4</text>
+  <text x="1500" y="190" class="lane-title">KIỂM SOÁT CHI NHÁNH</text><text x="1500" y="211" class="lane-subtitle">BRANCH CONTROLLER</text>
+  <circle cx="1902" cy="192" r="17" fill="#7c3aed"/><text x="1902" y="198" text-anchor="middle" font-size="14" font-weight="900" fill="#fff">5</text>
+  <text x="1928" y="190" class="lane-title">PHÊ DUYỆT HT</text><text x="1928" y="211" class="lane-subtitle">INTERNAL APPROVER • SUPERVISOR</text>
+
+  <!-- Arrows rendered beneath nodes -->
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M262 326 L262 362" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M444 455 L548 455" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M648 365 L648 300 L262 300 L262 362" stroke="#e11d48" stroke-width="4" marker-end="url(#arrowRed)"/>
+    <path d="M648 545 L648 580" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
+    <path d="M700 690 L700 730" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M700 830 L700 870" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M880 940 L934 940 L934 355 L1010 355" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M1195 402 L1195 440" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M1195 560 L1195 600" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M1195 710 L1195 748" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M1098 807 L960 807 L960 500 L1010 500" stroke="#e11d48" stroke-width="4" marker-end="url(#arrowRed)"/>
+    <path d="M1195 866 L1195 918" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
+    <path d="M1380 968 L1466 968 L1466 725 L1516 725" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M1380 995 L1810 995 L1810 510 L1900 510" stroke="#059669" stroke-width="4" stroke-dasharray="10 8" marker-end="url(#arrowGreen)"/>
+    <path d="M1646 650 L1646 1110 L948 1110 L948 515 L1010 515" stroke="#e11d48" stroke-width="5" marker-end="url(#arrowRed)"/>
+    <path d="M1776 725 L1856 725 L1856 540 L1900 540" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
+    <path d="M2180 600 L2180 658" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
+    <path d="M2070 735 L1840 735 L1840 1190 L926 1190 L926 530 L1010 530" stroke="#e11d48" stroke-width="5" marker-end="url(#arrowRed)"/>
+    <path d="M2180 812 L2180 894" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
+    <path d="M2180 994 L2180 1040" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
+  </g>
+
+  <!-- Arrow labels -->
+  <g>
+    <rect x="474" y="422" width="78" height="28" rx="8" fill="#eff6ff"/><text x="513" y="441" text-anchor="middle" class="arrow-label">Gửi dữ liệu</text>
+    <rect x="348" y="278" width="224" height="28" rx="8" fill="#fff1f2"/><text x="460" y="297" text-anchor="middle" class="arrow-label" fill="#be123c">Không hợp lệ: sửa và tải lại</text>
+    <rect x="662" y="548" width="78" height="28" rx="8" fill="#ecfdf5"/><text x="701" y="567" text-anchor="middle" class="arrow-label">Hợp lệ</text>
+    <rect x="898" y="621" width="92" height="28" rx="8" fill="#eff6ff"/><text x="944" y="640" text-anchor="middle" class="arrow-label">Giao việc</text>
+    <rect x="966" y="775" width="114" height="28" rx="8" fill="#fff1f2"/><text x="1023" y="794" text-anchor="middle" class="arrow-label">Thiếu hồ sơ</text>
+    <rect x="1208" y="875" width="62" height="28" rx="8" fill="#ecfdf5"/><text x="1239" y="894" text-anchor="middle" class="arrow-label">Đủ</text>
+    <rect x="1436" y="935" width="168" height="28" rx="8" fill="#eff6ff"/><text x="1520" y="954" text-anchor="middle" class="arrow-label">SUBMITTED_BRANCH</text>
+    <rect x="1642" y="968" width="154" height="28" rx="8" fill="#ecfdf5"/><text x="1719" y="987" text-anchor="middle" class="arrow-label">ONE_TIER → HT</text>
+    <rect x="1200" y="1080" width="320" height="28" rx="8" fill="#fff1f2"/><text x="1360" y="1099" text-anchor="middle" class="arrow-label">Kiểm soát trả về: Chi nhánh bổ sung và nộp lại</text>
+    <rect x="1780" y="690" width="164" height="28" rx="8" fill="#ecfdf5"/><text x="1862" y="709" text-anchor="middle" class="arrow-label">SUBMITTED_INTERNAL</text>
+    <rect x="1200" y="1160" width="440" height="28" rx="8" fill="#fff1f2"/><text x="1420" y="1179" text-anchor="middle" class="arrow-label">Phê duyệt HT trả về: Chi nhánh nộp lại theo luồng đã ghim</text>
+    <rect x="2194" y="844" width="92" height="28" rx="8" fill="#ecfdf5"/><text x="2240" y="863" text-anchor="middle" class="arrow-label">Phê duyệt</text>
+  </g>
+
+  <!-- Main nodes -->
+  <rect x="192" y="270" width="140" height="56" rx="28" fill="#0f766e" filter="url(#softShadow)"/>
+  <text x="262" y="304" text-anchor="middle" font-size="16" font-weight="900" fill="#ffffff">BẮT ĐẦU</text>
+
+  <foreignObject x="70" y="362" width="374" height="186">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card blue">
+      <div class="card-head"><div class="step-no blue">1</div><div><div class="card-title">Chọn kênh &amp; nhập dữ liệu</div><div class="card-role">Khối Nội bộ</div></div></div>
+      <ul><li>Import Excel theo mẫu đã công bố.</li><li>Nhập Web Form hoặc API của kênh.</li><li>Chọn đợt kiểm tra, đơn vị và người phụ trách.</li></ul>
+    </div>
+  </foreignObject>
+
+  <polygon points="648,365 748,455 648,545 548,455" fill="#fffbeb" stroke="#f59e0b" stroke-width="3" filter="url(#softShadow)"/>
+  <foreignObject x="573" y="398" width="150" height="115"><div xmlns="http://www.w3.org/1999/xhtml" class="decision"><strong>Dữ liệu hợp lệ?</strong><span>Đúng schema, đủ trường lõi, không trùng batch</span></div></foreignObject>
+
+  <foreignObject x="520" y="580" width="360" height="110">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card green"><div class="card-head"><div class="step-no green">2</div><div><div class="card-title">Staging &amp; xác nhận import</div><div class="card-role">Hệ thống + Người nhập</div></div></div><ul><li>Xem trước lỗi theo dòng/cột; xác nhận trước khi ghi chính thức.</li></ul></div>
+  </foreignObject>
+  <foreignObject x="520" y="730" width="360" height="100">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card green"><div class="card-head"><div class="step-no green">3</div><div><div class="card-title">Tạo hồ sơ sai sót</div><div class="card-role">Hệ thống</div></div></div><span class="status">PENDING</span></div>
+  </foreignObject>
+  <foreignObject x="520" y="870" width="360" height="140">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card green"><div class="card-head"><div class="step-no green">4</div><div><div class="card-title">Điều phối &amp; khởi tạo SLA</div><div class="card-role">Auto-dispatch</div></div></div><ul><li>Gắn chuyên đề, chi nhánh và người phụ trách.</li><li>Ghim phiên bản form, luồng và SLA.</li><li>Gửi thông báo và tạo To-Do.</li></ul></div>
+  </foreignObject>
+
+  <foreignObject x="1010" y="308" width="370" height="94">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card teal"><div class="card-head"><div class="step-no">5</div><div><div class="card-title">Tiếp nhận To-Do</div><div class="card-role">Cán bộ Chi nhánh / PIC</div></div></div><ul><li>Xem lỗi, căn cứ, hạn xử lý và người phối hợp.</li></ul></div>
+  </foreignObject>
+  <foreignObject x="1010" y="440" width="370" height="120">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card teal"><div class="card-head"><div class="step-no">6</div><div><div class="card-title">Khắc phục nghiệp vụ</div><div class="card-role">Chi nhánh</div></div></div><ul><li>Bổ sung chứng từ, kiểm tra thực địa, hoàn thiện thủ tục.</li><li>Cập nhật giải trình và kế hoạch khắc phục.</li></ul></div>
+  </foreignObject>
+  <foreignObject x="1010" y="600" width="370" height="110">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card teal"><div class="card-head"><div class="step-no">7</div><div><div class="card-title">Giải trình &amp; tài liệu</div><div class="card-role">Chi nhánh → Kho minh chứng</div></div></div><ul><li>Tải tài liệu nếu mẫu báo cáo yêu cầu; lưu theo Chuyên đề/CIF/Mã lỗi.</li></ul></div>
+  </foreignObject>
+  <polygon points="1195,748 1292,807 1195,866 1098,807" fill="#fffbeb" stroke="#f59e0b" stroke-width="3" filter="url(#softShadow)"/>
+  <foreignObject x="1122" y="770" width="146" height="75"><div xmlns="http://www.w3.org/1999/xhtml" class="decision"><strong>Hồ sơ đủ?</strong><span>File + giải trình</span></div></foreignObject>
+  <foreignObject x="1010" y="918" width="370" height="100">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card teal"><div class="card-head"><div class="step-no">8</div><div><div class="card-title">Gửi duyệt theo cấu hình</div><div class="card-role">Chi nhánh · 1 hoặc 2 cấp</div></div></div><span class="status">SUBMITTED_BRANCH / INTERNAL</span></div>
+  </foreignObject>
+
+  <polygon points="1646,650 1776,725 1646,800 1516,725" fill="#fffbeb" stroke="#f59e0b" stroke-width="3" filter="url(#softShadow)"/>
+  <foreignObject x="1550" y="678" width="192" height="100"><div xmlns="http://www.w3.org/1999/xhtml" class="decision"><strong>Kiểm soát đồng ý?</strong><span>Kiểm tra đủ từng ý, tài liệu và giải trình; trả về phải có lý do</span></div></foreignObject>
+
+  <foreignObject x="1900" y="480" width="560" height="120">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card purple"><div class="card-head"><div class="step-no purple">9</div><div><div class="card-title">Phê duyệt HT</div><div class="card-role">Internal Approver / Supervisor</div></div></div><ul><li>Đối chiếu sai sót, tài liệu, kết quả kiểm soát và quy định.</li><li>Đóng lỗi hoặc trả chi nhánh bổ sung.</li></ul></div>
+  </foreignObject>
+  <polygon points="2180,658 2290,735 2180,812 2070,735" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="3" filter="url(#softShadow)"/>
+  <foreignObject x="2100" y="686" width="160" height="100"><div xmlns="http://www.w3.org/1999/xhtml" class="decision"><strong>Đủ điều kiện bỏ lỗi?</strong><span>Lãnh đạo phê duyệt cuối</span></div></foreignObject>
+  <foreignObject x="1950" y="894" width="460" height="100">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card purple"><div class="card-head"><div class="step-no purple">10</div><div><div class="card-title">Phê duyệt bỏ lỗi &amp; đóng hồ sơ</div><div class="card-role">Final Approver</div></div></div><span class="status">WAIVED_RESOLVED</span></div>
+  </foreignObject>
+  <rect x="2080" y="1040" width="200" height="58" rx="29" fill="#059669" filter="url(#softShadow)"/>
+  <text x="2180" y="1076" text-anchor="middle" font-size="16" font-weight="900" fill="#ffffff">HOÀN TẤT</text>
+
+  <foreignObject x="1500" y="900" width="290" height="120">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card red"><div class="card-title">Kiểm soát chuyển trả</div><ul><li>Bắt buộc nhập lý do.</li><li>Trạng thái REJECTED và quay lại Chi nhánh.</li></ul></div>
+  </foreignObject>
+  <foreignObject x="1920" y="1120" width="540" height="100">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card red"><div class="card-title">Phê duyệt HT chuyển trả</div><ul><li>Ghi rõ căn cứ; trả Chi nhánh bổ sung và nộp lại theo luồng đã ghim.</li></ul></div>
+  </foreignObject>
+
+  <!-- Supporting engines -->
+  <rect x="38" y="1320" width="2484" height="424" rx="20" fill="#ffffff" stroke="#dbe4ee" stroke-width="2"/>
+  <text x="66" y="1360" font-size="22" font-weight="900" fill="#0f172a">CÁC BỘ MÁY CHẠY SONG SONG XUYÊN SUỐT VÒNG ĐỜI HỒ SƠ</text>
+  <text x="66" y="1386" font-size="14" font-weight="600" fill="#64748b">Các luồng này không thay thế trạng thái phê duyệt; chúng hỗ trợ cấu hình, lưu bằng chứng, cảnh báo và truy vết.</text>
+
+  <foreignObject x="62" y="1414" width="570" height="286"><div xmlns="http://www.w3.org/1999/xhtml" class="support-card" style="border-color:#60a5fa;background:#eff6ff"><div class="support-title">A. Admin Config Engine</div><ul><li>Quản lý Cụm, Chi nhánh, PGD, User và role/scope.</li><li>Publish phiên bản Kênh, Schema, Workflow, SLA và Email.</li><li>Hồ sơ đã tạo ghim đúng phiên bản cấu hình đã publish.</li><li>Không tham gia phê duyệt nghiệp vụ nếu không được cấp quyền riêng.</li></ul><div class="support-note">Cấu hình tác động trước khi hồ sơ được khởi tạo.</div></div></foreignObject>
+  <foreignObject x="660" y="1414" width="590" height="286"><div xmlns="http://www.w3.org/1999/xhtml" class="support-card" style="border-color:#fbbf24;background:#fffbeb"><div class="support-title">B. SLA &amp; Escalation</div><ul><li>Khởi tạo cùng lúc hồ sơ được giao việc; dừng khi hoàn tất.</li><li>Còn &gt;3 ngày: Xanh • Còn 1-3 ngày: Vàng + nhắc việc.</li><li>Quá hạn: <b>slaStatus = OVERDUE</b>, workflowStatus không đổi.</li><li>Gia hạn phải có đề nghị, phê duyệt và lưu hạn cũ/mới.</li></ul><div class="support-note">Worker chạy 08:30 theo múi giờ Asia/Ho_Chi_Minh.</div></div></foreignObject>
+  <foreignObject x="1278" y="1414" width="590" height="286"><div xmlns="http://www.w3.org/1999/xhtml" class="support-card" style="border-color:#2dd4bf;background:#f0fdfa"><div class="support-title">C. Kho minh chứng / Google Drive mục tiêu</div><ul><li>Cây lưu trữ: Chuyên đề/Khách hàng/CIF/Mã lỗi.</li><li>Lưu metadata, checksum, người tải, thời điểm và phiên bản file.</li><li>Chi nhánh bổ sung khi PENDING/REJECTED; khóa sau khi nộp.</li><li>Local hiện lưu binary trên đĩa; production phải nghiệm thu Drive thật.</li></ul><div class="support-note">Mọi thao tác file đều phát sinh Audit Event.</div></div></foreignObject>
+  <foreignObject x="1896" y="1414" width="600" height="286"><div xmlns="http://www.w3.org/1999/xhtml" class="support-card" style="border-color:#a78bfa;background:#f5f3ff"><div class="support-title">D. Audit Trail &amp; Notification Outbox</div><ul><li>Ghi append-only: ai, lúc nào, role/scope, hành động, trước/sau.</li><li>Lưu lý do trả về, kết quả kiểm soát và căn cứ đóng lỗi.</li><li>Email/thông báo có outbox, retry, chống gửi trùng và delivery log.</li><li>Dashboard đọc từ dữ liệu đã áp scope, không lọc bảo mật ở UI.</li></ul><div class="support-note">Audit Trail tồn tại từ staging đến khi lưu trữ hồ sơ.</div></div></foreignObject>
+
+  <path d="M700 1010 L700 1414" stroke="#64748b" stroke-width="3" stroke-dasharray="10 10" fill="none" marker-end="url(#arrowSlate)"/>
+  <text x="714" y="1340" class="small-label">SLA bắt đầu</text>
+  <path d="M1195 710 L1195 1378 L1573 1378 L1573 1414" stroke="#64748b" stroke-width="3" stroke-dasharray="10 10" fill="none" marker-end="url(#arrowSlate)"/>
+  <text x="1360" y="1370" class="small-label">Lưu bằng chứng</text>
+  <path d="M2180 1098 L2180 1414" stroke="#64748b" stroke-width="3" stroke-dasharray="10 10" fill="none" marker-end="url(#arrowSlate)"/>
+  <text x="2194" y="1340" class="small-label">Ghi sự kiện &amp; kết thúc SLA</text>
+</svg>
+</body>
+</html>

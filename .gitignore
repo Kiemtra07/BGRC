@@ -1,0 +1,20 @@
+node_modules/
+dist/
+*.tsbuildinfo
+
+# Local runtime state and uploaded evidence (chứa dữ liệu nghiệp vụ thật)
+data/local-state.json
+data/local-state.json.tmp
+data/local-state.*.json
+data/drive_storage/
+data/evidence/
+
+# Local secrets and generated QA artifacts
+.env
+.env.*
+!.env.example
+tests/e2e/artifacts/
+
+# Local tooling / temp
+.chrome-temp/
+.superpowers/
