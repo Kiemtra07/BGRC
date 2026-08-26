@@ -71,6 +71,20 @@ describe('evidence lifecycle API', () => {
     expect(returned.statusCode).toBe(200);
     expect(returned.json().workflowStatus).toBe('REJECTED');
 
+    const uploadSession = await app.inject({
+      method: 'POST',
+      url: '/api/v1/findings/find-002/evidence/upload-session',
+      headers: { 'x-user-id': branchInputId },
+      payload: {
+        fileName: 'Biên bản kiểm tra.pdf',
+        mimeType: 'application/pdf',
+        fileSize: 10 * 1024 * 1024 + 1,
+        sha256Checksum: 'a'.repeat(64),
+      },
+    });
+    expect(uploadSession.statusCode, uploadSession.body).toBe(200);
+    expect(uploadSession.json()).toEqual({ uploadMode: 'local' });
+
     const revoked = await app.inject({
       method: 'DELETE',
       url: '/api/v1/findings/find-002/evidence/evi-001',
