@@ -22,6 +22,8 @@ import {
   BulkFindingImportSchema,
   CreateOrgUnitSchema,
   CreateUserSchema,
+  CreatedUserResponse,
+  ResetUserPasswordSchema,
   InternalRejectCommandSchema,
   InternalWaiveCommandSchema,
   PaginationQuerySchema,
@@ -785,6 +787,7 @@ interface LocalAppState {
   workspaceWatchTargets: WorkspaceTargetRecord[];
   authSessions?: AuthSessionRecord[];
   auditCampaigns?: AuditCampaign[];
+  credentials?: CredentialEntry[];
 }
 
 /**
@@ -811,6 +814,16 @@ export const DEMO_SEED_IDS = {
 } as const;
 
 interface CredentialEntry { userId: string; username: string; passwordHash: string }
+
+/**
+ * Mật khẩu tạm cấp cho tài khoản mới. Bỏ các ký tự dễ đọc nhầm (0/O, 1/l/I) vì mật khẩu này
+ * thường được đọc hoặc chép tay cho người dùng.
+ */
+function generateTemporaryPassword(): string {
+  const alphabet = 'ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789';
+  const bytes = crypto.randomBytes(20);
+  return Array.from(bytes, byte => alphabet[byte % alphabet.length]).join('');
+}
 
 /** Live credential list. Starts from the demo directory only when demo seeding is on. */
 let credentialDirectory: CredentialEntry[] = [...localCredentialDirectory];
@@ -843,9 +856,13 @@ const hydratedState = await stateRepository.load({
   orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
   importBatches, slaExtensions, reportDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
   workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
+  credentials: credentialDirectory,
 });
 orgUnits = hydratedState.orgUnits;
 appUsers = hydratedState.appUsers;
+// Mật khẩu đã lưu thắng danh sách seed: tài khoản do quản trị viên tạo phải sống qua restart.
+// Nếu state còn dữ liệu demo cũ thì nó quay lại cùng tài khoản demo — dùng npm run demo:purge để xoá hẳn.
+if (hydratedState.credentials?.length) credentialDirectory = hydratedState.credentials;
 reportChannels = hydratedState.reportChannels.map(normalizedReportChannel);
 reportChannelVersions = hydratedState.reportChannelVersions ?? [];
 if (!reportChannelVersions.length) {
@@ -1024,6 +1041,7 @@ function currentLocalState(): LocalAppState {
     orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
     importBatches, slaExtensions, reportDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
     workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
+    credentials: credentialDirectory,
   };
 }
 
@@ -1048,6 +1066,7 @@ function restoreDurableLocalState(restored: LocalAppState): void {
   authSessions = restored.authSessions ?? [];
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
+  if (restored.credentials?.length) credentialDirectory = restored.credentials;
 }
 
 const runtimeRequestLock = new RuntimeRequestLock();
@@ -2181,6 +2200,20 @@ app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: any }>) => {
     isActive: body.isActive,
     scopes,
   };
+  const normalizedUsername = newUser.username.toLocaleLowerCase('vi-VN');
+  if (credentialDirectory.some(item => item.username === normalizedUsername)) {
+    throw new HttpProblem(409, 'USER_NAME_EXISTS', 'Tên đăng nhập đã tồn tại', 'Chọn một tên đăng nhập khác.');
+  }
+  newUser.username = normalizedUsername;
+
+  // Không có mật khẩu thì tài khoản vô dụng: sinh mật khẩu tạm và trả về đúng một lần.
+  const temporaryPassword = body.password ? undefined : generateTemporaryPassword();
+  credentialDirectory.push({
+    userId: newUser.id,
+    username: normalizedUsername,
+    passwordHash: await hashPassword(body.password ?? temporaryPassword!),
+  });
+
   appUsers.push(newUser);
   if (internalTeam && body.teamRole === 'LEAD') {
     internalTeam.leaderUserId = newUser.id;
@@ -2188,7 +2221,28 @@ app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: any }>) => {
     internalTeam.updatedAt = new Date().toISOString();
   }
   await persistLocalState();
-  return newUser;
+  return { user: newUser, temporaryPassword } satisfies CreatedUserResponse;
+});
+
+/** Đặt lại mật khẩu cho một tài khoản. Trả mật khẩu tạm khi quản trị viên không tự đặt. */
+app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  requireAdmin(getCurrentUser(req));
+  const body = ResetUserPasswordSchema.parse(req.body ?? {});
+  const user = appUsers.find(item => item.id === req.params.id);
+  if (!user) {
+    throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
+  }
+  const temporaryPassword = body.password ? undefined : generateTemporaryPassword();
+  const passwordHash = await hashPassword(body.password ?? temporaryPassword!);
+  const existing = credentialDirectory.find(item => item.userId === user.id);
+  if (existing) existing.passwordHash = passwordHash;
+  else credentialDirectory.push({ userId: user.id, username: user.username.toLocaleLowerCase('vi-VN'), passwordHash });
+
+  // Đổi mật khẩu phải đá mọi phiên đang mở, nếu không người bị thu hồi vẫn dùng tiếp được.
+  authSessionStore.revokeAllForUser(user.id);
+  authSessions = authSessionStore.records();
+  await persistLocalState();
+  return { user, temporaryPassword } satisfies CreatedUserResponse;
 });
 
 // Admin: Channels

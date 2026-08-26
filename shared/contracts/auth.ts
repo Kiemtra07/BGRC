@@ -79,6 +79,11 @@ export const CreateUserSchema = z.object({
   portal: z.enum(['INTERNAL', 'BRANCH']),
   roles: z.array(UserRoleSchema).min(1),
   coplusRole: CoPlusRoleCodeSchema.optional(),
+  /**
+   * Mật khẩu ban đầu. Bỏ trống thì hệ thống sinh mật khẩu tạm và trả về đúng một lần trong
+   * phản hồi tạo tài khoản — không lưu ở dạng đọc được và không hiển thị lại lần nào nữa.
+   */
+  password: z.string().min(12, 'Mật khẩu tối thiểu 12 ký tự').max(200).optional(),
   primaryRole: UserRoleSchema,
   internalTeamId: z.string().min(1).optional(),
   teamRole: z.enum(['MEMBER', 'LEAD']).optional(),
@@ -162,3 +167,17 @@ export const CreateUserSchema = z.object({
 });
 
 export type CreateUserDTO = z.infer<typeof CreateUserSchema>;
+
+/**
+ * Tài khoản vừa tạo. `temporaryPassword` chỉ xuất hiện khi hệ thống tự sinh mật khẩu, và chỉ ở
+ * đúng phản hồi này — quản trị viên phải chuyển cho người dùng ngay, không tra cứu lại được.
+ */
+export interface CreatedUserResponse {
+  user: UserProfile;
+  temporaryPassword?: string;
+}
+
+export const ResetUserPasswordSchema = z.object({
+  password: z.string().min(12, 'Mật khẩu tối thiểu 12 ký tự').max(200).optional(),
+});
+export type ResetUserPasswordDTO = z.infer<typeof ResetUserPasswordSchema>;

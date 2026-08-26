@@ -41,8 +41,8 @@ describe('evidence lifecycle API', () => {
 
     expect(branchInput.statusCode, branchInput.body).toBe(200);
     expect(branchController.statusCode, branchController.body).toBe(200);
-    branchInputId = branchInput.json().id;
-    branchControllerId = branchController.json().id;
+    branchInputId = branchInput.json().user.id;
+    branchControllerId = branchController.json().user.id;
   });
 
   afterAll(async () => {

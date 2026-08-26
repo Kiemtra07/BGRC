@@ -230,7 +230,7 @@ describe('API security boundaries', () => {
     expect(controller.statusCode).toBe(200);
 
     const headers = {
-      'x-user-id': controller.json().id,
+      'x-user-id': controller.json().user.id,
       'idempotency-key': 'approve-find-002-once',
     };
     const payload = {

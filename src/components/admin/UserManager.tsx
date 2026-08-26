@@ -12,13 +12,13 @@ import {
   Users,
   X,
 } from 'lucide-react';
-import { CreateUserDTO, OrgUnit, UserProfile, UserRole, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
+import { CreatedUserResponse, CreateUserDTO, OrgUnit, UserProfile, UserRole, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
 import { userRoleLabels } from '../../content/ui-copy';
 
 interface Props {
   users: UserProfile[];
   orgUnits: OrgUnit[];
-  onUserCreated: (user: CreateUserDTO) => Promise<void>;
+  onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
 }
 
 type DirectoryView = 'INTERNAL' | 'GEOGRAPHY';
@@ -65,6 +65,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated })
   const [selectedBranch, setSelectedBranch] = useState('');
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [issuedCredential, setIssuedCredential] = useState<{ fullName: string; username: string; password: string } | null>(null);
 
   const internalTeams = orgUnits.filter(unit => unit.type === 'INTERNAL_TEAM' && unit.isActive);
   const clusters = orgUnits.filter(unit => unit.type === 'CLUSTER' && unit.isActive);
@@ -133,11 +134,17 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated })
     };
 
     try {
-      await onUserCreated(payload);
-      setToastMessage(`Đã thêm ${fullName}.`);
-      setTimeout(() => setToastMessage(null), 6000);
+      const created = await onUserCreated(payload);
       resetForm();
       setIsAddModalOpen(false);
+      // Mật khẩu tạm chỉ trả về đúng một lần, nên nó phải nằm lại trên màn hình cho tới khi quản
+      // trị viên tự đóng — không tự tắt sau vài giây như thông báo thường.
+      if (created.temporaryPassword) {
+        setIssuedCredential({ fullName, username: created.user.username, password: created.temporaryPassword });
+      } else {
+        setToastMessage(`Đã thêm ${fullName}.`);
+        setTimeout(() => setToastMessage(null), 6000);
+      }
     } catch (error) {
       setToastMessage(error instanceof Error ? error.message : 'Không thể tạo tài khoản.');
     }
@@ -151,6 +158,28 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated })
         <div role="status" className="flex items-center justify-between rounded-xl bg-[#006b68] p-4 text-xs font-semibold text-white shadow-lg">
           <div className="flex items-center gap-2"><Key className="h-4 w-4" /><span>{toastMessage}</span></div>
           <button type="button" aria-label="Đóng thông báo" onClick={() => setToastMessage(null)}><X className="h-4 w-4" /></button>
+        </div>
+      )}
+
+      {issuedCredential && (
+        <div role="alert" className="rounded-xl border-2 border-amber-400 bg-amber-50 p-4 shadow-lg">
+          <div className="flex items-start justify-between gap-3">
+            <div className="min-w-0">
+              <p className="flex items-center gap-2 text-xs font-black text-amber-900"><Key className="h-4 w-4" />Mật khẩu tạm của {issuedCredential.fullName}</p>
+              <p className="mt-1 text-[11px] font-semibold text-amber-800">Chỉ hiển thị lần này. Chuyển cho người dùng và yêu cầu đổi ngay sau khi đăng nhập.</p>
+              <dl className="mt-3 grid gap-2 sm:grid-cols-2">
+                <div className="rounded-lg border border-amber-300 bg-white p-2.5">
+                  <dt className="text-[9px] font-bold uppercase tracking-wide text-slate-500">Tên đăng nhập</dt>
+                  <dd className="mt-1 select-all font-mono text-sm font-bold text-slate-900">{issuedCredential.username}</dd>
+                </div>
+                <div className="rounded-lg border border-amber-300 bg-white p-2.5">
+                  <dt className="text-[9px] font-bold uppercase tracking-wide text-slate-500">Mật khẩu tạm</dt>
+                  <dd className="mt-1 select-all break-all font-mono text-sm font-bold text-slate-900">{issuedCredential.password}</dd>
+                </div>
+              </dl>
+            </div>
+            <button type="button" aria-label="Tôi đã lưu mật khẩu" onClick={() => setIssuedCredential(null)} className="shrink-0 rounded-lg p-1 text-amber-900 hover:bg-amber-100"><X className="h-4 w-4" /></button>
+          </div>
         </div>
       )}
 

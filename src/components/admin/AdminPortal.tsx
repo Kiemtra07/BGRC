@@ -9,7 +9,7 @@ import {
   Database,
   ClipboardCheck,
 } from 'lucide-react';
-import { AuditCampaign, CreateAuditCampaignDTO, CreateReportChannelDTO, CreateUserDTO, OrgUnit, UserProfile, ReportChannel, UpdateReportChannelDTO } from '../../../shared/contracts';
+import { AuditCampaign, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UserProfile, ReportChannel, UpdateReportChannelDTO } from '../../../shared/contracts';
 import { DynamicChannelManager } from './DynamicChannelManager';
 import { OrganizationManager } from './OrganizationManager';
 import { UserManager } from './UserManager';
@@ -24,7 +24,7 @@ interface Props {
   channels: ReportChannel[];
   campaigns: AuditCampaign[];
   onOrgUnitCreated: (unit: Partial<OrgUnit>) => Promise<void>;
-  onUserCreated: (user: CreateUserDTO) => Promise<void>;
+  onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
   onChannelCreated: (channel: Partial<CreateReportChannelDTO>) => Promise<void>;
   onChannelUpdated: (id: string, channel: UpdateReportChannelDTO) => Promise<void>;
   onChannelDeleted: (id: string) => Promise<void>;

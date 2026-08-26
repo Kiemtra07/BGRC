@@ -64,6 +64,22 @@ export class AuthSessionStore {
     return true;
   }
 
+  /**
+   * Thu hồi mọi phiên đang mở của một tài khoản. Dùng khi đổi hoặc đặt lại mật khẩu: nếu không,
+   * phiên cấp bằng mật khẩu cũ vẫn dùng được và việc đặt lại mật khẩu không có tác dụng bảo vệ.
+   */
+  public revokeAllForUser(userId: string): number {
+    const revokedAt = this.now().toISOString();
+    let revoked = 0;
+    for (const record of this.sessionRecords) {
+      if (record.userId !== userId || record.revokedAt) continue;
+      record.revokedAt = revokedAt;
+      revoked += 1;
+    }
+    if (revoked > 0) this.publish();
+    return revoked;
+  }
+
   public purgeExpired(): number {
     const nowMs = this.now().getTime();
     const before = this.sessionRecords.length;

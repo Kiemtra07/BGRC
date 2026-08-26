@@ -7,7 +7,7 @@ import {
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness,
-  ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO,
+  ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO, CreatedUserResponse, ResetUserPasswordDTO,
   LoginDTO, LoginResponse,
   AuditCampaign, CreateAuditCampaignDTO, UpdateAuditCampaignDTO,
 } from '../../shared/contracts';
@@ -108,8 +108,11 @@ class ApiService {
   public createOrgUnit(data: Partial<OrgUnit>): Promise<OrgUnit> {
     return this.request('/admin/org-units', { method: 'POST', body: JSON.stringify(data) });
   }
-  public createUser(data: CreateUserDTO): Promise<UserProfile> {
+  public createUser(data: CreateUserDTO): Promise<CreatedUserResponse> {
     return this.request('/admin/users', { method: 'POST', body: JSON.stringify(data) });
+  }
+  public resetUserPassword(id: string, data: ResetUserPasswordDTO = {}): Promise<CreatedUserResponse> {
+    return this.request(`/admin/users/${id}/password`, { method: 'POST', body: JSON.stringify(data) });
   }
   public createChannel(data: Partial<CreateReportChannelDTO>): Promise<ReportChannel> {
     return this.request('/admin/channels', { method: 'POST', body: JSON.stringify(data) });

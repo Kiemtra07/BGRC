@@ -72,7 +72,7 @@ describe('Admin user organization management', () => {
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({
+    expect(response.json().user).toMatchObject({
       clusterName: 'Cụm Tây Nguyên',
       branchCode: '635',
       branchName: 'Chi nhánh Nam Buôn Hồ',
@@ -137,10 +137,12 @@ describe('Admin user organization management', () => {
     });
 
     expect(first.statusCode).toBe(200);
-    expect(first.json()).toMatchObject({
+    expect(first.json().user).toMatchObject({
       internalTeamName: 'Nhóm Giám sát Tuân thủ 01',
       teamRole: 'LEAD',
     });
+    // Tài khoản tạo qua API phải đăng nhập được ngay: không truyền mật khẩu thì hệ thống cấp tạm.
+    expect(first.json().temporaryPassword).toEqual(expect.any(String));
     expect(duplicate.statusCode).toBe(409);
     expect(duplicate.json()).toMatchObject({ code: 'INTERNAL_TEAM_LEAD_EXISTS' });
   });

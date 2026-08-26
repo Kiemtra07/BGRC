@@ -79,7 +79,7 @@ describe('customer case, branch control, import and reporting', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/v1/findings/find-002/actions/branch-control-approve',
-      headers: { 'x-user-id': controller.json().id, 'idempotency-key': 'approve-own-branch-428' },
+      headers: { 'x-user-id': controller.json().user.id, 'idempotency-key': 'approve-own-branch-428' },
       payload: { expectedVersion: 2, notes: 'Hồ sơ và chứng cứ phù hợp, chuyển cán bộ kiểm tra.' },
     });
 
