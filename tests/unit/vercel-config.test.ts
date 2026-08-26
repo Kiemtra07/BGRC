@@ -14,7 +14,7 @@ describe('Vercel deployment configuration', () => {
     expect(config).toMatchObject({
       buildCommand: 'npm run build',
       outputDirectory: 'dist',
-      functions: { 'api/index.ts': { maxDuration: 60 } },
+      functions: { 'api/index.mjs': { maxDuration: 60 } },
     });
     expect(config.rewrites?.[0]).toEqual({ source: '/api/:path*', destination: '/api/index' });
     expect(config.rewrites?.[1]).toEqual({ source: '/(.*)', destination: '/index.html' });

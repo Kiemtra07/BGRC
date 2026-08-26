@@ -1,5 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
-import { buildApp } from '../server/src/app';
+import { buildApp } from './app';
 
 const serverlessApp = buildApp();
 
@@ -24,8 +24,6 @@ function appInitializationFailure(response: ServerResponse, error: unknown): voi
   }
   response.statusCode = 500;
   response.setHeader('content-type', 'application/problem+json; charset=utf-8');
-  // Kèm nguyên văn lý do: gần như luôn là thiếu biến môi trường, và không có nó thì phía trình
-  // duyệt chỉ thấy "HTTP 500" trống trơn, không lần ra được thiếu cái gì.
   response.end(JSON.stringify({
     type: 'about:blank',
     title: 'Không thể khởi tạo API',

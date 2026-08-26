@@ -1,7 +1,7 @@
 import http from 'node:http';
 import { AddressInfo } from 'node:net';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
-import handler, { getServerlessApp } from '../../api/index';
+import handler, { getServerlessApp } from '../../server/src/vercel-handler';
 
 vi.hoisted(() => {
   process.env.DATA_STORE_MODE = 'memory';

@@ -18,3 +18,7 @@ tests/e2e/artifacts/
 # Local tooling / temp
 .chrome-temp/
 .superpowers/
+
+.vercel
+.env*
+/api/index.mjs
