@@ -15,6 +15,11 @@ import {
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '');
 const API_BASE = `${configuredApiBase || '/api'}/v1`;
 
+async function sha256File(file: File): Promise<string> {
+  const digest = await crypto.subtle.digest('SHA-256', await file.arrayBuffer());
+  return [...new Uint8Array(digest)].map(byte => byte.toString(16).padStart(2, '0')).join('');
+}
+
 /**
  * Firefox ignores a click on an anchor that is not in the document, and revoking the object URL in
  * the same tick can cancel the download before the browser has read the blob.
@@ -182,6 +187,23 @@ class ApiService {
   }
 
   public async uploadEvidence(id: string, file: File): Promise<EvidenceObject> {
+    const sha256Checksum = await sha256File(file);
+    const session = await this.request<{ uploadMode: 'local' } | { uploadMode: 'google-drive'; uploadUrl: string; driveFileId: string; fileName: string; mimeType: string; fileSize: number; sha256Checksum: string }>(`/findings/${id}/evidence/upload-session`, {
+      method: 'POST',
+      body: JSON.stringify({ fileName: file.name, mimeType: file.type, fileSize: file.size, sha256Checksum }),
+    });
+    if (session.uploadMode === 'google-drive') {
+      const uploaded = await fetch(session.uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': file.type, 'Content-Range': `bytes 0-${file.size - 1}/${file.size}` },
+        body: file,
+      });
+      if (!uploaded.ok) throw new Error(`Google Drive upload failed: HTTP ${uploaded.status}`);
+      return this.request(`/findings/${id}/evidence/complete`, {
+        method: 'POST',
+        body: JSON.stringify({ driveFileId: session.driveFileId, fileName: session.fileName, mimeType: session.mimeType, fileSize: session.fileSize, sha256Checksum: session.sha256Checksum }),
+      });
+    }
     const formData = new FormData();
     formData.append('file', file);
     const res = await fetch(`${API_BASE}/findings/${id}/evidence`, { method: 'POST', credentials: 'same-origin', body: formData });

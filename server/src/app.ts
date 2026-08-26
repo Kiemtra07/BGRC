@@ -11,6 +11,8 @@ import {
   ImportBatch, 
   EvidenceObject, 
   RevokeEvidenceSchema,
+  CreateEvidenceUploadSessionSchema,
+  CompleteEvidenceDirectUploadSchema,
   canManageEvidenceAtBranch,
   WorkflowEvent,
   SlaExtensionRequest,
@@ -929,13 +931,29 @@ const STARTER_FORM_TEMPLATES: Record<string, NonNullable<ReportChannel['schemaCo
 /** Only fills channels that carry no template at all; an administrator's own config is untouched. */
 function backfillChannelFormTemplates(): boolean {
   let changed = false;
+  const starterChannelIds = new Set<string>();
   reportChannels = reportChannels.map(channel => {
     const starter = STARTER_FORM_TEMPLATES[channel.code.toUpperCase()];
+    if (!starter) return channel;
+    starterChannelIds.add(channel.id);
     const hasTemplate = (channel.schemaConfig?.formTemplate?.blocks.length ?? 0) > 0
       || (channel.schemaConfig?.fields.length ?? 0) > 0;
-    if (!starter || hasTemplate) return channel;
+    if (hasTemplate) return channel;
     changed = true;
     return { ...channel, schemaConfig: structuredClone(starter) };
+  });
+
+  // A finding resolves its form from the channel version it is pinned to, so a snapshot left
+  // without a template would keep serving the old case-review defaults. Patching it in place is
+  // correct here rather than cutting a new version: version pinning protects a finding from a later
+  // policy change, and these channels had no configuration to change — this fills a gap.
+  reportChannelVersions = reportChannelVersions.map(version => {
+    if (!starterChannelIds.has(version.channelId)) return version;
+    if ((version.snapshot.schemaConfig?.formTemplate?.blocks.length ?? 0) > 0) return version;
+    const channel = reportChannels.find(item => item.id === version.channelId);
+    if (!channel?.schemaConfig?.formTemplate) return version;
+    changed = true;
+    return { ...version, snapshot: { ...version.snapshot, schemaConfig: structuredClone(channel.schemaConfig) } };
   });
   return changed;
 }
@@ -1743,7 +1761,7 @@ export function buildReadinessPayload(
 
 app.get('/api/v1/ready', async () => buildReadinessPayload(
   await stateRepository.getStatus(),
-  googleDriveService.getStorageStatus(),
+  await googleDriveService.getStorageStatus(),
 ));
 
 function requireCronAuthorization(request: FastifyRequest): void {
@@ -2755,23 +2773,8 @@ app.post('/api/v1/findings/:id/actions/internal-reject', async (req: FastifyRequ
 // EVIDENCE & GOOGLE DRIVE API
 // ----------------------------------------------------
 
-app.post('/api/v1/findings/:id/evidence', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-  const user = getCurrentUser(req);
-  const finding = getScopedFindingOrThrow(req.params.id, user);
-  requireRoles(user, ['BRANCH_INPUT']);
-  if (!canManageEvidenceAtBranch(finding.workflowStatus)) {
-    throw new HttpProblem(409, 'EVIDENCE_LOCKED_AFTER_SUBMISSION', 'Tài liệu đã khóa', 'Chỉ được thay đổi tài liệu khi hồ sơ đang ở bước chi nhánh xử lý.');
-  }
-
-  const data = await req.file();
-  if (!data) {
-    throw new HttpProblem(422, 'EVIDENCE_REQUIRED', 'Thiếu tệp minh chứng', 'Yêu cầu phải chứa một tệp multipart.');
-  }
-
-  const buffer = await data.toBuffer();
-  const safeFileName = googleDriveService.validateUploadMetadata(data.filename, data.mimetype, buffer.length);
-  await ensureFindingDriveFolder(finding);
-  const folderPath = googleDriveService.generateFolderPath({
+function evidenceFolderPath(finding: Finding): string {
+  return googleDriveService.generateFolderPath({
     campaignCode: auditCampaigns.find(campaign => campaign.id === finding.campaignId)?.code,
     channelCode: finding.channelCode,
     year: Number((finding.auditDate || finding.createdAt).slice(0, 4)) || new Date().getFullYear(),
@@ -2781,6 +2784,59 @@ app.post('/api/v1/findings/:id/evidence', async (req: FastifyRequest<{ Params: {
     customerName: finding.customerName,
     errorCode: finding.errorCode,
   });
+}
+
+function requireEvidenceUploadAccess(req: FastifyRequest, findingId: string): { user: UserProfile; finding: Finding } {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(findingId, user);
+  requireRoles(user, ['BRANCH_INPUT']);
+  if (!canManageEvidenceAtBranch(finding.workflowStatus)) throw new HttpProblem(409, 'EVIDENCE_LOCKED_AFTER_SUBMISSION', 'Tài liệu đã khóa', 'Chỉ được thay đổi tài liệu khi hồ sơ đang ở bước chi nhánh xử lý.');
+  return { user, finding };
+}
+
+function registerEvidence(finding: Finding, user: UserProfile, uploadResult: { driveFileId: string; driveUrl: string; sha256Checksum: string; fileSize: number; mimeType: string }, fileName: string): EvidenceObject {
+  const duplicate = evidences.find(item => item.findingId === finding.id && item.driveFileId === uploadResult.driveFileId && item.status === 'AVAILABLE');
+  if (duplicate) return duplicate;
+  const now = new Date().toISOString();
+  const evidence: EvidenceObject = {
+    id: `evi-${crypto.randomUUID()}`, findingId: finding.id, fileName, fileSize: uploadResult.fileSize, mimeType: uploadResult.mimeType,
+    driveFileId: uploadResult.driveFileId, driveUrl: uploadResult.driveUrl, sha256Checksum: uploadResult.sha256Checksum,
+    status: 'AVAILABLE', uploadedByUserId: user.id, uploadedByName: user.fullName, uploadedByRole: user.primaryRole, versionNumber: 1, createdAt: now, updatedAt: now,
+  };
+  evidences.push(evidence);
+  finding.evidenceCount = availableEvidencesForFinding(finding.id).length;
+  return evidence;
+}
+
+app.post('/api/v1/findings/:id/evidence/upload-session', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  const { finding } = requireEvidenceUploadAccess(req, req.params.id);
+  const dto = CreateEvidenceUploadSessionSchema.parse(req.body);
+  const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
+  if ((await googleDriveService.getStorageStatus()).mode !== 'google-drive') return { uploadMode: 'local' as const };
+  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+});
+
+app.post('/api/v1/findings/:id/evidence/complete', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  const { user, finding } = requireEvidenceUploadAccess(req, req.params.id);
+  const dto = CompleteEvidenceDirectUploadSchema.parse(req.body);
+  const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
+  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const evidence = registerEvidence(finding, user, uploadResult, fileName);
+  await persistLocalState();
+  return evidence;
+});
+
+app.post('/api/v1/findings/:id/evidence', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const { user, finding } = requireEvidenceUploadAccess(req, req.params.id);
+
+  const data = await req.file();
+  if (!data) {
+    throw new HttpProblem(422, 'EVIDENCE_REQUIRED', 'Thiếu tệp minh chứng', 'Yêu cầu phải chứa một tệp multipart.');
+  }
+
+  const buffer = await data.toBuffer();
+  const safeFileName = googleDriveService.validateUploadMetadata(data.filename, data.mimetype, buffer.length);
+  const folderPath = evidenceFolderPath(finding);
 
   const uploadResult = await googleDriveService.uploadEvidenceFile({
     fileName: safeFileName,
@@ -2790,26 +2846,7 @@ app.post('/api/v1/findings/:id/evidence', async (req: FastifyRequest<{ Params: {
     findingId: finding.id,
   });
 
-  const newEvidence: EvidenceObject = {
-    id: `evi-${crypto.randomUUID()}`,
-    findingId: finding.id,
-    fileName: safeFileName,
-    fileSize: uploadResult.fileSize,
-    mimeType: uploadResult.mimeType,
-    driveFileId: uploadResult.driveFileId,
-    driveUrl: uploadResult.driveUrl,
-    sha256Checksum: uploadResult.sha256Checksum,
-    status: 'AVAILABLE',
-    uploadedByUserId: user.id,
-    uploadedByName: user.fullName,
-    uploadedByRole: user.primaryRole,
-    versionNumber: 1,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-
-  evidences.push(newEvidence);
-  finding.evidenceCount = availableEvidencesForFinding(finding.id).length;
+  const newEvidence = registerEvidence(finding, user, uploadResult, safeFileName);
   await persistLocalState();
 
   return newEvidence;
@@ -3114,8 +3151,7 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
   if (env.DATA_STORE_MODE !== 'postgres' || !env.DATABASE_URL) violations.push('DATA_STORE_MODE=postgres và DATABASE_URL là bắt buộc');
   if (!env.CRON_SECRET) violations.push('thiếu CRON_SECRET');
   if (env.EVIDENCE_STORAGE_MODE !== 'google-drive') violations.push('EVIDENCE_STORAGE_MODE phải là google-drive');
-  if (!env.GOOGLE_SERVICE_ACCOUNT_KEY || !env.GOOGLE_DRIVE_ROOT_FOLDER_ID) violations.push('thiếu cấu hình Google Drive');
-  violations.push('Google Drive API v3 adapter production chưa hoàn tất');
+  if (!(env.GOOGLE_SERVICE_ACCOUNT_JSON || env.GOOGLE_SERVICE_ACCOUNT_KEY) || !env.GOOGLE_DRIVE_ROOT_FOLDER_ID) violations.push('thiếu cấu hình Google Drive');
   if (violations.length > 0) {
     throw new Error(`UNSAFE_PRODUCTION_CONFIGURATION: ${violations.join('; ')}`);
   }

@@ -256,4 +256,25 @@ describe('UI and business terminology architecture', () => {
     expect(deploymentGuide).toContain('data/local-state.json');
     expect(deploymentGuide).toContain('chưa đủ điều kiện production');
   });
+
+  it('routes each report type to the capture screen its presentation mode calls for', () => {
+    const app = read('src/App.tsx');
+    const grid = read('src/components/reports/FindingGridWorkspace.tsx');
+
+    // The tabular screen is selected by the channel's configured mode, not hard-coded per channel.
+    expect(app).toContain("presentationMode === 'EXCEL_GRID'");
+    expect(app).toContain('<FindingGridWorkspace');
+
+    // A report type that requires evidence must not be completable from the grid: the file has to
+    // be attached against the hồ sơ first, which is only possible on the case screen.
+    expect(grid).toContain('finding.evidenceRequired !== false');
+    expect(grid).toContain('Cần đính kèm tài liệu tại hồ sơ');
+    expect(grid).toContain('không đẩy duyệt được từ bảng');
+
+    // Bulk actions reuse the versioned single-finding commands so a partial failure is reportable.
+    for (const command of ['api.submitBranch', 'api.branchControlApprove', 'api.branchControlReject', 'api.internalWaive', 'api.internalReject']) {
+      expect(grid).toContain(command);
+    }
+    expect(grid).toContain('expectedVersion: finding.version');
+  });
 });

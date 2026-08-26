@@ -7,7 +7,7 @@ describe('runtime safety gate', () => {
     expect(() => assertSafeRuntimeConfiguration({ NODE_ENV: 'development' })).not.toThrow();
   });
 
-  it('no longer reports the completed Postgres cutover as a production blocker', () => {
+  it('accepts configured Postgres and Drive API v3, while retaining the cron-secret gate', () => {
     let message = '';
     try {
       assertSafeRuntimeConfiguration({
@@ -24,8 +24,8 @@ describe('runtime safety gate', () => {
     } catch (error) {
       message = error instanceof Error ? error.message : String(error);
     }
-    expect(message).toMatch(/Google Drive API v3/i);
     expect(message).toMatch(/CRON_SECRET/i);
+    expect(message).not.toMatch(/Google Drive API v3/i);
     expect(message).not.toMatch(/local JSON repository/i);
   });
 
