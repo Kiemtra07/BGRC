@@ -1,7 +1,7 @@
 import {
   UserProfile, Finding, CustomerCase, ReportChannel, OrgUnit, DashboardSummary, ReportSummary,
   SubmitBranchCommandDTO, BranchControlApproveCommandDTO, BranchControlRejectCommandDTO,
-  BranchLeaderApproveCommandDTO, BranchLeaderRejectCommandDTO, SetFindingApprovalRouteDTO,
+  BranchLeaderApproveCommandDTO, BranchLeaderRejectCommandDTO, SetFindingSpecialCaseDTO,
   InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO,
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, ReportFilterQuery,
   AuditLogEntry, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
@@ -171,8 +171,9 @@ class ApiService {
   }
   public getFindingById(id: string): Promise<Finding> { return this.request(`/findings/${id}`); }
   public getApprovalCandidates(id: string): Promise<FindingApprovalCandidates> { return this.request(`/findings/${id}/approval-candidates`); }
-  public setApprovalRoute(id: string, dto: SetFindingApprovalRouteDTO): Promise<Finding> {
-    return this.request(`/findings/${id}/approval-route`, { method: 'PUT', body: JSON.stringify(dto) });
+  /** Bật/tắt dấu sao "trường hợp đặc biệt". Tuyến duyệt được suy tự động từ cờ này khi nộp hồ sơ. */
+  public setSpecialCase(id: string, dto: SetFindingSpecialCaseDTO): Promise<Finding> {
+    return this.request(`/findings/${id}/special-case`, { method: 'PUT', body: JSON.stringify(dto) });
   }
   public getMyWork = (): Promise<MyWorkQueue> => this.request('/workspace/my-work');
   public followFinding = (id: string): Promise<FindingFollowResult> => this.request(`/findings/${id}/follow`, { method: 'PUT' });

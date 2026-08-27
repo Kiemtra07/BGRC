@@ -3,6 +3,7 @@ import { WorkflowStatus, UserRole } from './common';
 
 export const workflowCommands = [
   'SET_APPROVAL_ROUTE',
+  'SET_SPECIAL_CASE',
   'SUBMIT_BRANCH',
   'BRANCH_CONTROL_APPROVE',
   'BRANCH_CONTROL_REJECT',
@@ -61,17 +62,15 @@ export const BranchLeaderRejectCommandSchema = z.object({
 });
 export type BranchLeaderRejectCommandDTO = z.infer<typeof BranchLeaderRejectCommandSchema>;
 
-export const SetFindingApprovalRouteSchema = z.object({
-  branchControllerUserId: z.string().trim().min(1),
-  branchLeaderUserId: z.string().trim().min(1).optional(),
-  internalApproverUserId: z.string().trim().min(1).optional(),
-  requiresBranchLeaderApproval: z.boolean(),
-}).superRefine((value, context) => {
-  if (value.requiresBranchLeaderApproval && !value.branchLeaderUserId) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['branchLeaderUserId'], message: 'Cần chọn lãnh đạo chi nhánh cho tuyến duyệt này.' });
-  }
+/**
+ * Cờ "dấu sao" đánh dấu hồ sơ thuộc trường hợp đặc biệt (lỗi / khách hàng đặc biệt). Bật cờ này
+ * là cách duy nhất để chèn bước Lãnh đạo chi nhánh phê duyệt bắt buộc vào tuyến duyệt hai cấp —
+ * không còn chọn tay người duyệt hay tick "Yêu cầu Lãnh đạo CN" trên từng hồ sơ.
+ */
+export const SetFindingSpecialCaseSchema = z.object({
+  isSpecialCase: z.boolean(),
 });
-export type SetFindingApprovalRouteDTO = z.infer<typeof SetFindingApprovalRouteSchema>;
+export type SetFindingSpecialCaseDTO = z.infer<typeof SetFindingSpecialCaseSchema>;
 
 export const InternalWaiveCommandSchema = z.object({
   expectedVersion: z.number().int().min(1),

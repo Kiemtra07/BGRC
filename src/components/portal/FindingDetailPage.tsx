@@ -5,7 +5,7 @@ import {
   RefreshCw, ShieldCheck, Star, Trash2, UploadCloud, XCircle,
 } from 'lucide-react';
 import { RiskLevel, businessLineLabels, canManageEvidenceAtBranch, EvidenceObject, Finding, MyWorkQueue, riskLevelLabels, UserProfile, WorkspaceTargetCommandDTO, WorkspaceTargetType } from '../../../shared/contracts';
-import { api, FindingApprovalCandidates } from '../../services/api';
+import { api } from '../../services/api';
 import { slaStatusLabels, workflowActionLabels, workflowEventLabels, workflowStatusLabels } from '../../content/ui-copy';
 import { EvidenceViewer } from '../evidence/EvidenceViewer';
 
@@ -73,11 +73,6 @@ export const FindingDetailPage: React.FC<Props> = ({
   const [acceptedSubItemIds, setAcceptedSubItemIds] = useState<Set<string>>(new Set());
   const [newSubItem, setNewSubItem] = useState('');
   const [reviewNote, setReviewNote] = useState('');
-  const [approvalCandidates, setApprovalCandidates] = useState<FindingApprovalCandidates | null>(null);
-  const [selectedControllerId, setSelectedControllerId] = useState('');
-  const [selectedLeaderId, setSelectedLeaderId] = useState('');
-  const [selectedInternalApproverId, setSelectedInternalApproverId] = useState('');
-  const [requiresLeaderApproval, setRequiresLeaderApproval] = useState(false);
 
   const finding = useMemo(() => items.find(item => item.id === selectedId) || items[0], [items, selectedId]);
   const isBranchInput = currentUser.roles.includes('BRANCH_INPUT');
@@ -85,7 +80,7 @@ export const FindingDetailPage: React.FC<Props> = ({
   const isBranchLeader = currentUser.roles.includes('BRANCH_LEADER');
   const isInternalReviewer = currentUser.roles.some(role => ['SUPERVISOR', 'INTERNAL_APPROVER'].includes(role));
   const canManageWorkspace = currentUser.roles.some(role => ['INTERNAL_OFFICER', 'SUPERVISOR', 'INTERNAL_APPROVER', 'BRANCH_INPUT', 'BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(role));
-  const canConfigureApprovalRoute = currentUser.roles.some(role => ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'BRANCH_INPUT'].includes(role));
+  const canFlagSpecialCase = currentUser.roles.some(role => ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'BRANCH_INPUT'].includes(role));
   const canAddSubItems = currentUser.roles.some(role => ['INTERNAL_OFFICER', 'SUPERVISOR'].includes(role));
   const canReviewSubItems = (finding?.workflowStatus === 'SUBMITTED_BRANCH' && isBranchController)
     || (finding?.workflowStatus === 'SUBMITTED_BRANCH_LEADER' && isBranchLeader)
@@ -103,22 +98,7 @@ export const FindingDetailPage: React.FC<Props> = ({
     setReviewNote('');
     setNewSubItem('');
     setPendingEvidenceRemovalId(null);
-    setSelectedControllerId(finding?.approvalRoute?.branchControllerUserId || '');
-    setSelectedLeaderId(finding?.approvalRoute?.branchLeaderUserId || '');
-    setSelectedInternalApproverId(finding?.approvalRoute?.internalApproverUserId || '');
-    setRequiresLeaderApproval(finding?.approvalRoute?.requiresBranchLeaderApproval || false);
   }, [finding?.id, finding?.subItems]);
-
-  useEffect(() => {
-    if (!finding || !canConfigureApprovalRoute || !['PENDING', 'REJECTED'].includes(finding.workflowStatus)) {
-      setApprovalCandidates(null);
-      return;
-    }
-    let active = true;
-    api.getApprovalCandidates(finding.id).then(candidates => active && setApprovalCandidates(candidates))
-      .catch(reason => active && setError(reason instanceof Error ? reason.message : 'Không thể tải danh sách người duyệt.'));
-    return () => { active = false; };
-  }, [finding?.id, finding?.workflowStatus, canConfigureApprovalRoute]);
 
   useEffect(() => {
     if (!finding) return;
@@ -160,21 +140,15 @@ export const FindingDetailPage: React.FC<Props> = ({
     }
   };
 
-  const saveApprovalRoute = async () => {
-    if (!selectedControllerId) return;
+  const toggleSpecialCase = async (isSpecialCase: boolean) => {
     try {
       setBusy(true);
       setError(null);
-      const updated = await api.setApprovalRoute(finding.id, {
-        branchControllerUserId: selectedControllerId,
-        branchLeaderUserId: requiresLeaderApproval ? selectedLeaderId || undefined : undefined,
-        internalApproverUserId: selectedInternalApproverId || undefined,
-        requiresBranchLeaderApproval: requiresLeaderApproval,
-      });
+      const updated = await api.setSpecialCase(finding.id, { isSpecialCase });
       setItems(previous => previous.map(item => item.id === updated.id ? updated : item));
       onFindingUpdated(updated);
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Không thể lưu tuyến duyệt.');
+      setError(reason instanceof Error ? reason.message : 'Không thể cập nhật dấu sao trường hợp đặc biệt.');
     } finally {
       setBusy(false);
     }
@@ -432,33 +406,20 @@ export const FindingDetailPage: React.FC<Props> = ({
             {finding.dynamicPayload && Object.keys(finding.dynamicPayload).length > 0 && <section className="overflow-hidden rounded-xl border border-slate-200" aria-label="Dữ liệu báo cáo"><h3 className="bg-slate-50 px-3 py-2 text-xs font-black text-slate-800">Dữ liệu báo cáo</h3><dl className={`grid gap-px bg-slate-200 ${finding.presentationMode === 'EXCEL_GRID' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>{Object.entries(finding.dynamicPayload).map(([key, value]) => <div key={key} className="bg-white p-3"><dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{key.replace(/_/g, ' ')}</dt><dd className="mt-1 text-xs font-semibold text-slate-800">{String(value ?? '')}</dd></div>)}</dl></section>}
             {evidenceRequired && !hasAvailableEvidence && ['PENDING', 'REJECTED', 'SUBMITTED_BRANCH', 'SUBMITTED_BRANCH_LEADER', 'SUBMITTED_INTERNAL'].includes(finding.workflowStatus) && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-800">Cần ít nhất một tài liệu hợp lệ trước khi chuyển bước.</div>}
 
-            {approvalCandidates && (finding.workflowStatus === 'PENDING' || finding.workflowStatus === 'REJECTED') && <ActionPanel title="Tuyến duyệt hồ sơ">
-              <p className="text-xs leading-5 text-slate-600">Chọn đúng người theo từng cấp. Tuyến được lưu cùng hồ sơ và khóa sau khi nộp.</p>
-              <label className="block text-xs font-bold text-slate-700">Kiểm soát chi nhánh
-                <select value={selectedControllerId} onChange={event => setSelectedControllerId(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-xs focus:border-[#006b68] focus:outline-none">
-                  <option value="">Chọn người kiểm soát</option>
-                  {approvalCandidates.branchControllers.map(user => <option key={user.id} value={user.id}>{user.fullName} · {user.department || user.branchName}</option>)}
-                </select>
+            {canFlagSpecialCase && (finding.workflowStatus === 'PENDING' || finding.workflowStatus === 'REJECTED') && <ActionPanel title="Dấu sao — trường hợp đặc biệt (lỗi/KH đặc biệt)">
+              <p className="text-xs leading-5 text-slate-600">Tuyến duyệt lấy tự động theo cấu hình loại báo cáo và phân quyền vai trò trong chi nhánh. Bật dấu sao để chèn bước Lãnh đạo chi nhánh phê duyệt bắt buộc trước khi hồ sơ lên Hội sở. Chỉ đổi được trước bước Kiểm soát chi nhánh.</p>
+              <label className={`flex items-start gap-3 rounded-xl border p-3 ${finding.isSpecialCase ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}>
+                <input type="checkbox" checked={Boolean(finding.isSpecialCase)} disabled={busy} onChange={event => toggleSpecialCase(event.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-amber-500" />
+                <span className="min-w-0">
+                  <span className="flex items-center gap-1.5 text-xs font-black text-slate-900"><Star className={`h-3.5 w-3.5 ${finding.isSpecialCase ? 'fill-amber-400 text-amber-500' : 'text-slate-400'}`} />Trường hợp đặc biệt</span>
+                  <span className="mt-1 block text-[11px] leading-4 text-slate-600">{finding.isSpecialCase ? 'Tuyến: Chi nhánh → Kiểm soát CN → Lãnh đạo CN (phê duyệt bắt buộc) → Hội sở.' : 'Tuyến: Chi nhánh → Kiểm soát CN → Hội sở (bỏ qua Lãnh đạo CN).'}</span>
+                </span>
               </label>
-              <label className="flex items-center gap-2 text-xs font-bold text-slate-700"><input type="checkbox" checked={requiresLeaderApproval} onChange={event => setRequiresLeaderApproval(event.target.checked)} /> Yêu cầu Lãnh đạo chi nhánh phê duyệt</label>
-              {requiresLeaderApproval && <label className="block text-xs font-bold text-slate-700">Lãnh đạo chi nhánh
-                <select value={selectedLeaderId} onChange={event => setSelectedLeaderId(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-xs focus:border-[#006b68] focus:outline-none">
-                  <option value="">Chọn lãnh đạo chi nhánh</option>
-                  {approvalCandidates.branchLeaders.map(user => <option key={user.id} value={user.id}>{user.fullName} · {user.department || user.branchName}</option>)}
-                </select>
-              </label>}
-              <label className="block text-xs font-bold text-slate-700">Người duyệt nội bộ <span className="font-normal text-slate-500">(nếu phân công đích danh)</span>
-                <select value={selectedInternalApproverId} onChange={event => setSelectedInternalApproverId(event.target.value)} className="mt-1 min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-xs focus:border-[#006b68] focus:outline-none">
-                  <option value="">Theo phân quyền nội bộ</option>
-                  {approvalCandidates.internalApprovers.map(user => <option key={user.id} value={user.id}>{user.fullName} · {user.department || user.primaryRole}</option>)}
-                </select>
-              </label>
-              <button disabled={busy || !selectedControllerId || (requiresLeaderApproval && !selectedLeaderId)} onClick={saveApprovalRoute} className="flex min-h-11 w-full items-center justify-center rounded-xl border border-[#006b68] bg-white px-4 py-3 text-xs font-bold text-[#006b68] disabled:opacity-50">Lưu tuyến duyệt</button>
             </ActionPanel>}
 
             {(finding.workflowStatus === 'PENDING' || finding.workflowStatus === 'REJECTED') && isBranchInput && <ActionPanel title="Chi nhánh khắc phục">
               <textarea value={resolutionNotes} onChange={event => setResolutionNotes(event.target.value)} rows={4} placeholder="Nêu rõ nội dung đã khắc phục, tài liệu và ngày hoàn thành..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-[#006b68] focus:outline-none focus:ring-2 focus:ring-[#006b68]/15" />
-              <button disabled={busy || !hasAvailableEvidence || resolutionNotes.trim().length < 5 || !finding.approvalRoute?.branchControllerUserId} onClick={() => commit(() => api.submitBranch(finding.id, { expectedVersion: finding.version, resolutionNotes }))} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.submitBranch} <ArrowRight className="h-4 w-4" /></button>
+              <button disabled={busy || !hasAvailableEvidence || resolutionNotes.trim().length < 5} onClick={() => commit(() => api.submitBranch(finding.id, { expectedVersion: finding.version, resolutionNotes }))} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.submitBranch} <ArrowRight className="h-4 w-4" /></button>
             </ActionPanel>}
 
             {finding.workflowStatus === 'SUBMITTED_BRANCH' && isBranchController && <ActionPanel title="Kiểm soát chi nhánh">

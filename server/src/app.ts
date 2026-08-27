@@ -31,7 +31,8 @@ import {
   InternalWaiveCommandSchema,
   PaginationQuerySchema,
   SubmitBranchCommandSchema,
-  SetFindingApprovalRouteSchema,
+  SetFindingSpecialCaseSchema,
+  FindingApprovalRoute,
   WebFormFindingSchema,
   WebFormFindingDTO,
   ReportSummary,
@@ -1205,6 +1206,25 @@ function backfillFindingProvenance(): boolean {
   return changed;
 }
 
+/**
+ * Dữ liệu cũ ghim tuyến duyệt qua cờ tay `approvalRoute.requiresBranchLeaderApproval`. Mô hình mới
+ * suy tuyến từ dấu sao `isSpecialCase`, nên map cờ cũ sang dấu sao tương ứng cho hồ sơ chưa có.
+ */
+function normalizeFindingSpecialCase(finding: Finding): Finding {
+  if (typeof finding.isSpecialCase === 'boolean') return finding;
+  return { ...finding, isSpecialCase: Boolean(finding.approvalRoute?.requiresBranchLeaderApproval) };
+}
+
+function backfillFindingSpecialCase(): boolean {
+  let changed = false;
+  findings = findings.map(finding => {
+    const normalized = normalizeFindingSpecialCase(finding);
+    if (normalized !== finding) changed = true;
+    return normalized;
+  });
+  return changed;
+}
+
 function currentLocalState(): LocalAppState {
   return {
     orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
@@ -1222,7 +1242,7 @@ function restoreDurableLocalState(restored: LocalAppState): void {
   appUsers = restored.appUsers;
   reportChannels = restored.reportChannels;
   reportChannelVersions = restored.reportChannelVersions ?? [];
-  findings = restored.findings.map(ensureFindingSubItems);
+  findings = restored.findings.map(finding => ensureFindingSubItems(normalizeFindingSpecialCase(finding)));
   workflowEvents = restored.workflowEvents;
   evidences = restored.evidences;
   importBatches = restored.importBatches;
@@ -1438,6 +1458,7 @@ if ([
   backfillUserCoPlusIdentity(),
   backfillChannelFormTemplates(),
   backfillFindingProvenance(),
+  backfillFindingSpecialCase(),
   await bootstrapAdministratorFromEnvironment(),
 ].some(Boolean)) await persistLocalState();
 
@@ -1587,29 +1608,30 @@ function approvalCandidatesForFinding(finding: Finding) {
   };
 }
 
-function assertApprovalRouteCandidates(
+/**
+ * Suy tuyến duyệt tự động khi chi nhánh nộp hồ sơ: người kiểm soát và (khi cần) lãnh đạo chi nhánh
+ * lấy theo vai trò trong phạm vi chi nhánh của hồ sơ; người duyệt Hội sở để trống để resolve theo
+ * phân quyền nội bộ. `requiresBranchLeaderApproval` suy từ dấu sao (isSpecialCase) hoặc loại báo cáo
+ * ba cấp. Thiếu người theo scope thì để trống — bước đó chạy theo phân quyền như mặc định, không
+ * chặn nộp hồ sơ.
+ */
+function resolveApprovalRoute(
   finding: Finding,
+  workflowType: 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER',
   actor: UserProfile,
-  route: { branchControllerUserId: string; branchLeaderUserId?: string; internalApproverUserId?: string; requiresBranchLeaderApproval: boolean },
-): void {
+): FindingApprovalRoute {
   const candidates = approvalCandidatesForFinding(finding);
-  const controller = candidates.branchControllers.find(user => user.id === route.branchControllerUserId);
-  if (!controller) {
-    throw new HttpProblem(422, 'ROUTE_CONTROLLER_INVALID', 'Người kiểm soát không hợp lệ', 'Chỉ được chọn Kiểm soát chi nhánh đang hoạt động cùng chi nhánh của hồ sơ.');
-  }
-  if (route.requiresBranchLeaderApproval && !candidates.branchLeaders.some(user => user.id === route.branchLeaderUserId)) {
-    throw new HttpProblem(422, 'ROUTE_LEADER_INVALID', 'Lãnh đạo chi nhánh không hợp lệ', 'Cần chọn Lãnh đạo chi nhánh đang hoạt động cùng chi nhánh của hồ sơ.');
-  }
-  if (route.internalApproverUserId && !candidates.internalApprovers.some(user => user.id === route.internalApproverUserId)) {
-    throw new HttpProblem(422, 'ROUTE_INTERNAL_APPROVER_INVALID', 'Người duyệt nội bộ không hợp lệ', 'Chỉ được chọn người duyệt nội bộ hoặc lãnh đạo đang hoạt động.');
-  }
-  const selectedIds = [route.branchControllerUserId, route.branchLeaderUserId, route.internalApproverUserId].filter(Boolean) as string[];
-  if (new Set(selectedIds).size !== selectedIds.length) {
-    throw new HttpProblem(422, 'ROUTE_APPROVERS_MUST_DIFFER', 'Tuyến duyệt không hợp lệ', 'Mỗi cấp duyệt phải là một người khác nhau.');
-  }
-  if (selectedIds.includes(actor.id)) {
-    throw new HttpProblem(422, 'ROUTE_SELF_APPROVAL_FORBIDDEN', 'Không được tự duyệt', 'Người thiết lập tuyến duyệt không thể chọn chính mình làm người duyệt cho hồ sơ này.');
-  }
+  const requiresBranchLeaderApproval = workflowType === 'THREE_TIER' || Boolean(finding.isSpecialCase);
+  const pick = (users: UserProfile[]): string | undefined =>
+    (users.find(user => user.id !== actor.id) ?? users[0])?.id;
+  return {
+    branchControllerUserId: pick(candidates.branchControllers),
+    branchLeaderUserId: requiresBranchLeaderApproval ? pick(candidates.branchLeaders) : undefined,
+    internalApproverUserId: undefined,
+    requiresBranchLeaderApproval,
+    assignedByUserId: actor.id,
+    assignedAt: new Date().toISOString(),
+  };
 }
 
 function availableEvidencesForFinding(findingId: string): EvidenceObject[] {
@@ -3445,33 +3467,41 @@ app.get('/api/v1/findings/:id/approval-candidates', async (req: FastifyRequest<{
   return approvalCandidatesForFinding(finding);
 });
 
-app.put('/api/v1/findings/:id/approval-route', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+// Dấu sao — đánh dấu hồ sơ thuộc trường hợp đặc biệt. Chỉ đổi được trước bước Kiểm soát chi nhánh
+// (khi hồ sơ đang chờ khắc phục hoặc đã bị trả về); sau đó khóa cùng tuyến duyệt.
+app.put('/api/v1/findings/:id/special-case', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
-  requireRoles(user, ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'BRANCH_INPUT']);
+  requireRoles(user, ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'BRANCH_INPUT']);
   if (finding.workflowStatus !== 'PENDING' && finding.workflowStatus !== 'REJECTED') {
-    throw new HttpProblem(409, 'ROUTE_LOCKED_AFTER_SUBMISSION', 'Tuyến duyệt đã khóa', 'Chỉ được thay đổi người duyệt khi hồ sơ đang chờ hoặc đã bị trả về.');
+    throw new HttpProblem(409, 'SPECIAL_CASE_LOCKED_AFTER_SUBMISSION', 'Dấu sao đã khóa', 'Chỉ đánh dấu trường hợp đặc biệt khi hồ sơ đang chờ khắc phục hoặc đã bị trả về.');
   }
-  const route = SetFindingApprovalRouteSchema.parse(req.body);
-  assertApprovalRouteCandidates(finding, user, route);
+  const dto = SetFindingSpecialCaseSchema.parse(req.body);
   const now = new Date().toISOString();
-  finding.approvalRoute = { ...route, assignedByUserId: user.id, assignedAt: now };
+  finding.isSpecialCase = dto.isSpecialCase;
   finding.version += 1;
   finding.updatedAt = now;
   workflowEvents.push({
     id: `evt-${crypto.randomUUID()}`,
     findingId: finding.id,
-    command: 'SET_APPROVAL_ROUTE',
+    command: 'SET_SPECIAL_CASE',
     fromStatus: finding.workflowStatus,
     toStatus: finding.workflowStatus,
     actorUserId: user.id,
     actorName: user.fullName,
     actorRole: user.primaryRole,
-    notes: `Đã chọn tuyến duyệt: Kiểm soát ${route.branchControllerUserId}${route.requiresBranchLeaderApproval ? `, Lãnh đạo ${route.branchLeaderUserId}` : ''}${route.internalApproverUserId ? `, Nội bộ ${route.internalApproverUserId}` : ''}.`,
+    notes: dto.isSpecialCase
+      ? 'Đánh dấu trường hợp đặc biệt: bổ sung bước Lãnh đạo chi nhánh phê duyệt bắt buộc trước khi lên Hội sở.'
+      : 'Bỏ đánh dấu trường hợp đặc biệt: Kiểm soát chi nhánh chuyển thẳng lên Hội sở.',
     createdAt: now,
   });
   await persistLocalState();
-  return finding;
+  return {
+    ...finding,
+    evidenceCount: availableEvidencesForFinding(finding.id).length,
+    evidences: availableEvidencesForFinding(finding.id),
+    history: workflowEvents.filter(event => event.findingId === finding.id),
+  };
 });
 
 // 1. Submit Branch (Branch nộp hồ sơ)
@@ -3493,11 +3523,10 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
       ?? 'TWO_TIER';
     // Preserve the evidence gate as the first actionable error for branch users.
     requireAvailableEvidence(finding);
-    if (workflowType !== 'ONE_TIER' && !finding.approvalRoute?.branchControllerUserId) {
-      throw new HttpProblem(422, 'ROUTE_CONTROLLER_REQUIRED', 'Thiếu tuyến duyệt', 'Cần chọn người kiểm soát chi nhánh trước khi nộp hồ sơ.');
-    }
-    if (workflowType === 'THREE_TIER' && !finding.approvalRoute?.requiresBranchLeaderApproval) {
-      throw new HttpProblem(422, 'ROUTE_LEADER_REQUIRED', 'Thiếu tuyến duyệt', 'Quy trình ba cấp yêu cầu chọn Lãnh đạo chi nhánh trước khi nộp hồ sơ.');
+    // Tuyến duyệt suy tự động theo cấu hình loại báo cáo + phân quyền vai trò trong chi nhánh;
+    // dấu sao (isSpecialCase) là thứ quyết định có chèn bước Lãnh đạo chi nhánh hay không.
+    if (workflowType !== 'ONE_TIER') {
+      finding.approvalRoute = resolveApprovalRoute(finding, workflowType, user);
     }
     const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     Object.assign(finding, updated);

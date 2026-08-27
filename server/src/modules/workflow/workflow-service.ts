@@ -141,9 +141,14 @@ export class WorkflowCommandService {
       throw new Error(`409: VERSION_CONFLICT — Version conflict (${finding.version} != ${dto.expectedVersion})`);
     }
 
+    // Dấu sao (hoặc tuyến ba cấp đã ghim requiresBranchLeaderApproval) chèn bước Lãnh đạo chi nhánh
+    // phê duyệt bắt buộc; ngược lại Kiểm soát chi nhánh chuyển thẳng lên Hội sở.
+    const routeThroughBranchLeader = Boolean(
+      finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase,
+    );
     const updated: Finding = {
       ...finding,
-      workflowStatus: finding.approvalRoute?.requiresBranchLeaderApproval ? 'SUBMITTED_BRANCH_LEADER' : 'SUBMITTED_INTERNAL',
+      workflowStatus: routeThroughBranchLeader ? 'SUBMITTED_BRANCH_LEADER' : 'SUBMITTED_INTERNAL',
       version: finding.version + 1,
       updatedAt: new Date().toISOString(),
     };

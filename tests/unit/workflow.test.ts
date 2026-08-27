@@ -145,6 +145,32 @@ describe('WorkflowCommandService (P0 Decision Invariants)', () => {
     expect(updated.workflowStatus).toBe('SUBMITTED_BRANCH_LEADER');
   });
 
+  it('CÓ dấu sao: Kiểm soát chi nhánh chuyển hồ sơ qua Lãnh đạo chi nhánh trước khi lên Hội sở', () => {
+    const findingInBranch: Finding = {
+      ...initialFinding,
+      workflowStatus: 'SUBMITTED_BRANCH',
+      version: 2,
+      isSpecialCase: true,
+    };
+
+    const updated = service.executeBranchControlApprove(findingInBranch, { expectedVersion: 2 }, mockBranchController);
+
+    expect(updated.workflowStatus).toBe('SUBMITTED_BRANCH_LEADER');
+  });
+
+  it('KHÔNG dấu sao: Kiểm soát chi nhánh chuyển thẳng lên Hội sở, bỏ qua Lãnh đạo chi nhánh', () => {
+    const findingInBranch: Finding = {
+      ...initialFinding,
+      workflowStatus: 'SUBMITTED_BRANCH',
+      version: 2,
+      isSpecialCase: false,
+    };
+
+    const updated = service.executeBranchControlApprove(findingInBranch, { expectedVersion: 2 }, mockBranchController);
+
+    expect(updated.workflowStatus).toBe('SUBMITTED_INTERNAL');
+  });
+
   it('rejects a branch controller who was not selected in the finding route', () => {
     const otherController: UserProfile = {
       ...mockBranchController,

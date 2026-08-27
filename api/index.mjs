@@ -498,15 +498,8 @@ var BranchLeaderRejectCommandSchema = z7.object({
   expectedVersion: z7.number().int().min(1),
   reason: z7.string().min(5, "L\xFD do tr\u1EA3 v\u1EC1 b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 5 k\xFD t\u1EF1")
 });
-var SetFindingApprovalRouteSchema = z7.object({
-  branchControllerUserId: z7.string().trim().min(1),
-  branchLeaderUserId: z7.string().trim().min(1).optional(),
-  internalApproverUserId: z7.string().trim().min(1).optional(),
-  requiresBranchLeaderApproval: z7.boolean()
-}).superRefine((value, context) => {
-  if (value.requiresBranchLeaderApproval && !value.branchLeaderUserId) {
-    context.addIssue({ code: z7.ZodIssueCode.custom, path: ["branchLeaderUserId"], message: "C\u1EA7n ch\u1ECDn l\xE3nh \u0111\u1EA1o chi nh\xE1nh cho tuy\u1EBFn duy\u1EC7t n\xE0y." });
-  }
+var SetFindingSpecialCaseSchema = z7.object({
+  isSpecialCase: z7.boolean()
 });
 var InternalWaiveCommandSchema = z7.object({
   expectedVersion: z7.number().int().min(1),
@@ -1030,9 +1023,12 @@ var WorkflowCommandService = class {
     if (dto.expectedVersion !== finding.version) {
       throw new Error(`409: VERSION_CONFLICT \u2014 Version conflict (${finding.version} != ${dto.expectedVersion})`);
     }
+    const routeThroughBranchLeader = Boolean(
+      finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase
+    );
     const updated = {
       ...finding,
-      workflowStatus: finding.approvalRoute?.requiresBranchLeaderApproval ? "SUBMITTED_BRANCH_LEADER" : "SUBMITTED_INTERNAL",
+      workflowStatus: routeThroughBranchLeader ? "SUBMITTED_BRANCH_LEADER" : "SUBMITTED_INTERNAL",
       version: finding.version + 1,
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
@@ -3853,6 +3849,19 @@ function backfillFindingProvenance() {
   });
   return changed;
 }
+function normalizeFindingSpecialCase(finding) {
+  if (typeof finding.isSpecialCase === "boolean") return finding;
+  return { ...finding, isSpecialCase: Boolean(finding.approvalRoute?.requiresBranchLeaderApproval) };
+}
+function backfillFindingSpecialCase() {
+  let changed = false;
+  findings = findings.map((finding) => {
+    const normalized = normalizeFindingSpecialCase(finding);
+    if (normalized !== finding) changed = true;
+    return normalized;
+  });
+  return changed;
+}
 function currentLocalState() {
   return {
     orgUnits,
@@ -3884,7 +3893,7 @@ function restoreDurableLocalState(restored) {
   appUsers = restored.appUsers;
   reportChannels = restored.reportChannels;
   reportChannelVersions = restored.reportChannelVersions ?? [];
-  findings = restored.findings.map(ensureFindingSubItems);
+  findings = restored.findings.map((finding) => ensureFindingSubItems(normalizeFindingSpecialCase(finding)));
   workflowEvents = restored.workflowEvents;
   evidences = restored.evidences;
   importBatches = restored.importBatches;
@@ -4067,6 +4076,7 @@ if ([
   backfillUserCoPlusIdentity(),
   backfillChannelFormTemplates(),
   backfillFindingProvenance(),
+  backfillFindingSpecialCase(),
   await bootstrapAdministratorFromEnvironment()
 ].some(Boolean)) await persistLocalState();
 if (shouldStartEmbeddedSlaRuntime()) {
@@ -4172,25 +4182,18 @@ function approvalCandidatesForFinding(finding) {
     internalApprovers: appUsers.filter((user) => user.isActive && (user.roles.includes("INTERNAL_APPROVER") || user.roles.includes("SUPERVISOR")))
   };
 }
-function assertApprovalRouteCandidates(finding, actor, route) {
+function resolveApprovalRoute(finding, workflowType, actor) {
   const candidates = approvalCandidatesForFinding(finding);
-  const controller = candidates.branchControllers.find((user) => user.id === route.branchControllerUserId);
-  if (!controller) {
-    throw new HttpProblem(422, "ROUTE_CONTROLLER_INVALID", "Ng\u01B0\u1EDDi ki\u1EC3m so\xE1t kh\xF4ng h\u1EE3p l\u1EC7", "Ch\u1EC9 \u0111\u01B0\u1EE3c ch\u1ECDn Ki\u1EC3m so\xE1t chi nh\xE1nh \u0111ang ho\u1EA1t \u0111\u1ED9ng c\xF9ng chi nh\xE1nh c\u1EE7a h\u1ED3 s\u01A1.");
-  }
-  if (route.requiresBranchLeaderApproval && !candidates.branchLeaders.some((user) => user.id === route.branchLeaderUserId)) {
-    throw new HttpProblem(422, "ROUTE_LEADER_INVALID", "L\xE3nh \u0111\u1EA1o chi nh\xE1nh kh\xF4ng h\u1EE3p l\u1EC7", "C\u1EA7n ch\u1ECDn L\xE3nh \u0111\u1EA1o chi nh\xE1nh \u0111ang ho\u1EA1t \u0111\u1ED9ng c\xF9ng chi nh\xE1nh c\u1EE7a h\u1ED3 s\u01A1.");
-  }
-  if (route.internalApproverUserId && !candidates.internalApprovers.some((user) => user.id === route.internalApproverUserId)) {
-    throw new HttpProblem(422, "ROUTE_INTERNAL_APPROVER_INVALID", "Ng\u01B0\u1EDDi duy\u1EC7t n\u1ED9i b\u1ED9 kh\xF4ng h\u1EE3p l\u1EC7", "Ch\u1EC9 \u0111\u01B0\u1EE3c ch\u1ECDn ng\u01B0\u1EDDi duy\u1EC7t n\u1ED9i b\u1ED9 ho\u1EB7c l\xE3nh \u0111\u1EA1o \u0111ang ho\u1EA1t \u0111\u1ED9ng.");
-  }
-  const selectedIds = [route.branchControllerUserId, route.branchLeaderUserId, route.internalApproverUserId].filter(Boolean);
-  if (new Set(selectedIds).size !== selectedIds.length) {
-    throw new HttpProblem(422, "ROUTE_APPROVERS_MUST_DIFFER", "Tuy\u1EBFn duy\u1EC7t kh\xF4ng h\u1EE3p l\u1EC7", "M\u1ED7i c\u1EA5p duy\u1EC7t ph\u1EA3i l\xE0 m\u1ED9t ng\u01B0\u1EDDi kh\xE1c nhau.");
-  }
-  if (selectedIds.includes(actor.id)) {
-    throw new HttpProblem(422, "ROUTE_SELF_APPROVAL_FORBIDDEN", "Kh\xF4ng \u0111\u01B0\u1EE3c t\u1EF1 duy\u1EC7t", "Ng\u01B0\u1EDDi thi\u1EBFt l\u1EADp tuy\u1EBFn duy\u1EC7t kh\xF4ng th\u1EC3 ch\u1ECDn ch\xEDnh m\xECnh l\xE0m ng\u01B0\u1EDDi duy\u1EC7t cho h\u1ED3 s\u01A1 n\xE0y.");
-  }
+  const requiresBranchLeaderApproval = workflowType === "THREE_TIER" || Boolean(finding.isSpecialCase);
+  const pick = (users) => (users.find((user) => user.id !== actor.id) ?? users[0])?.id;
+  return {
+    branchControllerUserId: pick(candidates.branchControllers),
+    branchLeaderUserId: requiresBranchLeaderApproval ? pick(candidates.branchLeaders) : void 0,
+    internalApproverUserId: void 0,
+    requiresBranchLeaderApproval,
+    assignedByUserId: actor.id,
+    assignedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
 }
 function availableEvidencesForFinding(findingId) {
   return evidences.filter((evidence) => evidence.findingId === findingId && evidence.status === "AVAILABLE");
@@ -5783,33 +5786,37 @@ app.get("/api/v1/findings/:id/approval-candidates", async (req) => {
   const finding = getScopedFindingOrThrow(req.params.id, user);
   return approvalCandidatesForFinding(finding);
 });
-app.put("/api/v1/findings/:id/approval-route", async (req) => {
+app.put("/api/v1/findings/:id/special-case", async (req) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
-  requireRoles(user, ["ADMIN", "SUPERVISOR", "INTERNAL_OFFICER", "BRANCH_INPUT"]);
+  requireRoles(user, ["ADMIN", "SUPERVISOR", "INTERNAL_OFFICER", "INTERNAL_APPROVER", "BRANCH_INPUT"]);
   if (finding.workflowStatus !== "PENDING" && finding.workflowStatus !== "REJECTED") {
-    throw new HttpProblem(409, "ROUTE_LOCKED_AFTER_SUBMISSION", "Tuy\u1EBFn duy\u1EC7t \u0111\xE3 kh\xF3a", "Ch\u1EC9 \u0111\u01B0\u1EE3c thay \u0111\u1ED5i ng\u01B0\u1EDDi duy\u1EC7t khi h\u1ED3 s\u01A1 \u0111ang ch\u1EDD ho\u1EB7c \u0111\xE3 b\u1ECB tr\u1EA3 v\u1EC1.");
+    throw new HttpProblem(409, "SPECIAL_CASE_LOCKED_AFTER_SUBMISSION", "D\u1EA5u sao \u0111\xE3 kh\xF3a", "Ch\u1EC9 \u0111\xE1nh d\u1EA5u tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t khi h\u1ED3 s\u01A1 \u0111ang ch\u1EDD kh\u1EAFc ph\u1EE5c ho\u1EB7c \u0111\xE3 b\u1ECB tr\u1EA3 v\u1EC1.");
   }
-  const route = SetFindingApprovalRouteSchema.parse(req.body);
-  assertApprovalRouteCandidates(finding, user, route);
+  const dto = SetFindingSpecialCaseSchema.parse(req.body);
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  finding.approvalRoute = { ...route, assignedByUserId: user.id, assignedAt: now };
+  finding.isSpecialCase = dto.isSpecialCase;
   finding.version += 1;
   finding.updatedAt = now;
   workflowEvents.push({
     id: `evt-${crypto5.randomUUID()}`,
     findingId: finding.id,
-    command: "SET_APPROVAL_ROUTE",
+    command: "SET_SPECIAL_CASE",
     fromStatus: finding.workflowStatus,
     toStatus: finding.workflowStatus,
     actorUserId: user.id,
     actorName: user.fullName,
     actorRole: user.primaryRole,
-    notes: `\u0110\xE3 ch\u1ECDn tuy\u1EBFn duy\u1EC7t: Ki\u1EC3m so\xE1t ${route.branchControllerUserId}${route.requiresBranchLeaderApproval ? `, L\xE3nh \u0111\u1EA1o ${route.branchLeaderUserId}` : ""}${route.internalApproverUserId ? `, N\u1ED9i b\u1ED9 ${route.internalApproverUserId}` : ""}.`,
+    notes: dto.isSpecialCase ? "\u0110\xE1nh d\u1EA5u tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t: b\u1ED5 sung b\u01B0\u1EDBc L\xE3nh \u0111\u1EA1o chi nh\xE1nh ph\xEA duy\u1EC7t b\u1EAFt bu\u1ED9c tr\u01B0\u1EDBc khi l\xEAn H\u1ED9i s\u1EDF." : "B\u1ECF \u0111\xE1nh d\u1EA5u tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t: Ki\u1EC3m so\xE1t chi nh\xE1nh chuy\u1EC3n th\u1EB3ng l\xEAn H\u1ED9i s\u1EDF.",
     createdAt: now
   });
   await persistLocalState();
-  return finding;
+  return {
+    ...finding,
+    evidenceCount: availableEvidencesForFinding(finding.id).length,
+    evidences: availableEvidencesForFinding(finding.id),
+    history: workflowEvents.filter((event) => event.findingId === finding.id)
+  };
 });
 app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
   const user = getCurrentUser(req);
@@ -5825,11 +5832,8 @@ app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
     const pinnedVersion = reportChannelVersions.find((version) => version.id === finding.channelVersionId);
     const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.workflowType ?? "TWO_TIER";
     requireAvailableEvidence(finding);
-    if (workflowType !== "ONE_TIER" && !finding.approvalRoute?.branchControllerUserId) {
-      throw new HttpProblem(422, "ROUTE_CONTROLLER_REQUIRED", "Thi\u1EBFu tuy\u1EBFn duy\u1EC7t", "C\u1EA7n ch\u1ECDn ng\u01B0\u1EDDi ki\u1EC3m so\xE1t chi nh\xE1nh tr\u01B0\u1EDBc khi n\u1ED9p h\u1ED3 s\u01A1.");
-    }
-    if (workflowType === "THREE_TIER" && !finding.approvalRoute?.requiresBranchLeaderApproval) {
-      throw new HttpProblem(422, "ROUTE_LEADER_REQUIRED", "Thi\u1EBFu tuy\u1EBFn duy\u1EC7t", "Quy tr\xECnh ba c\u1EA5p y\xEAu c\u1EA7u ch\u1ECDn L\xE3nh \u0111\u1EA1o chi nh\xE1nh tr\u01B0\u1EDBc khi n\u1ED9p h\u1ED3 s\u01A1.");
+    if (workflowType !== "ONE_TIER") {
+      finding.approvalRoute = resolveApprovalRoute(finding, workflowType, user);
     }
     const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     Object.assign(finding, updated);

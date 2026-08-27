@@ -20,8 +20,11 @@ export interface FindingSubItem {
 }
 
 /**
- * The people selected for one finding's approval route. IDs are persisted with the finding so
- * a later role or organisational change cannot silently redirect an in-flight approval.
+ * The approval route resolved for one finding at submit time. It is derived automatically from the
+ * report type's workflow tier plus role scope inside the finding's branch — never picked by hand on
+ * the finding. IDs are still persisted so a later role or organisational change cannot silently
+ * redirect an in-flight approval. `requiresBranchLeaderApproval` is derived from `isSpecialCase`
+ * (or a THREE_TIER report type), not a manual toggle.
  */
 export interface FindingApprovalRoute {
   branchControllerUserId?: string;
@@ -92,8 +95,16 @@ export interface Finding {
   rejectedByUserName?: string;
   rejectedAt?: string;
 
-  // Named route selected from eligible approvers before a branch submits the case.
+  // Route resolved automatically at submit time (see FindingApprovalRoute).
   approvalRoute?: FindingApprovalRoute;
+
+  /**
+   * Dấu sao — hồ sơ thuộc trường hợp đặc biệt (lỗi hoặc khách hàng đặc biệt). Khi bật, tuyến duyệt
+   * tự động chèn bước Lãnh đạo chi nhánh "đẩy lệnh" = một bước phê duyệt bắt buộc trước khi hồ sơ
+   * lên Hội sở. Khác với `isPriority` trên WorkspaceTarget (ghim cá nhân của người dùng): cờ này
+   * gắn với hồ sơ và điều hướng quy trình phê duyệt.
+   */
+  isSpecialCase?: boolean;
 
   // Dynamic Custom Payload
   dynamicPayload?: Record<string, any>;

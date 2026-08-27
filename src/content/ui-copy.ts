@@ -37,6 +37,7 @@ export const userRoleLabels: Record<UserRole, string> = {
 
 export const workflowEventLabels: Record<WorkflowCommand, string> = {
   SET_APPROVAL_ROUTE: 'Thiết lập tuyến duyệt',
+  SET_SPECIAL_CASE: 'Đánh dấu trường hợp đặc biệt',
   SUBMIT_BRANCH: workflowActionLabels.submitBranch,
   BRANCH_CONTROL_APPROVE: workflowActionLabels.branchApprove,
   BRANCH_CONTROL_REJECT: workflowActionLabels.returnToBranch,
