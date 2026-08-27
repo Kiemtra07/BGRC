@@ -39,6 +39,10 @@ describe('SLA cron endpoint', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
       success: true,
+      maintenance: {
+        databaseActivity: true,
+        dataStore: { mode: 'memory', durable: false },
+      },
       evaluatedCount: expect.any(Number),
       updatedCount: expect.any(Number),
       overdueCount: expect.any(Number),

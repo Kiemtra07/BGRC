@@ -4457,7 +4457,18 @@ app.route({
   url: internalSlaPath,
   handler: async (request) => {
     requireCronAuthorization(request);
-    return { success: true, ...await evaluateCurrentSlaState() };
+    const dataStore = await stateRepository.getStatus();
+    if ("ready" in dataStore && !dataStore.ready) {
+      throw new HttpProblem(503, "CRON_DATABASE_UNAVAILABLE", "Database ch\u01B0a s\u1EB5n s\xE0ng", dataStore.warning ?? "Cron kh\xF4ng th\u1EC3 k\u1EBFt n\u1ED1i PostgreSQL.");
+    }
+    return {
+      success: true,
+      maintenance: {
+        databaseActivity: true,
+        dataStore: { mode: dataStore.mode, durable: dataStore.durable }
+      },
+      ...await evaluateCurrentSlaState()
+    };
   }
 });
 app.get("/api/v1/integrations/google-drive/connect", async (req, reply) => {

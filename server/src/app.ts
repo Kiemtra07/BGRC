@@ -1999,7 +1999,21 @@ app.route({
   url: internalSlaPath,
   handler: async (request) => {
     requireCronAuthorization(request);
-    return { success: true, ...(await evaluateCurrentSlaState()) };
+    // The one daily Vercel Cron has two production duties: recompute SLA and perform a real
+    // PostgreSQL probe plus snapshot transaction. This creates useful database activity without
+    // manufacturing rows merely to keep a free Supabase project warm.
+    const dataStore = await stateRepository.getStatus();
+    if ('ready' in dataStore && !dataStore.ready) {
+      throw new HttpProblem(503, 'CRON_DATABASE_UNAVAILABLE', 'Database chưa sẵn sàng', dataStore.warning ?? 'Cron không thể kết nối PostgreSQL.');
+    }
+    return {
+      success: true,
+      maintenance: {
+        databaseActivity: true,
+        dataStore: { mode: dataStore.mode, durable: dataStore.durable },
+      },
+      ...(await evaluateCurrentSlaState()),
+    };
   },
 });
 
