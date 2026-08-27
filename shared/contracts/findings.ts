@@ -81,6 +81,14 @@ export interface Finding {
   penaltyProposalCode?: string;  // Đề xuất xử phạt, ví dụ 1.1.2
   referenceDocument?: string;    // Văn bản dẫn chiếu
 
+  // Immutable import provenance for audit and operational reporting.
+  importBatchId?: string;
+  importedByUserId?: string;
+  importedByName?: string;
+  importedAt?: string;
+  importSourceType?: 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'API_BULK' | 'WEB_FORM';
+  importSourceFileName?: string;
+
   // Status & Versioning (P0-01, P0-02, P0-06, P0-08)
   workflowStatus: WorkflowStatus;
   slaStatus: SlaStatus;

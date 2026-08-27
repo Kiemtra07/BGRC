@@ -140,4 +140,5 @@ export interface BatchUploadResult {
   status: 'SUCCESS' | 'WARNING' | 'ERROR';
   message: string;
   customers: CustomerRecord[];
+  duplicateRowsCount?: number;
 }

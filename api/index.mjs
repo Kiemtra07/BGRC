@@ -261,6 +261,12 @@ var CreateUserSchema = z3.object({
     }
   }
 });
+var BulkUserImportSchema = z3.object({
+  rows: z3.array(z3.object({
+    rowNumber: z3.number().int().min(2),
+    user: CreateUserSchema
+  })).min(1).max(500)
+});
 var ResetUserPasswordSchema = z3.object({
   password: z3.string().min(12, "M\u1EADt kh\u1EA9u t\u1ED1i thi\u1EC3u 12 k\xFD t\u1EF1").max(200).optional()
 });
@@ -567,8 +573,25 @@ var WebFormFindingSchema = z9.object({
 });
 var BulkFindingImportSchema = z9.object({
   sourceFileName: z9.string().trim().min(1).max(255),
+  sourceType: z9.enum(["XLSX", "ZIP_XLSX", "CLIPBOARD", "DOCX", "API_BULK", "WEB_FORM"]).default("API_BULK"),
   rows: z9.array(WebFormFindingSchema).min(1).max(5e3)
+}).superRefine((value, context) => {
+  if (value.sourceType !== "API_BULK" && value.rows.some((row) => !row.campaignId?.trim())) {
+    context.addIssue({ code: z9.ZodIssueCode.custom, path: ["rows"], message: "Chuy\xEAn \u0111\u1EC1 l\xE0 b\u1EAFt bu\u1ED9c \u0111\u1ED1i v\u1EDBi d\u1EEF li\u1EC7u nh\u1EADp t\u1EEB giao di\u1EC7n." });
+  }
+  if (value.sourceType !== "API_BULK" && value.rows.some((row) => row.channelId !== value.rows[0]?.channelId || row.campaignId !== value.rows[0]?.campaignId)) {
+    context.addIssue({ code: z9.ZodIssueCode.custom, path: ["rows"], message: "M\u1ED9t l\u1EA7n nh\u1EADp ch\u1EC9 \u0111\u01B0\u1EE3c d\xF9ng m\u1ED9t lo\u1EA1i b\xE1o c\xE1o v\xE0 m\u1ED9t chuy\xEAn \u0111\u1EC1." });
+  }
 });
+var compactIdentifier = (value) => (value || "").trim().replace(/\s+/g, " ");
+var buildFindingBusinessKey = (finding) => [
+  compactIdentifier(finding.channelId),
+  compactIdentifier(finding.campaignId),
+  compactIdentifier(finding.branchCode).replace(/^[A-Z](?=\d)/i, ""),
+  compactIdentifier(finding.cif).replace(/\s+/g, ""),
+  compactIdentifier(finding.errorCode).toUpperCase(),
+  compactIdentifier(finding.decisionNo)
+].join("|");
 
 // shared/contracts/findings.ts
 import { z as z10 } from "zod";
@@ -841,6 +864,7 @@ var ReportRunRequestSchema = z11.object({
   rules: z11.array(ReportFilterRuleSchema).max(20).default([]),
   match: z11.enum(["ALL", "ANY"]).default("ALL"),
   groupBy: ReportFieldKeySchema.default("dimension.branch"),
+  pivotBy: ReportFieldKeySchema.optional(),
   metrics: z11.array(ReportMetricKeySchema).min(1).max(REPORT_METRIC_KEYS.length).default([
     "metric.customer_count",
     "metric.finding_count",
@@ -852,6 +876,12 @@ var ReportRunRequestSchema = z11.object({
   const groupField = REPORT_FIELD_CATALOG.find((item) => item.key === query.groupBy);
   if (!groupField.groupable) {
     context.addIssue({ code: z11.ZodIssueCode.custom, path: ["groupBy"], message: `${query.groupBy} kh\xF4ng ph\u1EA3i key ph\xE2n nh\xF3m` });
+  }
+  if (query.pivotBy && query.pivotBy === query.groupBy) {
+    context.addIssue({ code: z11.ZodIssueCode.custom, path: ["pivotBy"], message: "Tr\u01B0\u1EDDng c\u1ED9t c\u1EE7a b\u1EA3ng ch\xE9o ph\u1EA3i kh\xE1c tr\u01B0\u1EDDng h\xE0ng." });
+  }
+  if (query.pivotBy && !REPORT_FIELD_CATALOG.find((item) => item.key === query.pivotBy)?.groupable) {
+    context.addIssue({ code: z11.ZodIssueCode.custom, path: ["pivotBy"], message: `${query.pivotBy} kh\xF4ng ph\u1EA3i key ph\xE2n nh\xF3m` });
   }
   if (new Set(query.metrics).size !== query.metrics.length) {
     context.addIssue({ code: z11.ZodIssueCode.custom, path: ["metrics"], message: "Key ch\u1EC9 s\u1ED1 kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
@@ -871,16 +901,47 @@ var ReportExportRequestSchema = z11.object({
     context.addIssue({ code: z11.ZodIssueCode.custom, path: ["columns"], message: "Key c\u1ED9t xu\u1EA5t kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
   }
 });
+var REPORT_DEFINITION_VISIBILITIES = ["PRIVATE", "ROLE_SHARED"];
+var ReportDefinitionVisibilitySchema = z11.enum(REPORT_DEFINITION_VISIBILITIES);
+var ReportShareRoleSchema = z11.enum([
+  "ADMIN",
+  "SUPERVISOR",
+  "INTERNAL_APPROVER",
+  "INTERNAL_OFFICER",
+  "BRANCH_CONTROLLER",
+  "BRANCH_LEADER",
+  "BRANCH_INPUT",
+  "VIEWER"
+]);
 var CreateReportDefinitionSchema = z11.object({
   name: z11.string().trim().min(3).max(150),
   description: z11.string().trim().max(500).optional(),
   filters: ReportFilterSchema.default({}),
   columns: z11.array(ReportColumnSchema).max(15).default([]),
   query: ReportRunRequestSchema.optional(),
-  exportColumns: z11.array(ReportFieldKeySchema).max(REPORT_FIELD_KEYS.length).default([])
+  exportColumns: z11.array(ReportFieldKeySchema).max(REPORT_FIELD_KEYS.length).default([]),
+  visibility: ReportDefinitionVisibilitySchema.default("PRIVATE"),
+  sharedWithRoles: z11.array(ReportShareRoleSchema).max(8).default([]),
+  sourceReportDefinitionId: z11.string().min(1).max(200).optional()
 }).superRefine((definition, context) => {
   if (definition.columns.length === 0 && definition.exportColumns.length === 0) {
     context.addIssue({ code: z11.ZodIssueCode.custom, path: ["exportColumns"], message: "Ph\u1EA3i ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t c\u1ED9t xu\u1EA5t b\xE1o c\xE1o" });
+  }
+  if (definition.visibility === "ROLE_SHARED" && definition.sharedWithRoles.length === 0) {
+    context.addIssue({ code: z11.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem b\xE1o c\xE1o chia s\u1EBB" });
+  }
+});
+var CreateDashboardDefinitionSchema = z11.object({
+  name: z11.string().trim().min(3).max(150),
+  reportDefinitionIds: z11.array(z11.string().min(1)).min(1).max(6),
+  visibility: ReportDefinitionVisibilitySchema.default("PRIVATE"),
+  sharedWithRoles: z11.array(ReportShareRoleSchema).max(8).default([])
+}).superRefine((dashboard, context) => {
+  if (new Set(dashboard.reportDefinitionIds).size !== dashboard.reportDefinitionIds.length) {
+    context.addIssue({ code: z11.ZodIssueCode.custom, path: ["reportDefinitionIds"], message: "M\u1ED9t b\xE1o c\xE1o ch\u1EC9 \u0111\u01B0\u1EE3c th\xEAm m\u1ED9t l\u1EA7n v\xE0o dashboard" });
+  }
+  if (dashboard.visibility === "ROLE_SHARED" && dashboard.sharedWithRoles.length === 0) {
+    context.addIssue({ code: z11.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem dashboard chia s\u1EBB" });
   }
 });
 
@@ -2959,6 +3020,72 @@ async function extractCampaignImportDraft(fileName, buffer) {
   return { source: { fileName, kind }, draft, warnings: warningsFor(draft) };
 }
 
+// server/src/modules/ingestion/finding-document-import.ts
+import JSZip3 from "jszip";
+var FindingDocumentImportError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "FindingDocumentImportError";
+  }
+};
+var decodeXml2 = (value) => value.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+var cellText = (xml) => decodeXml2([...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((match) => match[1]).join(" ")).replace(/\s+/g, " ").trim();
+var normalize2 = (value) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+var aliases = {
+  cif: ["cif", "ma kh", "ma khach hang"],
+  customerName: ["ten khach hang", "ten kh"],
+  branchCode: ["ma chi nhanh", "ma cn"],
+  branchName: ["ten chi nhanh", "chi nhanh"],
+  department: ["phong pgd", "phong", "pgd"],
+  decisionNo: ["so quyet dinh", "quyet dinh", "so qd"],
+  errorCode: ["ma sai sot", "ma loi", "ma ss"],
+  errorTitle: ["ten sai sot", "noi dung sai sot", "tieu de"],
+  description: ["mo ta chi tiet", "chi tiet sai sot", "mo ta"]
+};
+async function parseFindingDocx(buffer) {
+  let zip;
+  try {
+    zip = await JSZip3.loadAsync(buffer);
+  } catch {
+    throw new FindingDocumentImportError("T\u1EC7p DOCX kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng th\u1EC3 m\u1EDF.");
+  }
+  const document = zip.file("word/document.xml");
+  if (!document) throw new FindingDocumentImportError("T\u1EC7p DOCX kh\xF4ng c\xF3 n\u1ED9i dung \u0111\u1EC3 b\xF3c t\xE1ch.");
+  const xml = await document.async("string");
+  const tables = xml.match(/<w:tbl\b[\s\S]*?<\/w:tbl>/g) ?? [];
+  for (const table of tables) {
+    const rows = (table.match(/<w:tr\b[\s\S]*?<\/w:tr>/g) ?? []).map((row) => (row.match(/<w:tc\b[\s\S]*?<\/w:tc>/g) ?? []).map(cellText));
+    if (rows.length < 2) continue;
+    const headers = rows[0].map(normalize2);
+    const column = (key) => headers.findIndex((header) => aliases[key].some((alias) => header === alias || header.includes(alias)));
+    const columns = Object.fromEntries(Object.keys(aliases).map((key) => [key, column(key)]));
+    if (columns.cif < 0 || columns.customerName < 0 || columns.branchCode < 0 || columns.errorCode < 0) continue;
+    const parsed = [];
+    rows.slice(1).forEach((row, rowIndex) => {
+      const at = (key) => columns[key] < 0 ? "" : (row[columns[key]] || "").trim();
+      const cif = at("cif").replace(/\s+/g, "");
+      const customerName = at("customerName");
+      const branchCode = at("branchCode").replace(/^[A-Z](?=\d)/i, "");
+      const codes = at("errorCode").split(/[,;\n]+/).map((code) => code.trim().toUpperCase()).filter(Boolean);
+      if (!cif || !customerName || !branchCode || !codes.length) return;
+      codes.forEach((errorCode) => parsed.push({
+        rowNumber: rowIndex + 2,
+        cif,
+        customerName,
+        branchCode,
+        branchName: at("branchName") || `Chi nh\xE1nh ${branchCode}`,
+        department: at("department") || void 0,
+        decisionNo: at("decisionNo") || void 0,
+        errorCode,
+        errorTitle: at("errorTitle") || `Sai s\xF3t ${errorCode}`,
+        description: at("description") || at("errorTitle") || `Sai s\xF3t ${errorCode} \u0111\u01B0\u1EE3c tr\xEDch xu\u1EA5t t\u1EEB DOCX.`
+      }));
+    });
+    if (parsed.length) return parsed;
+  }
+  throw new FindingDocumentImportError("Kh\xF4ng t\xECm th\u1EA5y b\u1EA3ng DOCX c\xF3 \u0111\u1EE7 c\u1ED9t T\xEAn kh\xE1ch h\xE0ng, CIF, M\xE3 chi nh\xE1nh v\xE0 M\xE3 sai s\xF3t.");
+}
+
 // server/src/app.ts
 var app = fastify({
   logger: process.env.NODE_ENV !== "test",
@@ -3584,6 +3711,7 @@ var evidences = [
 var importBatches = [];
 var slaExtensions = [];
 var reportDefinitions = [];
+var dashboardDefinitions = [];
 var REPORT_EXPORT_MAX_ROWS = Math.max(1, Number(process.env.REPORT_EXPORT_MAX_ROWS) || 1e4);
 var DEFAULT_REPORT_EXPORT_FIELDS = /* @__PURE__ */ new Set([
   "dimension.campaign",
@@ -3634,6 +3762,26 @@ var authSessions = [];
 var googleDriveOAuthCredential;
 var securityEvents = [];
 var loginAttempts = [];
+function normalizeReportDefinition(definition) {
+  return {
+    ...definition,
+    visibility: definition.visibility ?? "PRIVATE",
+    sharedWithRoles: definition.sharedWithRoles ?? []
+  };
+}
+function normalizeDashboardDefinition(definition) {
+  return {
+    ...definition,
+    visibility: definition.visibility ?? "PRIVATE",
+    sharedWithRoles: definition.sharedWithRoles ?? []
+  };
+}
+function canAccessReportDefinition(user, definition) {
+  return user.roles.includes("ADMIN") || definition.createdByUserId === user.id || definition.visibility === "ROLE_SHARED" && definition.sharedWithRoles.some((role) => user.roles.includes(role));
+}
+function canAccessDashboardDefinition(user, definition) {
+  return user.roles.includes("ADMIN") || definition.createdByUserId === user.id || definition.visibility === "ROLE_SHARED" && definition.sharedWithRoles.some((role) => user.roles.includes(role));
+}
 var DEMO_SEED_ENABLED = process.env.NODE_ENV === "production" ? false : process.env.SEED_DEMO_DATA !== "false";
 var DEMO_SEED_IDS = {
   users: appUsers.map((user) => user.id),
@@ -3674,6 +3822,7 @@ var hydratedState = await stateRepository.load({
   importBatches,
   slaExtensions,
   reportDefinitions,
+  dashboardDefinitions,
   reportCatalogConfiguration,
   idempotencyRecords,
   findingFollows,
@@ -3717,7 +3866,8 @@ workflowEvents = hydratedState.workflowEvents;
 evidences = hydratedState.evidences;
 importBatches = hydratedState.importBatches;
 slaExtensions = hydratedState.slaExtensions;
-reportDefinitions = hydratedState.reportDefinitions;
+reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
+dashboardDefinitions = (hydratedState.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
 reportCatalogConfiguration = hydratedState.reportCatalogConfiguration ?? createDefaultReportCatalogConfiguration();
 idempotencyRecords = hydratedState.idempotencyRecords ?? {};
 findingFollows = hydratedState.findingFollows ?? [];
@@ -3880,6 +4030,7 @@ function currentLocalState() {
     importBatches,
     slaExtensions,
     reportDefinitions,
+    dashboardDefinitions,
     reportCatalogConfiguration,
     idempotencyRecords,
     findingFollows,
@@ -3904,7 +4055,8 @@ function restoreDurableLocalState(restored) {
   evidences = restored.evidences;
   importBatches = restored.importBatches;
   slaExtensions = restored.slaExtensions;
-  reportDefinitions = restored.reportDefinitions;
+  reportDefinitions = restored.reportDefinitions.map(normalizeReportDefinition);
+  dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
   reportCatalogConfiguration = restored.reportCatalogConfiguration ?? createDefaultReportCatalogConfiguration();
   idempotencyRecords = restored.idempotencyRecords ?? {};
   findingFollows = restored.findingFollows ?? [];
@@ -4577,12 +4729,45 @@ function executeReportRun(items, query) {
     const delta = ((left.metricValues[sortKey] || 0) - (right.metricValues[sortKey] || 0)) * direction;
     return delta || left.label.localeCompare(right.label, "vi-VN");
   }).slice(0, query.limit);
+  let pivot;
+  if (query.pivotBy) {
+    const columnGroups = /* @__PURE__ */ new Map();
+    const rowGroups = /* @__PURE__ */ new Map();
+    for (const finding of matched) {
+      const rowValue = reportFieldAccessors[query.groupBy](finding);
+      const columnValue = reportFieldAccessors[query.pivotBy](finding);
+      const rowKey = String(rowValue || "UNASSIGNED");
+      const columnKey = String(columnValue || "UNASSIGNED");
+      const column = columnGroups.get(columnKey) || { label: reportValueLabel(query.pivotBy, columnValue, finding), items: [] };
+      column.items.push(finding);
+      columnGroups.set(columnKey, column);
+      const row = rowGroups.get(rowKey) || { label: reportValueLabel(query.groupBy, rowValue, finding), cells: /* @__PURE__ */ new Map() };
+      row.cells.set(columnKey, [...row.cells.get(columnKey) || [], finding]);
+      rowGroups.set(rowKey, row);
+    }
+    if (columnGroups.size > 25) {
+      throw new HttpProblem(422, "REPORT_PIVOT_TOO_WIDE", "B\u1EA3ng ch\xE9o c\xF3 qu\xE1 nhi\u1EC1u c\u1ED9t", `\u0110i\u1EC1u ki\u1EC7n hi\u1EC7n t\u1EA1i t\u1EA1o ${columnGroups.size} c\u1ED9t. H\xE3y l\u1ECDc th\xEAm d\u1EEF li\u1EC7u ho\u1EB7c ch\u1ECDn tr\u01B0\u1EDDng c\u1ED9t kh\xE1c \u0111\u1EC3 gi\u1EDBi h\u1EA1n t\u1ED1i \u0111a 25 c\u1ED9t.`);
+    }
+    const metric = query.metrics[0];
+    const columns = [...columnGroups.entries()].map(([key, column]) => ({ key, label: column.label })).sort((left, right) => left.label.localeCompare(right.label, "vi-VN"));
+    pivot = {
+      rowField: query.groupBy,
+      columnField: query.pivotBy,
+      metric,
+      columns,
+      rows: [...rowGroups.entries()].map(([key, row]) => {
+        const values = Object.fromEntries(columns.map((column) => [column.key, calculateReportMetric(row.cells.get(column.key) || [], metric)]));
+        return { key, label: row.label, values, total: Object.values(values).reduce((sum, value) => sum + value, 0) };
+      }).sort((left, right) => right.total - left.total || left.label.localeCompare(right.label, "vi-VN")).slice(0, query.limit)
+    };
+  }
   return {
     generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
     query,
     matchedFindingCount: matched.length,
     metricValues: calculateMetricValues(matched, query.metrics),
-    groups: rows
+    groups: rows,
+    pivot
   };
 }
 function normalizedReportCatalogConfiguration() {
@@ -4647,6 +4832,12 @@ function assertReportConfigurationAvailable(query, columns) {
   const groupField = fields.get(query.groupBy);
   if (!groupField?.isActive || !groupField.groupable) {
     throw new HttpProblem(422, "REPORT_GROUP_DISABLED", "C\xE1ch xem kh\xF4ng c\xF2n \xE1p d\u1EE5ng", "Tr\u01B0\u1EDDng ph\xE2n nh\xF3m kh\xF4ng c\xF2n \u0111\u01B0\u1EE3c qu\u1EA3n tr\u1ECB vi\xEAn cho ph\xE9p.");
+  }
+  if (query.pivotBy) {
+    const pivotField = fields.get(query.pivotBy);
+    if (!pivotField?.isActive || !pivotField.groupable) {
+      throw new HttpProblem(422, "REPORT_PIVOT_DISABLED", "C\xE1ch xem b\u1EA3ng ch\xE9o kh\xF4ng c\xF2n \xE1p d\u1EE5ng", "Tr\u01B0\u1EDDng c\u1ED9t c\u1EE7a b\u1EA3ng ch\xE9o kh\xF4ng c\xF2n \u0111\u01B0\u1EE3c qu\u1EA3n tr\u1ECB vi\xEAn cho ph\xE9p.");
+    }
   }
   if (query.metrics.some((key) => !metrics.get(key)?.isActive)) {
     throw new HttpProblem(422, "REPORT_METRIC_DISABLED", "Ch\u1EC9 s\u1ED1 b\xE1o c\xE1o \u0111\xE3 t\u1EAFt", "B\xE1o c\xE1o \u0111ang d\xF9ng m\u1ED9t ch\u1EC9 s\u1ED1 kh\xF4ng c\xF2n \u0111\u01B0\u1EE3c qu\u1EA3n tr\u1ECB vi\xEAn cho ph\xE9p.");
@@ -5196,9 +5387,7 @@ app.get("/api/v1/admin/users", async (req) => {
     };
   });
 });
-app.post("/api/v1/admin/users", async (req) => {
-  requireAdmin(getCurrentUser(req));
-  const body = CreateUserSchema.parse(req.body);
+async function createUserAccount(req, body) {
   if (appUsers.some((user) => user.email.toLowerCase() === body.email.toLowerCase())) {
     throw new HttpProblem(409, "USER_EMAIL_EXISTS", "Email \u0111\xE3 \u0111\u01B0\u1EE3c s\u1EED d\u1EE5ng", "\u0110\xE3 t\u1ED3n t\u1EA1i t\xE0i kho\u1EA3n v\u1EDBi email n\xE0y.");
   }
@@ -5215,7 +5404,7 @@ app.post("/api/v1/admin/users", async (req) => {
   if (body.portal === "BRANCH" && (!branch || !cluster || !department)) {
     throw new HttpProblem(422, "BRANCH_ASSIGNMENT_INVALID", "Ph\xE2n c\xF4ng chi nh\xE1nh kh\xF4ng h\u1EE3p l\u1EC7", "Chi nh\xE1nh ho\u1EB7c Ph\xF2ng/PGD kh\xF4ng t\u1ED3n t\u1EA1i trong C\u1EE5m \u0111\u1ECBa b\xE0n \u0111\xE3 c\u1EA5u h\xECnh.");
   }
-  const scopes = ["BRANCH_INPUT", "BRANCH_CONTROLLER"].includes(body.primaryRole) ? [{
+  const scopes = ["BRANCH_INPUT", "BRANCH_CONTROLLER", "BRANCH_LEADER"].includes(body.primaryRole) ? [{
     scopeType: "BRANCH",
     orgUnitId: branch?.id,
     orgUnitCode: branch?.code,
@@ -5269,8 +5458,41 @@ app.post("/api/v1/admin/users", async (req) => {
     internalTeam.leaderName = newUser.fullName;
     internalTeam.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
   }
-  await persistLocalState();
   return { user: newUser, temporaryPassword };
+}
+app.post("/api/v1/admin/users", async (req) => {
+  requireAdmin(getCurrentUser(req));
+  const response = await createUserAccount(req, CreateUserSchema.parse(req.body));
+  await persistLocalState();
+  return response;
+});
+app.post("/api/v1/admin/users/imports/commit", async (req, reply) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = BulkUserImportSchema.parse(req.body);
+  const idempotency = idempotencyContext(req, actor, body);
+  if (idempotency.replay) return reply.code(201).send(idempotency.replay);
+  const batchId = `user-import-${crypto5.randomUUID()}`;
+  const result = { batchId, created: [], failed: [] };
+  for (const row of body.rows) {
+    try {
+      const created = await createUserAccount(req, row.user);
+      result.created.push({ rowNumber: row.rowNumber, ...created });
+    } catch (error) {
+      const problem = normalizeProblem(error);
+      if (problem.status >= 500) throw error;
+      result.failed.push({ rowNumber: row.rowNumber, code: problem.code, message: problem.message });
+    }
+  }
+  recordUserSecurityEvent(req, actor, {
+    type: "ADMIN_USER_IMPORT_COMMITTED",
+    outcome: "SUCCESS",
+    subject: batchId,
+    detail: `Nh\u1EADp theo l\xF4: t\u1EA1o ${result.created.length} t\xE0i kho\u1EA3n, ${result.failed.length} d\xF2ng kh\xF4ng t\u1EA1o.`
+  });
+  rememberIdempotentResponse(idempotency, result);
+  await persistLocalState();
+  return reply.code(201).send(result);
 });
 app.post("/api/v1/admin/users/:id/password", async (req) => {
   requireAdmin(getCurrentUser(req));
@@ -5734,40 +5956,56 @@ app.post("/api/v1/findings", async (req) => {
   await persistLocalState();
   return newFinding;
 });
+app.get("/api/v1/imports/batches", async (req) => {
+  const user = getCurrentUser(req);
+  requireRoles(user, ["ADMIN", "INTERNAL_OFFICER", "SUPERVISOR"]);
+  const { campaignId, channelId } = req.query;
+  const items = importBatches.filter((batch) => {
+    if (campaignId && batch.campaignId !== campaignId) return false;
+    if (channelId && batch.channelId !== channelId) return false;
+    const campaign = batch.campaignId ? auditCampaigns.find((item) => item.id === batch.campaignId) : void 0;
+    return !campaign || canAccessCampaign(user, campaign);
+  });
+  return { items, total: items.length };
+});
 app.post("/api/v1/imports/findings", async (req, reply) => {
   const user = getCurrentUser(req);
   requireRoles(user, ["ADMIN", "INTERNAL_OFFICER", "SUPERVISOR"]);
   const batch = BulkFindingImportSchema.parse(req.body);
+  const idempotency = batch.sourceType === "API_BULK" ? void 0 : idempotencyContext(req, user, batch);
+  if (idempotency?.replay) return reply.code(201).send(idempotency.replay);
   const imported = [];
   let duplicateCount = 0;
-  const deduplicationKey = (row) => [
-    row.channelId,
-    row.branchCode,
-    row.cif,
-    row.errorCode,
-    row.decisionNo || ""
-  ].join("");
-  const seenKeys = new Set(findings.map((item) => deduplicationKey(item)));
+  const batchId = `batch-${crypto5.randomUUID()}`;
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const seenKeys = new Set(findings.map((item) => buildFindingBusinessKey(item)));
   for (const row of batch.rows) {
-    const key = deduplicationKey(row);
+    const key = buildFindingBusinessKey(row);
     if (seenKeys.has(key)) {
       duplicateCount += 1;
       continue;
     }
     seenKeys.add(key);
-    imported.push(createFindingFromDto(row, user));
+    imported.push({
+      ...createFindingFromDto(row, user),
+      importBatchId: batchId,
+      importedByUserId: user.id,
+      importedByName: user.fullName,
+      importedAt: now,
+      importSourceType: batch.sourceType,
+      importSourceFileName: batch.sourceFileName
+    });
   }
-  const batchId = `batch-${crypto5.randomUUID()}`;
   const channel = reportChannels.find((item) => item.id === batch.rows[0].channelId);
-  const now = (/* @__PURE__ */ new Date()).toISOString();
   findings.unshift(...imported);
   importBatches.unshift({
     id: batchId,
     channelId: channel.id,
     channelName: channel.name,
+    campaignId: batch.rows[0].campaignId,
     channelVersionId: channel.currentVersionId || "v1",
     fileName: batch.sourceFileName,
-    sourceType: "API_BULK",
+    sourceType: batch.sourceType,
     totalRows: batch.rows.length,
     validRowsCount: imported.length,
     errorRowsCount: duplicateCount,
@@ -5779,14 +6017,30 @@ app.post("/api/v1/imports/findings", async (req, reply) => {
     committedFindingsCount: imported.length
   });
   await persistLocalState();
-  return reply.code(201).send({
+  const response = {
     batchId,
     sourceFileName: batch.sourceFileName,
     customerCount: uniqueCustomerCount(imported),
     findingCount: imported.length,
     duplicateCount,
     findings: imported
-  });
+  };
+  if (idempotency) rememberIdempotentResponse(idempotency, response);
+  await persistLocalState();
+  return reply.code(201).send(response);
+});
+app.post("/api/v1/imports/findings/docx-preview", async (req, reply) => {
+  const user = getCurrentUser(req);
+  requireRoles(user, ["ADMIN", "INTERNAL_OFFICER", "SUPERVISOR"]);
+  const data = await req.file();
+  if (!data) throw new HttpProblem(422, "FINDING_DOCX_REQUIRED", "Thi\u1EBFu t\u1EC7p DOCX", "H\xE3y ch\u1ECDn t\u1EC7p DOCX c\xF3 b\u1EA3ng sai s\xF3t \u0111\u01B0\u1EE3c h\u1ED7 tr\u1EE3.");
+  if (!data.filename.toLowerCase().endsWith(".docx")) throw new HttpProblem(422, "FINDING_DOCX_INVALID", "Sai \u0111\u1ECBnh d\u1EA1ng", "Ch\u1EC9 h\u1ED7 tr\u1EE3 t\u1EC7p .docx \u1EDF ngu\u1ED3n n\xE0y.");
+  try {
+    return reply.send({ fileName: data.filename, rows: await parseFindingDocx(await data.toBuffer()) });
+  } catch (error) {
+    if (error instanceof FindingDocumentImportError) throw new HttpProblem(422, "FINDING_DOCX_UNSUPPORTED", "Kh\xF4ng th\u1EC3 b\xF3c t\xE1ch DOCX", error.message);
+    throw error;
+  }
 });
 app.get("/api/v1/findings/:id/approval-candidates", async (req) => {
   const user = getCurrentUser(req);
@@ -6197,7 +6451,7 @@ app.get("/api/v1/dashboards/summary", async (req) => {
 });
 app.get("/api/v1/reports/definitions", async (req) => {
   const user = getCurrentUser(req);
-  return user.roles.includes("ADMIN") ? reportDefinitions : reportDefinitions.filter((definition) => definition.createdByUserId === user.id);
+  return reportDefinitions.filter((definition) => canAccessReportDefinition(user, definition));
 });
 app.post("/api/v1/reports/definitions", async (req, reply) => {
   const user = getCurrentUser(req);
@@ -6212,12 +6466,48 @@ app.post("/api/v1/reports/definitions", async (req, reply) => {
     columns: body.columns,
     query: body.query,
     exportColumns: body.exportColumns,
+    visibility: body.visibility,
+    sharedWithRoles: body.sharedWithRoles,
+    sourceReportDefinitionId: body.sourceReportDefinitionId,
     createdByUserId: user.id,
     createdByName: user.fullName,
     createdAt: now,
     updatedAt: now
   };
   reportDefinitions.unshift(definition);
+  await persistLocalState();
+  return reply.code(201).send(definition);
+});
+app.get("/api/v1/reports/dashboards", async (req) => {
+  const user = getCurrentUser(req);
+  return dashboardDefinitions.filter((definition) => canAccessDashboardDefinition(user, definition)).map((definition) => ({
+    ...definition,
+    reportDefinitionIds: definition.reportDefinitionIds.filter((id) => {
+      const report = reportDefinitions.find((item) => item.id === id);
+      return report ? canAccessReportDefinition(user, report) : false;
+    })
+  })).filter((definition) => definition.reportDefinitionIds.length > 0);
+});
+app.post("/api/v1/reports/dashboards", async (req, reply) => {
+  const user = getCurrentUser(req);
+  const body = CreateDashboardDefinitionSchema.parse(req.body);
+  const reports = body.reportDefinitionIds.map((id) => reportDefinitions.find((definition2) => definition2.id === id));
+  if (reports.some((report) => !report || !canAccessReportDefinition(user, report))) {
+    throw new HttpProblem(403, "DASHBOARD_REPORT_ACCESS_DENIED", "Kh\xF4ng c\xF3 quy\u1EC1n t\u1EA1o dashboard", "Ch\u1EC9 c\xF3 th\u1EC3 th\xEAm c\xE1c b\xE1o c\xE1o b\u1EA1n \u0111\u01B0\u1EE3c ph\xE9p xem v\xE0o dashboard.");
+  }
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const definition = {
+    id: `dashboard-${crypto5.randomUUID()}`,
+    name: body.name,
+    reportDefinitionIds: body.reportDefinitionIds,
+    visibility: body.visibility,
+    sharedWithRoles: body.sharedWithRoles,
+    createdByUserId: user.id,
+    createdByName: user.fullName,
+    createdAt: now,
+    updatedAt: now
+  };
+  dashboardDefinitions.unshift(definition);
   await persistLocalState();
   return reply.code(201).send(definition);
 });

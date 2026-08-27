@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { WorkflowStatus } from './common';
+import { UserRole, WorkflowStatus } from './common';
 
 export interface DashboardSummary {
   totalFindings: number;
@@ -361,6 +361,7 @@ export const ReportRunRequestSchema = z.object({
   rules: z.array(ReportFilterRuleSchema).max(20).default([]),
   match: z.enum(['ALL', 'ANY']).default('ALL'),
   groupBy: ReportFieldKeySchema.default('dimension.branch'),
+  pivotBy: ReportFieldKeySchema.optional(),
   metrics: z.array(ReportMetricKeySchema).min(1).max(REPORT_METRIC_KEYS.length).default([
     'metric.customer_count', 'metric.finding_count', 'metric.exposure_sum',
   ]),
@@ -370,6 +371,12 @@ export const ReportRunRequestSchema = z.object({
   const groupField = REPORT_FIELD_CATALOG.find(item => item.key === query.groupBy)!;
   if (!groupField.groupable) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['groupBy'], message: `${query.groupBy} không phải key phân nhóm` });
+  }
+  if (query.pivotBy && query.pivotBy === query.groupBy) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['pivotBy'], message: 'Trường cột của bảng chéo phải khác trường hàng.' });
+  }
+  if (query.pivotBy && !REPORT_FIELD_CATALOG.find(item => item.key === query.pivotBy)?.groupable) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['pivotBy'], message: `${query.pivotBy} không phải key phân nhóm` });
   }
   if (new Set(query.metrics).size !== query.metrics.length) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['metrics'], message: 'Key chỉ số không được lặp' });
@@ -406,12 +413,33 @@ export interface ReportGroupRow {
   metricValues: Partial<Record<ReportMetricKey, number>>;
 }
 
+export interface ReportPivotColumn {
+  key: string;
+  label: string;
+}
+
+export interface ReportPivotRow {
+  key: string;
+  label: string;
+  values: Record<string, number>;
+  total: number;
+}
+
+export interface ReportPivotResult {
+  rowField: ReportFieldKey;
+  columnField: ReportFieldKey;
+  metric: ReportMetricKey;
+  columns: ReportPivotColumn[];
+  rows: ReportPivotRow[];
+}
+
 export interface ReportRunResult {
   generatedAt: string;
   query: ReportRunRequest;
   matchedFindingCount: number;
   metricValues: Partial<Record<ReportMetricKey, number>>;
   groups: ReportGroupRow[];
+  pivot?: ReportPivotResult;
 }
 
 export interface ReportDefinition {
@@ -422,11 +450,22 @@ export interface ReportDefinition {
   columns: Array<z.infer<typeof ReportColumnSchema>>;
   query?: ReportRunRequest;
   exportColumns?: ReportFieldKey[];
+  visibility: ReportDefinitionVisibility;
+  sharedWithRoles: UserRole[];
+  sourceReportDefinitionId?: string;
   createdByUserId: string;
   createdByName: string;
   createdAt: string;
   updatedAt: string;
 }
+
+export const REPORT_DEFINITION_VISIBILITIES = ['PRIVATE', 'ROLE_SHARED'] as const;
+export type ReportDefinitionVisibility = (typeof REPORT_DEFINITION_VISIBILITIES)[number];
+export const ReportDefinitionVisibilitySchema = z.enum(REPORT_DEFINITION_VISIBILITIES);
+export const ReportShareRoleSchema = z.enum([
+  'ADMIN', 'SUPERVISOR', 'INTERNAL_APPROVER', 'INTERNAL_OFFICER',
+  'BRANCH_CONTROLLER', 'BRANCH_LEADER', 'BRANCH_INPUT', 'VIEWER',
+]);
 
 export const CreateReportDefinitionSchema = z.object({
   name: z.string().trim().min(3).max(150),
@@ -435,9 +474,42 @@ export const CreateReportDefinitionSchema = z.object({
   columns: z.array(ReportColumnSchema).max(15).default([]),
   query: ReportRunRequestSchema.optional(),
   exportColumns: z.array(ReportFieldKeySchema).max(REPORT_FIELD_KEYS.length).default([]),
+  visibility: ReportDefinitionVisibilitySchema.default('PRIVATE'),
+  sharedWithRoles: z.array(ReportShareRoleSchema).max(8).default([]),
+  sourceReportDefinitionId: z.string().min(1).max(200).optional(),
 }).superRefine((definition, context) => {
   if (definition.columns.length === 0 && definition.exportColumns.length === 0) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['exportColumns'], message: 'Phải chọn ít nhất một cột xuất báo cáo' });
   }
+  if (definition.visibility === 'ROLE_SHARED' && definition.sharedWithRoles.length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['sharedWithRoles'], message: 'Chọn ít nhất một vai trò được xem báo cáo chia sẻ' });
+  }
 });
 export type CreateReportDefinitionDTO = z.input<typeof CreateReportDefinitionSchema>;
+
+export interface DashboardDefinition {
+  id: string;
+  name: string;
+  reportDefinitionIds: string[];
+  visibility: ReportDefinitionVisibility;
+  sharedWithRoles: UserRole[];
+  createdByUserId: string;
+  createdByName: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const CreateDashboardDefinitionSchema = z.object({
+  name: z.string().trim().min(3).max(150),
+  reportDefinitionIds: z.array(z.string().min(1)).min(1).max(6),
+  visibility: ReportDefinitionVisibilitySchema.default('PRIVATE'),
+  sharedWithRoles: z.array(ReportShareRoleSchema).max(8).default([]),
+}).superRefine((dashboard, context) => {
+  if (new Set(dashboard.reportDefinitionIds).size !== dashboard.reportDefinitionIds.length) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['reportDefinitionIds'], message: 'Một báo cáo chỉ được thêm một lần vào dashboard' });
+  }
+  if (dashboard.visibility === 'ROLE_SHARED' && dashboard.sharedWithRoles.length === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['sharedWithRoles'], message: 'Chọn ít nhất một vai trò được xem dashboard chia sẻ' });
+  }
+});
+export type CreateDashboardDefinitionDTO = z.input<typeof CreateDashboardDefinitionSchema>;

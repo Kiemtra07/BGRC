@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { CustomerRecord, BatchUploadResult, UserProfile } from '../../types';
 import { ExcelFastIngestionService } from '../../lib/excel-parser';
 import { api } from '../../services/api';
+import type { AuditCampaign, ReportChannel } from '../../../shared/contracts';
 import {
   Upload,
   Archive,
@@ -21,6 +22,8 @@ import {
 
 interface FastDataIngestionProps {
   currentUser: UserProfile;
+  channels: ReportChannel[];
+  campaigns: AuditCampaign[];
   onCommitNewCustomers: (newCustomers: CustomerRecord[]) => void | Promise<void>;
   onClose?: () => void;
 }
@@ -37,15 +40,21 @@ const normalizeImportedDate = (value?: string) => {
 
 export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
   currentUser,
+  channels,
+  campaigns,
   onCommitNewCustomers,
   onClose
 }) => {
-  const [activeMode, setActiveMode] = useState<'MULTI_EXCEL' | 'ZIP_BATCH' | 'CLIPBOARD' | 'PRESET_SAMPLE'>('MULTI_EXCEL');
+  const [activeMode, setActiveMode] = useState<'MULTI_EXCEL' | 'ZIP_BATCH' | 'CLIPBOARD' | 'DOCX' | 'PRESET_SAMPLE'>('MULTI_EXCEL');
   const [isProcessing, setIsProcessing] = useState(false);
   const [uploadResults, setUploadResults] = useState<BatchUploadResult[]>([]);
   const [stagedCustomers, setStagedCustomers] = useState<CustomerRecord[]>([]);
   const [pastedText, setPastedText] = useState('');
   const [selectedFileCount, setSelectedFileCount] = useState(0);
+  const [channelId, setChannelId] = useState('');
+  const [campaignId, setCampaignId] = useState('');
+  const availableCampaigns = campaigns.filter(campaign => campaign.status === 'ACTIVE' && campaign.reportChannelIds.includes(channelId));
+  const targetSelected = Boolean(channelId && campaignId);
 
   // 1. Handle Multi-Excel selection
   const handleMultiExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -96,6 +105,43 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
     setUploadResults([res]);
     setStagedCustomers(res.customers);
     setIsProcessing(false);
+  };
+
+  const handleDocxUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file || !targetSelected) return;
+    setIsProcessing(true);
+    try {
+      const preview = await api.previewFindingDocx(file);
+      const customers = new Map<string, CustomerRecord>();
+      preview.rows.forEach(row => {
+        const key = `${row.branchCode}:${row.cif}`;
+        const customer: CustomerRecord = customers.get(key) ?? {
+          id: `DOCX-${row.branchCode}-${row.cif}`, cif: row.cif, customerName: row.customerName,
+          clusterName: 'Theo chuyên đề', branchCode: row.branchCode, branchName: row.branchName,
+          department: row.department || 'Chưa có trong DOCX', decisionNo: row.decisionNo || 'Chưa có trong DOCX', auditDate: '', inspectorName: currentUser.name, creditBalance: 0,
+          collateralValue: 0,
+          loanGroup: 'Chưa có trong DOCX', loanPurpose: 'Chưa có trong DOCX', officerName: 'Chưa có trong DOCX',
+          deptHeadName: 'Chưa có trong DOCX', errors: [], totalErrors: 0, activeErrors: 0, resolvedErrors: 0,
+        };
+        customer.errors.push({
+          id: `DOCX-ERR-${row.rowNumber}-${row.errorCode}`, customerId: customer.id,
+          errorCode: row.errorCode, errorGroup: row.errorCode.slice(0, 4), errorTitle: row.errorTitle,
+          description: row.description, quantity: 1, exposureAmount: 0, status: 'PENDING',
+          attachments: [], history: [], isOverdue: false,
+        });
+        customer.totalErrors = customer.errors.length;
+        customer.activeErrors = customer.errors.length;
+        customers.set(key, customer);
+      });
+      const staged = [...customers.values()];
+      setStagedCustomers(staged);
+      setUploadResults([{ fileName: preview.fileName, totalCustomersFound: staged.length, totalErrorsExtracted: preview.rows.length, branchDetected: staged[0]?.branchName || 'Nhiều chi nhánh', decisionNoDetected: staged[0]?.decisionNo || 'Không xác định', status: 'SUCCESS', message: `Đã bóc tách ${preview.rows.length} mã lỗi để xem trước.`, customers: staged }]);
+    } catch (error) {
+      alert(error instanceof Error ? error.message : 'Không thể đọc DOCX.');
+    } finally {
+      setIsProcessing(false);
+    }
   };
 
   // 4. One-Click Desktop Sample Loader
@@ -254,12 +300,18 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
       alert('Không có khách hàng nào có mã sai sót hợp lệ để lưu vào hệ thống.');
       return;
     }
+    if (!targetSelected) {
+      alert('Hãy chọn Loại báo cáo và Chuyên đề trước khi nhập dữ liệu.');
+      return;
+    }
     try {
       setIsProcessing(true);
       const result = await api.importFindings({
         sourceFileName: uploadResults.map(item => item.fileName).join(', ') || 'clipboard-import.xlsx',
+        sourceType: activeMode === 'ZIP_BATCH' ? 'ZIP_XLSX' : activeMode === 'CLIPBOARD' ? 'CLIPBOARD' : activeMode === 'DOCX' ? 'DOCX' : 'XLSX',
         rows: customersWithErrors.flatMap(customer => customer.errors.map(error => ({
-          channelId: 'chan-audit-bgs',
+          channelId,
+          campaignId,
           cif: customer.cif,
           customerName: customer.customerName,
           clusterName: customer.clusterName,
@@ -292,7 +344,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
         }))),
       });
       await onCommitNewCustomers(customersWithErrors);
-      alert(`Đã nạp ${result.customerCount} khách hàng, ${result.findingCount} mã lỗi; bỏ qua ${result.duplicateCount} dòng trùng.`);
+      alert(`Đã nhập ${result.customerCount} khách hàng, ${result.findingCount} mã lỗi; bỏ qua ${result.duplicateCount} dòng trùng.`);
       setStagedCustomers([]);
       setUploadResults([]);
       if (onClose) onClose();
@@ -317,10 +369,10 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
           </div>
           <div>
             <h2 className="text-xl font-black tracking-tight">
-              Nạp dữ liệu
+              Nhập dữ liệu
             </h2>
             <p className="text-xs text-brand-100 mt-1">
-              Chọn nguồn dữ liệu cần nạp.
+              Chọn loại báo cáo, chuyên đề và nguồn dữ liệu.
             </p>
           </div>
         </div>
@@ -334,8 +386,25 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
         )}
       </div>
 
+      <div className="grid gap-3 border-b border-slate-200 bg-white p-4 md:grid-cols-2">
+        <label className="space-y-1 text-xs font-bold text-slate-700">
+          <span>Loại báo cáo</span>
+          <select value={channelId} onChange={event => { setChannelId(event.target.value); setCampaignId(''); }} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5">
+            <option value="">Chọn loại báo cáo</option>
+            {channels.filter(channel => channel.isActive).map(channel => <option key={channel.id} value={channel.id}>{channel.name}</option>)}
+          </select>
+        </label>
+        <label className="space-y-1 text-xs font-bold text-slate-700">
+          <span>Chuyên đề</span>
+          <select value={campaignId} onChange={event => setCampaignId(event.target.value)} disabled={!channelId} className="w-full rounded-xl border border-slate-300 bg-white px-3 py-2.5 disabled:bg-slate-100">
+            <option value="">Chọn chuyên đề</option>
+            {availableCampaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
+          </select>
+        </label>
+      </div>
+
       {/* Mode Selector Tabs */}
-      <div className="grid grid-cols-4 border-b border-slate-200 bg-slate-50/70 p-2 gap-2 text-xs">
+      <div className="grid grid-cols-2 md:grid-cols-5 border-b border-slate-200 bg-slate-50/70 p-2 gap-2 text-xs">
         <button
           onClick={() => setActiveMode('MULTI_EXCEL')}
           className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-bold transition ${
@@ -383,6 +452,13 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
           <FolderOpen className="w-4 h-4 text-indigo-600" />
           <span>Dữ liệu mẫu</span>
         </button>
+
+        <button
+          onClick={() => setActiveMode('DOCX')}
+          className={`flex items-center justify-center gap-2 py-2.5 px-3 rounded-xl font-bold transition ${activeMode === 'DOCX' ? 'bg-white text-brand-600 shadow-sm border border-brand-200' : 'text-slate-600 hover:bg-white/60'}`}
+        >
+          <Upload className="w-4 h-4 text-violet-600" /><span>Tệp DOCX</span>
+        </button>
       </div>
 
       {/* Main Mode Action Area */}
@@ -397,7 +473,8 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
               accept=".xlsx,.xls,.csv"
               id="multi-excel-input"
               className="hidden"
-              onChange={handleMultiExcelUpload}
+               onChange={handleMultiExcelUpload}
+               disabled={!targetSelected}
             />
             <label htmlFor="multi-excel-input" className="cursor-pointer flex flex-col items-center">
               <div className="w-16 h-16 rounded-2xl bg-brand-50 group-hover:bg-brand-100 text-brand-500 flex items-center justify-center mb-3 transition shadow-sm">
@@ -424,7 +501,8 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
               accept=".zip,.rar"
               id="zip-batch-input"
               className="hidden"
-              onChange={handleZipUpload}
+               onChange={handleZipUpload}
+               disabled={!targetSelected}
             />
             <label htmlFor="zip-batch-input" className="cursor-pointer flex flex-col items-center">
               <div className="w-16 h-16 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mb-3 transition shadow-sm">
@@ -463,7 +541,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
             <div className="flex justify-end">
               <button
                 onClick={handlePasteProcess}
-                disabled={!pastedText.trim()}
+                 disabled={!pastedText.trim() || !targetSelected}
                 className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 rounded-xl shadow-sm transition"
               >
                 Đọc dữ liệu
@@ -472,7 +550,18 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
           </div>
         )}
 
-        {/* MODE 4: PRESET SAMPLE LOADER */}
+        {activeMode === 'DOCX' && (
+          <div className="border-2 border-dashed border-violet-300 rounded-2xl p-8 text-center bg-violet-50/30">
+            <input type="file" accept=".docx" id="docx-finding-input" className="hidden" onChange={handleDocxUpload} disabled={!targetSelected} />
+            <label htmlFor="docx-finding-input" className="cursor-pointer flex flex-col items-center">
+              <Upload className="mb-3 h-10 w-10 text-violet-600" />
+              <h3 className="text-base font-bold text-slate-800">Chọn tệp DOCX có bảng sai sót</h3>
+              <p className="mt-1 text-xs text-slate-500">Bảng phải có Tên khách hàng, CIF, Mã chi nhánh và Mã sai sót.</p>
+            </label>
+          </div>
+        )}
+
+        {/* MODE 5: PRESET SAMPLE LOADER */}
         {activeMode === 'PRESET_SAMPLE' && (
           <div className="p-6 rounded-2xl bg-indigo-50/60 border border-indigo-200 flex items-center justify-between">
             <div className="flex items-center gap-4">
@@ -490,7 +579,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
             </div>
             <button
               onClick={handleLoadDesktopSample}
-              disabled={isProcessing}
+                 disabled={isProcessing || !targetSelected}
               className="px-5 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md transition flex-shrink-0"
             >
               {isProcessing ? 'Đang nạp...' : 'Nạp dữ liệu mẫu'}

@@ -9,7 +9,7 @@ import {
   Database,
   ClipboardCheck,
 } from 'lucide-react';
-import { AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO } from '../../../shared/contracts';
+import { AuditCampaign, BulkUserImportDTO, BulkUserImportResult, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO } from '../../../shared/contracts';
 import { DynamicChannelManager } from './DynamicChannelManager';
 import { OrganizationManager } from './OrganizationManager';
 import { UserManager } from './UserManager';
@@ -27,6 +27,7 @@ interface Props {
   onOrgUnitUpdated: (id: string, unit: UpdateOrgUnitDTO) => Promise<void>;
   onOrgUnitDeleted: (id: string) => Promise<void>;
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
+  onUsersImported: (batch: BulkUserImportDTO) => Promise<BulkUserImportResult>;
   onChannelCreated: (channel: Partial<CreateReportChannelDTO>) => Promise<void>;
   onChannelUpdated: (id: string, channel: UpdateReportChannelDTO) => Promise<void>;
   onChannelDeleted: (id: string) => Promise<void>;
@@ -49,6 +50,7 @@ export const AdminPortal: React.FC<Props> = ({
   onOrgUnitUpdated,
   onOrgUnitDeleted,
   onUserCreated,
+  onUsersImported,
   onChannelCreated,
   onChannelUpdated,
   onChannelDeleted,
@@ -130,7 +132,7 @@ export const AdminPortal: React.FC<Props> = ({
         )}
 
         {activeTab === 'USERS' && (
-          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} />
+          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} onUsersImported={onUsersImported} />
         )}
 
         {activeTab === 'PERMISSIONS' && (

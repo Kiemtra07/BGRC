@@ -29,6 +29,8 @@ describe('UI and business terminology architecture', () => {
     expect(manager).toContain('Theo địa bàn');
     expect(manager).toContain('Phê duyệt HT');
     expect(manager).toContain('Kiểm soát chi nhánh');
+    expect(manager).toContain('/templates/mau-nhap-nguoi-dung.xlsx');
+    expect(manager).toContain('Tải mẫu Excel');
     expect(manager).toContain('Cụm chỉ dùng để nhóm địa bàn; quyền duyệt thuộc kiểm soát chi nhánh.');
     expect(manager).not.toContain('Duyệt đẩy');
     expect(manager).toContain("unit.type === 'INTERNAL_TEAM'");
@@ -50,6 +52,11 @@ describe('UI and business terminology architecture', () => {
     expect(read('src/components/portal/FindingDetailPage.tsx')).toContain('Tài liệu và bằng chứng');
     expect(read('src/components/portal/FindingDetailPage.tsx')).toContain('Nội dung cần giải trình');
     expect(read('src/components/internal/FastDataIngestion.tsx')).toContain('api.importFindings');
+    const ingestion = read('src/components/internal/FastDataIngestion.tsx');
+    expect(ingestion).toContain('Nhập dữ liệu');
+    expect(ingestion).toContain('Loại báo cáo');
+    expect(ingestion).toContain('Chuyên đề');
+    expect(ingestion).not.toContain("channelId: 'chan-audit-bgs'");
     expect(read('src/components/reports/ReportsWorkspace.tsx')).toContain('data-testid="reports-workspace"');
   });
 

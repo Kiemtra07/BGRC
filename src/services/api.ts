@@ -3,12 +3,13 @@ import {
   SubmitBranchCommandDTO, BranchControlApproveCommandDTO, BranchControlRejectCommandDTO,
   BranchLeaderApproveCommandDTO, BranchLeaderRejectCommandDTO, SetFindingSpecialCaseDTO,
   InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO,
-  EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, ReportFilterQuery,
+  EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, CreateDashboardDefinitionDTO, DashboardDefinition, ReportFilterQuery,
   AuditLogEntry, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness,
   ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO, CreatedUserResponse, ResetUserPasswordDTO,
+  BulkUserImportDTO, BulkUserImportResult,
   LoginDTO, LoginResponse,
   AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, UpdateAuditCampaignDTO, UpdateOrgUnitDTO,
 } from '../../shared/contracts';
@@ -135,6 +136,10 @@ class ApiService {
   public createReportDefinition = (data: CreateReportDefinitionDTO): Promise<ReportDefinition> => (
     this.request('/reports/definitions', { method: 'POST', body: JSON.stringify(data) })
   );
+  public getDashboardDefinitions = (): Promise<DashboardDefinition[]> => this.request('/reports/dashboards');
+  public createDashboardDefinition = (data: CreateDashboardDefinitionDTO): Promise<DashboardDefinition> => (
+    this.request('/reports/dashboards', { method: 'POST', body: JSON.stringify(data) })
+  );
 
   public createOrgUnit(data: Partial<OrgUnit>): Promise<OrgUnit> {
     return this.request('/admin/org-units', { method: 'POST', body: JSON.stringify(data) });
@@ -147,6 +152,13 @@ class ApiService {
   }
   public createUser(data: CreateUserDTO): Promise<CreatedUserResponse> {
     return this.request('/admin/users', { method: 'POST', body: JSON.stringify(data) });
+  }
+  public importUsers(data: BulkUserImportDTO): Promise<BulkUserImportResult> {
+    return this.request('/admin/users/imports/commit', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify(data),
+    });
   }
   public resetUserPassword(id: string, data: ResetUserPasswordDTO = {}): Promise<CreatedUserResponse> {
     return this.request(`/admin/users/${id}/password`, { method: 'POST', body: JSON.stringify(data) });
@@ -197,7 +209,21 @@ class ApiService {
     return this.request('/findings', { method: 'POST', body: JSON.stringify(data) });
   }
   public importFindings(data: BulkFindingImportDTO): Promise<{ batchId: string; customerCount: number; findingCount: number; duplicateCount: number; findings: Finding[] }> {
-    return this.request('/imports/findings', { method: 'POST', body: JSON.stringify(data) });
+    return this.request('/imports/findings', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': crypto.randomUUID() },
+      body: JSON.stringify(data),
+    });
+  }
+  public async previewFindingDocx(file: File): Promise<{ fileName: string; rows: Array<{ rowNumber: number; cif: string; customerName: string; branchCode: string; branchName: string; errorCode: string; errorTitle: string; description: string; department?: string; decisionNo?: string }> }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${API_BASE}/imports/findings/docx-preview`, { method: 'POST', credentials: 'same-origin', body: formData });
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(problem.detail || problem.title || 'Không thể đọc DOCX.', response.status, problem.code);
+    }
+    return response.json();
   }
 
   private async workflowCommand<T extends { expectedVersion: number }>(endpoint: string, dto: T): Promise<Finding> {

@@ -10,6 +10,7 @@ const CalendarDateSchema = z.string()
   }, 'Ngày lịch không hợp lệ');
 
 export type ImportBatchStatus = 'STAGING' | 'VALIDATING' | 'VALIDATED_WITH_ERRORS' | 'READY_TO_COMMIT' | 'COMMITTED' | 'FAILED';
+export type FindingImportSourceType = 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'API_BULK' | 'WEB_FORM';
 
 export interface StagingValidationError {
   rowNumber: number;
@@ -35,9 +36,10 @@ export interface ImportBatch {
   id: string;
   channelId: string;
   channelName: string;
+  campaignId?: string;
   channelVersionId: string;
   fileName: string;
-  sourceType: 'EXCEL_IMPORT' | 'API_BULK' | 'WEB_FORM';
+  sourceType: FindingImportSourceType | 'EXCEL_IMPORT';
   totalRows: number;
   validRowsCount: number;
   errorRowsCount: number;
@@ -87,6 +89,27 @@ export type WebFormFindingDTO = z.infer<typeof WebFormFindingSchema>;
 
 export const BulkFindingImportSchema = z.object({
   sourceFileName: z.string().trim().min(1).max(255),
+  sourceType: z.enum(['XLSX', 'ZIP_XLSX', 'CLIPBOARD', 'DOCX', 'API_BULK', 'WEB_FORM']).default('API_BULK'),
   rows: z.array(WebFormFindingSchema).min(1).max(5000),
+}).superRefine((value, context) => {
+  if (value.sourceType !== 'API_BULK' && value.rows.some(row => !row.campaignId?.trim())) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['rows'], message: 'Chuyên đề là bắt buộc đối với dữ liệu nhập từ giao diện.' });
+  }
+  if (value.sourceType !== 'API_BULK' && value.rows.some(row => row.channelId !== value.rows[0]?.channelId || row.campaignId !== value.rows[0]?.campaignId)) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['rows'], message: 'Một lần nhập chỉ được dùng một loại báo cáo và một chuyên đề.' });
+  }
 });
 export type BulkFindingImportDTO = z.infer<typeof BulkFindingImportSchema>;
+
+type FindingBusinessKeyInput = Pick<WebFormFindingDTO, 'channelId' | 'campaignId' | 'branchCode' | 'cif' | 'errorCode' | 'decisionNo'>;
+
+const compactIdentifier = (value: string | undefined): string => (value || '').trim().replace(/\s+/g, ' ');
+
+export const buildFindingBusinessKey = (finding: FindingBusinessKeyInput): string => [
+  compactIdentifier(finding.channelId),
+  compactIdentifier(finding.campaignId),
+  compactIdentifier(finding.branchCode).replace(/^[A-Z](?=\d)/i, ''),
+  compactIdentifier(finding.cif).replace(/\s+/g, ''),
+  compactIdentifier(finding.errorCode).toUpperCase(),
+  compactIdentifier(finding.decisionNo),
+].join('|');

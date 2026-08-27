@@ -10,15 +10,19 @@ import {
   ShieldCheck,
   UserCheck,
   Users,
+  Upload,
+  Download,
   X,
 } from 'lucide-react';
-import { CreatedUserResponse, CreateUserDTO, OrgUnit, UserProfile, UserRole, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
+import { BulkUserImportDTO, BulkUserImportResult, CreatedUserResponse, CreateUserDTO, OrgUnit, UserProfile, UserRole, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
 import { userRoleLabels } from '../../content/ui-copy';
+import { parseUserImportFile, type UserImportPreviewRow } from '../../lib/user-import';
 
 interface Props {
   users: UserProfile[];
   orgUnits: OrgUnit[];
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
+  onUsersImported: (batch: BulkUserImportDTO) => Promise<BulkUserImportResult>;
 }
 
 type DirectoryView = 'INTERNAL' | 'GEOGRAPHY';
@@ -52,7 +56,7 @@ const UserCard: React.FC<{ user: UserProfile; compact?: boolean }> = ({ user, co
   </article>
 );
 
-export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated }) => {
+export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, onUsersImported }) => {
   const [directoryView, setDirectoryView] = useState<DirectoryView>('INTERNAL');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
@@ -66,6 +70,8 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated })
   const [selectedDepartment, setSelectedDepartment] = useState('');
   const [toastMessage, setToastMessage] = useState<string | null>(null);
   const [issuedCredential, setIssuedCredential] = useState<{ fullName: string; username: string; password: string } | null>(null);
+  const [userImportPreview, setUserImportPreview] = useState<UserImportPreviewRow[]>([]);
+  const [isImportingUsers, setIsImportingUsers] = useState(false);
 
   const internalTeams = orgUnits.filter(unit => unit.type === 'INTERNAL_TEAM' && unit.isActive);
   const clusters = orgUnits.filter(unit => unit.type === 'CLUSTER' && unit.isActive);
@@ -152,6 +158,49 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated })
 
   const systemUsers = filteredUsers.filter(user => user.portal === 'INTERNAL' && !user.internalTeamId);
 
+  const handleUserImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try {
+      setUserImportPreview(await parseUserImportFile(file, users, orgUnits));
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Không thể đọc tệp người dùng.');
+    } finally {
+      event.target.value = '';
+    }
+  };
+
+  const commitUserImport = async () => {
+    const valid = userImportPreview.filter(row => row.payload && row.errors.length === 0);
+    if (!valid.length) return;
+    setIsImportingUsers(true);
+    const credentials: string[][] = [['Họ và tên', 'Tên đăng nhập', 'Email', 'Mật khẩu tạm']];
+    try {
+      const result = await onUsersImported({ rows: valid.map(row => ({ rowNumber: row.rowNumber, user: row.payload! })) });
+      for (const created of result.created) {
+        const source = valid.find(row => row.rowNumber === created.rowNumber);
+        credentials.push([created.user.fullName, created.user.username, created.user.email, source?.payload?.password || created.temporaryPassword || 'Đăng nhập Google']);
+      }
+      if (result.created.length) {
+        const csv = '\uFEFF' + credentials.map(line => line.map(value => `"${String(value).replace(/"/g, '""')}"`).join(',')).join('\r\n');
+        const url = URL.createObjectURL(new Blob([csv], { type: 'text/csv;charset=utf-8' }));
+        const anchor = document.createElement('a'); anchor.href = url; anchor.download = `tai-khoan-vua-tao-${new Date().toISOString().slice(0, 10)}.csv`;
+        document.body.appendChild(anchor); anchor.click(); anchor.remove(); setTimeout(() => URL.revokeObjectURL(url), 30_000);
+      }
+      const failedByRow = new Map(result.failed.map(row => [row.rowNumber, `${row.code}: ${row.message}`]));
+      setUserImportPreview(previous => previous
+        .filter(row => row.errors.length > 0 || failedByRow.has(row.rowNumber))
+        .map(row => failedByRow.has(row.rowNumber)
+          ? { ...row, errors: [failedByRow.get(row.rowNumber)!] }
+          : row));
+      setToastMessage(`Đã tạo ${result.created.length} tài khoản${result.failed.length ? `; ${result.failed.length} dòng chưa tạo` : ' và tải danh sách mật khẩu một lần'}.`);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Không thể hoàn tất lô tài khoản.');
+    } finally {
+      setIsImportingUsers(false);
+    }
+  };
+
   return (
     <div className="space-y-5" data-testid="admin-user-directory">
       {toastMessage && (
@@ -189,13 +238,12 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated })
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-[#006b68]">Người dùng</p>
             <h3 className="mt-1 text-lg font-bold text-slate-950">Quản lý người dùng</h3>
           </div>
-          <button
-            type="button"
-            onClick={() => setIsAddModalOpen(true)}
-            className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-2.5 text-xs font-bold text-white shadow-md transition hover:bg-[#005956]"
-          >
-            <Plus className="h-4 w-4" /> Thêm người dùng
-          </button>
+          <div className="flex flex-wrap gap-2">
+            <a href="/templates/mau-nhap-nguoi-dung.xlsx" download className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700 hover:bg-slate-50"><Download className="h-4 w-4" /> Tải mẫu Excel</a>
+            <input id="bulk-user-import" type="file" accept=".xlsx" className="hidden" onChange={handleUserImportFile} />
+            <label htmlFor="bulk-user-import" className="inline-flex min-h-11 cursor-pointer items-center justify-center gap-2 rounded-xl border border-[#006b68] px-4 py-2.5 text-xs font-bold text-[#006b68] hover:bg-teal-50"><Upload className="h-4 w-4" /> Nhập danh sách Excel</label>
+            <button type="button" onClick={() => setIsAddModalOpen(true)} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-2.5 text-xs font-bold text-white shadow-md transition hover:bg-[#005956]"><Plus className="h-4 w-4" /> Thêm người dùng</button>
+          </div>
         </div>
 
         <div className="mt-5 grid gap-3 sm:grid-cols-3">
@@ -204,6 +252,16 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated })
           <div className="rounded-xl bg-cyan-50 p-3"><div className="text-[10px] font-bold uppercase text-cyan-700">Cụm / chi nhánh</div><div className="mt-1 text-xl font-black text-cyan-900">{clusters.length} / {branches.length}</div></div>
         </div>
       </header>
+
+      {userImportPreview.length > 0 && (
+        <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="Xem trước nhập người dùng">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div><h4 className="text-sm font-bold text-slate-900">Xem trước danh sách người dùng</h4><p className="mt-1 text-xs text-slate-500">{userImportPreview.filter(row => !row.errors.length).length} hợp lệ · {userImportPreview.filter(row => row.errors.length).length} cần sửa. Google OAuth vẫn cấu hình thủ công.</p></div>
+            <div className="flex gap-2"><button type="button" onClick={() => setUserImportPreview([])} className="rounded-xl px-4 py-2 text-xs font-bold text-slate-600">Hủy</button><button type="button" onClick={commitUserImport} disabled={isImportingUsers || !userImportPreview.some(row => row.payload && !row.errors.length)} className="inline-flex items-center gap-2 rounded-xl bg-[#006b68] px-4 py-2 text-xs font-bold text-white disabled:bg-slate-300"><Download className="h-4 w-4" />{isImportingUsers ? 'Đang tạo...' : 'Tạo tài khoản hợp lệ'}</button></div>
+          </div>
+          <div className="mt-3 max-h-72 overflow-auto rounded-xl border border-slate-200"><table className="w-full text-left text-xs"><thead className="sticky top-0 bg-slate-100"><tr><th className="p-2">Dòng</th><th className="p-2">Người dùng</th><th className="p-2">Vai trò</th><th className="p-2">Mật khẩu</th><th className="p-2">Kết quả</th></tr></thead><tbody>{userImportPreview.map(row => <tr key={row.rowNumber} className="border-t border-slate-100"><td className="p-2">{row.rowNumber}</td><td className="p-2"><div className="font-semibold">{row.payload?.fullName || 'Không hợp lệ'}</div><div className="text-slate-500">{row.payload?.email}</div></td><td className="p-2">{row.payload?.primaryRole}</td><td className="p-2">{row.passwordMode === 'PROVIDED' ? 'Đã cung cấp' : 'Tự sinh'}</td><td className={`p-2 ${row.errors.length ? 'text-red-700' : 'text-emerald-700'}`}>{row.errors.join('; ') || 'Sẵn sàng'}</td></tr>)}</tbody></table></div>
+        </section>
+      )}
 
       <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-3 shadow-sm md:flex-row md:items-center md:justify-between">
         <div role="tablist" aria-label="Chế độ phân nhóm người dùng" className="grid grid-cols-2 gap-2 rounded-xl bg-slate-100 p-1">

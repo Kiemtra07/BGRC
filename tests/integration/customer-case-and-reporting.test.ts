@@ -371,6 +371,24 @@ describe('customer case, branch control, import and reporting', () => {
       expect.objectContaining({ key: 'TD03.02', label: 'TD03.02' }),
     ]);
 
+    const crosstab = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reports/runs',
+      headers: adminHeaders,
+      payload: {
+        groupBy: 'dimension.branch',
+        pivotBy: 'dimension.workflow_status',
+        metrics: ['metric.finding_count'],
+      },
+    });
+    expect(crosstab.statusCode).toBe(200);
+    expect(crosstab.json().pivot).toMatchObject({
+      rowField: 'dimension.branch',
+      columnField: 'dimension.workflow_status',
+      metric: 'metric.finding_count',
+    });
+    expect(crosstab.json().pivot.columns.length).toBeGreaterThan(0);
+
     const branchCatalog = await app.inject({
       method: 'GET',
       url: '/api/v1/reports/catalog',
@@ -449,6 +467,46 @@ describe('customer case, branch control, import and reporting', () => {
       const restored = await app.inject({ method: 'PUT', url: '/api/v1/admin/report-catalog', headers: adminHeaders, payload: restorePayload });
       expect(restored.statusCode).toBe(200);
     }
+  });
+
+  it('shares report definitions by role and composes an accessible multi-widget dashboard', async () => {
+    const sharedReport = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reports/definitions',
+      headers: adminHeaders,
+      payload: {
+        name: 'Tồn đọng dành cho người xem',
+        filters: {}, columns: [], exportColumns: ['dimension.cif'],
+        query: { groupBy: 'dimension.branch', metrics: ['metric.finding_count'] },
+        visibility: 'ROLE_SHARED', sharedWithRoles: ['INTERNAL_OFFICER'],
+      },
+    });
+    expect(sharedReport.statusCode).toBe(201);
+    expect(sharedReport.json()).toMatchObject({ visibility: 'ROLE_SHARED', sharedWithRoles: ['INTERNAL_OFFICER'] });
+
+    const officerReports = await app.inject({ method: 'GET', url: '/api/v1/reports/definitions', headers: { 'x-user-id': 'user-internal-officer' } });
+    expect(officerReports.statusCode).toBe(200);
+    expect(officerReports.json()).toEqual(expect.arrayContaining([expect.objectContaining({ id: sharedReport.json().id })]));
+
+    const branchReports = await app.inject({ method: 'GET', url: '/api/v1/reports/definitions', headers: { 'x-user-id': 'user-branch-635' } });
+    expect(branchReports.statusCode).toBe(200);
+    expect(branchReports.json()).not.toEqual(expect.arrayContaining([expect.objectContaining({ id: sharedReport.json().id })]));
+
+    const dashboard = await app.inject({
+      method: 'POST',
+      url: '/api/v1/reports/dashboards',
+      headers: adminHeaders,
+      payload: {
+        name: 'Bảng theo dõi người xem', reportDefinitionIds: [sharedReport.json().id],
+        visibility: 'ROLE_SHARED', sharedWithRoles: ['INTERNAL_OFFICER'],
+      },
+    });
+    expect(dashboard.statusCode).toBe(201);
+    expect(dashboard.json()).toMatchObject({ name: 'Bảng theo dõi người xem', reportDefinitionIds: [sharedReport.json().id] });
+
+    const officerDashboards = await app.inject({ method: 'GET', url: '/api/v1/reports/dashboards', headers: { 'x-user-id': 'user-internal-officer' } });
+    expect(officerDashboards.statusCode).toBe(200);
+    expect(officerDashboards.json()).toEqual(expect.arrayContaining([expect.objectContaining({ id: dashboard.json().id })]));
   });
 
   it('rejects incompatible report operators and exports full reports in CSV, HTML and XLSX', async () => {
@@ -664,5 +722,52 @@ describe('customer case, branch control, import and reporting', () => {
 
     const released = await app.inject({ method: 'DELETE', url: `/api/v1/workspace/accepted/${accepted.json().id}`, headers });
     expect(released.statusCode).toBe(204);
+  });
+
+  it('keeps a selected campaign, importer provenance and idempotent result for an interactive finding import', async () => {
+    const headers = {
+      'x-user-id': 'user-internal-officer',
+      'idempotency-key': 'finding-provenance-import-v1',
+    };
+    const payload = {
+      sourceFileName: 'danh-sach-sai-sot-da-dan.xlsx',
+      sourceType: 'CLIPBOARD',
+      rows: [{
+        campaignId: 'campaign-regular-2026',
+        channelId: 'chan-audit-bgs',
+        cif: 'IMP-PROV-2026',
+        customerName: 'Khách hàng kiểm thử provenance',
+        clusterName: 'Cụm Tây Nguyên',
+        branchCode: '635',
+        branchName: 'Chi nhánh Nam Buôn Hồ',
+        department: 'PGD Nam Buôn Hồ 1',
+        errorCode: 'TD03.07',
+        errorTitle: 'Kiểm thử nguồn nạp',
+        description: 'Dòng kiểm thử lưu chuyên đề, người nạp và nguồn dữ liệu.',
+      }],
+    };
+
+    const first = await app.inject({ method: 'POST', url: '/api/v1/imports/findings', headers, payload });
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toMatchObject({
+      customerCount: 1,
+      findingCount: 1,
+      findings: [expect.objectContaining({
+        campaignId: 'campaign-regular-2026',
+        importSourceType: 'CLIPBOARD',
+        importSourceFileName: payload.sourceFileName,
+        importedByUserId: 'user-internal-officer',
+      })],
+    });
+
+    const replay = await app.inject({ method: 'POST', url: '/api/v1/imports/findings', headers, payload });
+    expect(replay.statusCode).toBe(201);
+    expect(replay.json()).toEqual(first.json());
+
+    const batches = await app.inject({ method: 'GET', url: '/api/v1/imports/batches', headers: { 'x-user-id': 'user-internal-officer' } });
+    expect(batches.statusCode).toBe(200);
+    expect(batches.json().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: first.json().batchId, campaignId: 'campaign-regular-2026', sourceType: 'CLIPBOARD' }),
+    ]));
   });
 });

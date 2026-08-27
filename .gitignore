@@ -18,6 +18,9 @@ tests/e2e/artifacts/
 # Local tooling / temp
 .chrome-temp/
 .superpowers/
+tmp/
+__pycache__/
+*.pyc
 
 .vercel
 .env*

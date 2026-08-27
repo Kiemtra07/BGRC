@@ -112,4 +112,19 @@ describe('standard reporting keys', () => {
     expect(parsed.fields.find(field => field.key === 'dimension.branch')?.filterable).toBe(true);
     expect(parsed.fields.find(field => field.key === 'dimension.cif')?.filterable).toBe(false);
   });
+
+  it('accepts one secondary dimension for a bounded crosstab and rejects the same dimension twice', () => {
+    const valid = ReportRunRequestSchema.safeParse({
+      groupBy: 'dimension.branch',
+      pivotBy: 'dimension.workflow_status',
+      metrics: ['metric.finding_count'],
+    });
+    expect(valid.success).toBe(true);
+    expect(valid.success && valid.data.pivotBy).toBe('dimension.workflow_status');
+    expect(ReportRunRequestSchema.safeParse({
+      groupBy: 'dimension.branch',
+      pivotBy: 'dimension.branch',
+      metrics: ['metric.finding_count'],
+    }).success).toBe(false);
+  });
 });

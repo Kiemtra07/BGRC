@@ -178,6 +178,31 @@ export interface CreatedUserResponse {
   temporaryPassword?: string;
 }
 
+export const BulkUserImportSchema = z.object({
+  rows: z.array(z.object({
+    rowNumber: z.number().int().min(2),
+    user: CreateUserSchema,
+  })).min(1).max(500),
+});
+
+export type BulkUserImportDTO = z.infer<typeof BulkUserImportSchema>;
+
+export interface BulkUserImportCreatedRow extends CreatedUserResponse {
+  rowNumber: number;
+}
+
+export interface BulkUserImportFailedRow {
+  rowNumber: number;
+  code: string;
+  message: string;
+}
+
+export interface BulkUserImportResult {
+  batchId: string;
+  created: BulkUserImportCreatedRow[];
+  failed: BulkUserImportFailedRow[];
+}
+
 export const ResetUserPasswordSchema = z.object({
   password: z.string().min(12, 'Mật khẩu tối thiểu 12 ký tự').max(200).optional(),
 });

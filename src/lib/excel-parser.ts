@@ -233,6 +233,8 @@ export class ExcelFastIngestionService {
     if (headerIndex < 0) return this.warningResult(fileName, metadata, 'Không nhận diện được bảng dữ liệu hoặc mẫu tiểu biên bản được hỗ trợ.');
 
     const customersMap = new Map<string, CustomerRecord>();
+    const findingKeys = new Set<string>();
+    let duplicateRowsCount = 0;
     for (let r = headerIndex + 1; r < rawRows.length; r++) {
       const row = rawRows[r];
       const name = cellText(row[aliases.name]);
@@ -245,6 +247,12 @@ export class ExcelFastIngestionService {
         return this.errorResult(fileName, `Hạn xử lý không hợp lệ tại dòng ${r + 1}: ${cellText(deadlineValue)}.`);
       }
       const key = `${metadata.branchCode}:${cif}`;
+      const findingKey = [metadata.branchCode, cif, code, metadata.decisionNo].map(value => value.trim().toUpperCase()).join('|');
+      if (findingKeys.has(findingKey)) {
+        duplicateRowsCount += 1;
+        continue;
+      }
+      findingKeys.add(findingKey);
       let customer = customersMap.get(key);
       if (!customer) {
         customer = this.newCustomer({
@@ -272,7 +280,8 @@ export class ExcelFastIngestionService {
 
     const customers = [...customersMap.values()];
     const totalErrors = customers.reduce((sum, customer) => sum + customer.errors.length, 0);
-    return customers.length ? this.successResult(fileName, metadata, customers, totalErrors) : this.warningResult(fileName, metadata, 'Không có dòng khách hàng nào đồng thời có CIF và mã sai sót hợp lệ.');
+    const result = customers.length ? this.successResult(fileName, metadata, customers, totalErrors) : this.warningResult(fileName, metadata, 'Không có dòng khách hàng nào đồng thời có CIF và mã sai sót hợp lệ.');
+    return { ...result, duplicateRowsCount };
   }
 
   private static readMetadata(rawRows: unknown[][], fileName: string, currentUser: UserProfile): ReportMetadata {

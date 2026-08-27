@@ -22,10 +22,14 @@ import {
   BranchLeaderApproveCommandSchema,
   BranchLeaderRejectCommandSchema,
   BulkFindingImportSchema,
+  buildFindingBusinessKey,
   CreateOrgUnitSchema,
   UpdateOrgUnitSchema,
   CreateUserSchema,
+  CreateUserDTO,
   CreatedUserResponse,
+  BulkUserImportSchema,
+  BulkUserImportResult,
   ResetUserPasswordSchema,
   InternalRejectCommandSchema,
   InternalWaiveCommandSchema,
@@ -37,9 +41,11 @@ import {
   WebFormFindingDTO,
   ReportSummary,
   ReportDefinition,
+  DashboardDefinition,
   ReportFilterQuery,
   ReportFilterSchema,
   CreateReportDefinitionSchema,
+  CreateDashboardDefinitionSchema,
   inferCoPlusRole,
   businessLineLabels,
   riskLevelLabels,
@@ -109,6 +115,7 @@ import { createAuthorizationUrl, exchangeCode } from './security/google-oidc-cli
 import { sortWatchTargets } from './modules/workspace/workspace-priority';
 import { canAccessCampaign, validateCampaignTransition } from './modules/campaigns/campaign-service';
 import { CampaignDocumentImportError, extractCampaignImportDraft } from './modules/campaigns/campaign-document-import';
+import { FindingDocumentImportError, parseFindingDocx } from './modules/ingestion/finding-document-import';
 
 export const app: FastifyInstance = fastify({
   logger: process.env.NODE_ENV !== 'test',
@@ -791,6 +798,7 @@ let evidences: EvidenceObject[] = [
 let importBatches: ImportBatch[] = [];
 let slaExtensions: SlaExtensionRequest[] = [];
 let reportDefinitions: ReportDefinition[] = [];
+let dashboardDefinitions: DashboardDefinition[] = [];
 
 /** Tunable per deployment: raise it where the runtime allows a bigger response than Vercel's. */
 const REPORT_EXPORT_MAX_ROWS = Math.max(1, Number(process.env.REPORT_EXPORT_MAX_ROWS) || 10_000);
@@ -829,7 +837,7 @@ let reportCatalogConfiguration = createDefaultReportCatalogConfiguration();
 
 interface IdempotencyEntry {
   requestHash: string;
-  response: Finding;
+  response: unknown;
 }
 
 let idempotencyRecords: Record<string, IdempotencyEntry> = {};
@@ -879,6 +887,7 @@ type SecurityEventType =
   | 'AUTH_OIDC_LOGIN_SUCCEEDED'
   | 'AUTH_OIDC_LOGIN_REJECTED'
   | 'ADMIN_USER_CREATED'
+  | 'ADMIN_USER_IMPORT_COMMITTED'
   | 'ADMIN_USER_PASSWORD_RESET'
   | 'ADMIN_GOOGLE_DRIVE_CONNECTED'
   | 'DATA_REPORT_EXPORTED'
@@ -926,6 +935,7 @@ interface LocalAppState {
   importBatches: ImportBatch[];
   slaExtensions: SlaExtensionRequest[];
   reportDefinitions: ReportDefinition[];
+  dashboardDefinitions: DashboardDefinition[];
   reportCatalogConfiguration: ReportCatalogConfiguration;
   idempotencyRecords: Record<string, IdempotencyEntry>;
   findingFollows: FindingFollow[];
@@ -937,6 +947,34 @@ interface LocalAppState {
   googleDriveOAuthCredential?: GoogleDriveOAuthCredential;
   securityEvents?: SecurityEvent[];
   loginAttempts?: LoginAttemptRecord[];
+}
+
+function normalizeReportDefinition(definition: ReportDefinition): ReportDefinition {
+  return {
+    ...definition,
+    visibility: definition.visibility ?? 'PRIVATE',
+    sharedWithRoles: definition.sharedWithRoles ?? [],
+  };
+}
+
+function normalizeDashboardDefinition(definition: DashboardDefinition): DashboardDefinition {
+  return {
+    ...definition,
+    visibility: definition.visibility ?? 'PRIVATE',
+    sharedWithRoles: definition.sharedWithRoles ?? [],
+  };
+}
+
+function canAccessReportDefinition(user: UserProfile, definition: ReportDefinition): boolean {
+  return user.roles.includes('ADMIN')
+    || definition.createdByUserId === user.id
+    || (definition.visibility === 'ROLE_SHARED' && definition.sharedWithRoles.some(role => user.roles.includes(role)));
+}
+
+function canAccessDashboardDefinition(user: UserProfile, definition: DashboardDefinition): boolean {
+  return user.roles.includes('ADMIN')
+    || definition.createdByUserId === user.id
+    || (definition.visibility === 'ROLE_SHARED' && definition.sharedWithRoles.some(role => user.roles.includes(role)));
 }
 
 /**
@@ -1003,7 +1041,7 @@ const stateRepository = createStateRepository<LocalAppState>({
 
 const hydratedState = await stateRepository.load({
   orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
-  importBatches, slaExtensions, reportDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
+  importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
   workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
   credentials: credentialDirectory,
   googleDriveOAuthCredential, securityEvents, loginAttempts,
@@ -1041,7 +1079,8 @@ workflowEvents = hydratedState.workflowEvents;
 evidences = hydratedState.evidences;
 importBatches = hydratedState.importBatches;
 slaExtensions = hydratedState.slaExtensions;
-reportDefinitions = hydratedState.reportDefinitions;
+reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
+dashboardDefinitions = (hydratedState.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
 reportCatalogConfiguration = hydratedState.reportCatalogConfiguration ?? createDefaultReportCatalogConfiguration();
 idempotencyRecords = hydratedState.idempotencyRecords ?? {};
 findingFollows = hydratedState.findingFollows ?? [];
@@ -1232,7 +1271,7 @@ function backfillFindingSpecialCase(): boolean {
 function currentLocalState(): LocalAppState {
   return {
     orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
-    importBatches, slaExtensions, reportDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
+    importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
     workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
     credentials: credentialDirectory,
     googleDriveOAuthCredential, securityEvents, loginAttempts,
@@ -1251,7 +1290,8 @@ function restoreDurableLocalState(restored: LocalAppState): void {
   evidences = restored.evidences;
   importBatches = restored.importBatches;
   slaExtensions = restored.slaExtensions;
-  reportDefinitions = restored.reportDefinitions;
+  reportDefinitions = restored.reportDefinitions.map(normalizeReportDefinition);
+  dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
   reportCatalogConfiguration = restored.reportCatalogConfiguration ?? createDefaultReportCatalogConfiguration();
   idempotencyRecords = restored.idempotencyRecords ?? {};
   findingFollows = restored.findingFollows ?? [];
@@ -2036,12 +2076,48 @@ function executeReportRun(items: Finding[], query: ReportRunRequest): ReportRunR
     return delta || left.label.localeCompare(right.label, 'vi-VN');
   }).slice(0, query.limit);
 
+  let pivot: ReportRunResult['pivot'];
+  if (query.pivotBy) {
+    const columnGroups = new Map<string, { label: string; items: Finding[] }>();
+    const rowGroups = new Map<string, { label: string; cells: Map<string, Finding[]> }>();
+    for (const finding of matched) {
+      const rowValue = reportFieldAccessors[query.groupBy](finding);
+      const columnValue = reportFieldAccessors[query.pivotBy](finding);
+      const rowKey = String(rowValue || 'UNASSIGNED');
+      const columnKey = String(columnValue || 'UNASSIGNED');
+      const column = columnGroups.get(columnKey) || { label: reportValueLabel(query.pivotBy, columnValue, finding), items: [] };
+      column.items.push(finding);
+      columnGroups.set(columnKey, column);
+      const row = rowGroups.get(rowKey) || { label: reportValueLabel(query.groupBy, rowValue, finding), cells: new Map<string, Finding[]>() };
+      row.cells.set(columnKey, [...(row.cells.get(columnKey) || []), finding]);
+      rowGroups.set(rowKey, row);
+    }
+    if (columnGroups.size > 25) {
+      throw new HttpProblem(422, 'REPORT_PIVOT_TOO_WIDE', 'Bảng chéo có quá nhiều cột', `Điều kiện hiện tại tạo ${columnGroups.size} cột. Hãy lọc thêm dữ liệu hoặc chọn trường cột khác để giới hạn tối đa 25 cột.`);
+    }
+    const metric = query.metrics[0];
+    const columns = [...columnGroups.entries()]
+      .map(([key, column]) => ({ key, label: column.label }))
+      .sort((left, right) => left.label.localeCompare(right.label, 'vi-VN'));
+    pivot = {
+      rowField: query.groupBy,
+      columnField: query.pivotBy,
+      metric,
+      columns,
+      rows: [...rowGroups.entries()].map(([key, row]) => {
+        const values = Object.fromEntries(columns.map(column => [column.key, calculateReportMetric(row.cells.get(column.key) || [], metric)]));
+        return { key, label: row.label, values, total: Object.values(values).reduce((sum, value) => sum + value, 0) };
+      }).sort((left, right) => right.total - left.total || left.label.localeCompare(right.label, 'vi-VN')).slice(0, query.limit),
+    };
+  }
+
   return {
     generatedAt: new Date().toISOString(),
     query,
     matchedFindingCount: matched.length,
     metricValues: calculateMetricValues(matched, query.metrics),
     groups: rows,
+    pivot,
   };
 }
 
@@ -2110,6 +2186,12 @@ function assertReportConfigurationAvailable(query: ReportRunRequest, columns?: R
   if (!groupField?.isActive || !groupField.groupable) {
     throw new HttpProblem(422, 'REPORT_GROUP_DISABLED', 'Cách xem không còn áp dụng', 'Trường phân nhóm không còn được quản trị viên cho phép.');
   }
+  if (query.pivotBy) {
+    const pivotField = fields.get(query.pivotBy);
+    if (!pivotField?.isActive || !pivotField.groupable) {
+      throw new HttpProblem(422, 'REPORT_PIVOT_DISABLED', 'Cách xem bảng chéo không còn áp dụng', 'Trường cột của bảng chéo không còn được quản trị viên cho phép.');
+    }
+  }
   if (query.metrics.some(key => !metrics.get(key)?.isActive)) {
     throw new HttpProblem(422, 'REPORT_METRIC_DISABLED', 'Chỉ số báo cáo đã tắt', 'Báo cáo đang dùng một chỉ số không còn được quản trị viên cho phép.');
   }
@@ -2134,11 +2216,11 @@ function applyReportFilters(items: Finding[], filters: ReportFilterQuery): Findi
   });
 }
 
-function idempotencyContext(
+function idempotencyContext<T = Finding>(
   request: FastifyRequest,
   user: UserProfile,
   body: unknown,
-): { cacheKey?: string; requestHash?: string; replay?: Finding } {
+): { cacheKey?: string; requestHash?: string; replay?: T } {
   const rawKey = request.headers['idempotency-key'];
   const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;
   if (!key) {
@@ -2157,13 +2239,13 @@ function idempotencyContext(
   return {
     cacheKey,
     requestHash,
-    replay: existing ? structuredClone(existing.response) : undefined,
+    replay: existing ? structuredClone(existing.response) as T : undefined,
   };
 }
 
-function rememberIdempotentResponse(
+function rememberIdempotentResponse<T>(
   context: { cacheKey?: string; requestHash?: string },
-  response: Finding,
+  response: T,
 ): void {
   if (context.cacheKey && context.requestHash) {
     idempotencyRecords[context.cacheKey] = {
@@ -2766,9 +2848,7 @@ app.get('/api/v1/admin/users', async (req) => {
     };
   });
 });
-app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: any }>) => {
-  requireAdmin(getCurrentUser(req));
-  const body = CreateUserSchema.parse(req.body);
+async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Promise<CreatedUserResponse> {
   if (appUsers.some(user => user.email.toLowerCase() === body.email.toLowerCase())) {
     throw new HttpProblem(409, 'USER_EMAIL_EXISTS', 'Email đã được sử dụng', 'Đã tồn tại tài khoản với email này.');
   }
@@ -2798,7 +2878,7 @@ app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: any }>) => {
     throw new HttpProblem(422, 'BRANCH_ASSIGNMENT_INVALID', 'Phân công chi nhánh không hợp lệ', 'Chi nhánh hoặc Phòng/PGD không tồn tại trong Cụm địa bàn đã cấu hình.');
   }
 
-  const scopes: UserProfile['scopes'] = ['BRANCH_INPUT', 'BRANCH_CONTROLLER'].includes(body.primaryRole)
+  const scopes: UserProfile['scopes'] = ['BRANCH_INPUT', 'BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(body.primaryRole)
       ? [{
           scopeType: 'BRANCH',
           orgUnitId: branch?.id,
@@ -2859,8 +2939,45 @@ app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: any }>) => {
     internalTeam.leaderName = newUser.fullName;
     internalTeam.updatedAt = new Date().toISOString();
   }
-  await persistLocalState();
   return { user: newUser, temporaryPassword } satisfies CreatedUserResponse;
+}
+
+app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: unknown }>) => {
+  requireAdmin(getCurrentUser(req));
+  const response = await createUserAccount(req, CreateUserSchema.parse(req.body));
+  await persistLocalState();
+  return response;
+});
+
+app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = BulkUserImportSchema.parse(req.body);
+  const idempotency = idempotencyContext<BulkUserImportResult>(req, actor, body);
+  if (idempotency.replay) return reply.code(201).send(idempotency.replay);
+
+  const batchId = `user-import-${crypto.randomUUID()}`;
+  const result: BulkUserImportResult = { batchId, created: [], failed: [] };
+  for (const row of body.rows) {
+    try {
+      const created = await createUserAccount(req, row.user);
+      result.created.push({ rowNumber: row.rowNumber, ...created });
+    } catch (error) {
+      const problem = normalizeProblem(error);
+      if (problem.status >= 500) throw error;
+      result.failed.push({ rowNumber: row.rowNumber, code: problem.code, message: problem.message });
+    }
+  }
+
+  recordUserSecurityEvent(req, actor, {
+    type: 'ADMIN_USER_IMPORT_COMMITTED',
+    outcome: 'SUCCESS',
+    subject: batchId,
+    detail: `Nhập theo lô: tạo ${result.created.length} tài khoản, ${result.failed.length} dòng không tạo.`,
+  });
+  rememberIdempotentResponse(idempotency, result);
+  await persistLocalState();
+  return reply.code(201).send(result);
 });
 
 /** Đặt lại mật khẩu cho một tài khoản. Trả mật khẩu tạm khi quản trị viên không tự đặt. */
@@ -3407,40 +3524,66 @@ app.post('/api/v1/findings', async (req: FastifyRequest<{ Body: any }>) => {
   return newFinding;
 });
 
+app.get('/api/v1/imports/batches', async (req: FastifyRequest<{ Querystring: { campaignId?: string; channelId?: string } }>) => {
+  const user = getCurrentUser(req);
+  requireRoles(user, ['ADMIN', 'INTERNAL_OFFICER', 'SUPERVISOR']);
+  const { campaignId, channelId } = req.query;
+  const items = importBatches.filter(batch => {
+    if (campaignId && batch.campaignId !== campaignId) return false;
+    if (channelId && batch.channelId !== channelId) return false;
+    const campaign = batch.campaignId ? auditCampaigns.find(item => item.id === batch.campaignId) : undefined;
+    return !campaign || canAccessCampaign(user, campaign);
+  });
+  return { items, total: items.length };
+});
+
 app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, reply) => {
   const user = getCurrentUser(req);
   requireRoles(user, ['ADMIN', 'INTERNAL_OFFICER', 'SUPERVISOR']);
   const batch = BulkFindingImportSchema.parse(req.body);
+  const idempotency = batch.sourceType === 'API_BULK'
+    ? undefined
+    : idempotencyContext<{
+      batchId: string;
+      sourceFileName: string;
+      customerCount: number;
+      findingCount: number;
+      duplicateCount: number;
+      findings: Finding[];
+    }>(req, user, batch);
+  if (idempotency?.replay) return reply.code(201).send(idempotency.replay);
   const imported: Finding[] = [];
   let duplicateCount = 0;
-  const deduplicationKey = (row: WebFormFindingDTO) => [
-    row.channelId,
-    row.branchCode,
-    row.cif,
-    row.errorCode,
-    row.decisionNo || '',
-  ].join('\u001f');
-  const seenKeys = new Set(findings.map(item => deduplicationKey(item)));
+  const batchId = `batch-${crypto.randomUUID()}`;
+  const now = new Date().toISOString();
+  const seenKeys = new Set(findings.map(item => buildFindingBusinessKey(item)));
   for (const row of batch.rows) {
-    const key = deduplicationKey(row);
+    const key = buildFindingBusinessKey(row);
     if (seenKeys.has(key)) {
       duplicateCount += 1;
       continue;
     }
     seenKeys.add(key);
-    imported.push(createFindingFromDto(row, user));
+    imported.push({
+      ...createFindingFromDto(row, user),
+      importBatchId: batchId,
+      importedByUserId: user.id,
+      importedByName: user.fullName,
+      importedAt: now,
+      importSourceType: batch.sourceType,
+      importSourceFileName: batch.sourceFileName,
+    });
   }
-  const batchId = `batch-${crypto.randomUUID()}`;
   const channel = reportChannels.find(item => item.id === batch.rows[0].channelId)!;
-  const now = new Date().toISOString();
   findings.unshift(...imported);
   importBatches.unshift({
     id: batchId,
     channelId: channel.id,
     channelName: channel.name,
+    campaignId: batch.rows[0].campaignId,
     channelVersionId: channel.currentVersionId || 'v1',
     fileName: batch.sourceFileName,
-    sourceType: 'API_BULK',
+    sourceType: batch.sourceType,
     totalRows: batch.rows.length,
     validRowsCount: imported.length,
     errorRowsCount: duplicateCount,
@@ -3452,14 +3595,31 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
     committedFindingsCount: imported.length,
   });
   await persistLocalState();
-  return reply.code(201).send({
+  const response = {
     batchId,
     sourceFileName: batch.sourceFileName,
     customerCount: uniqueCustomerCount(imported),
     findingCount: imported.length,
     duplicateCount,
     findings: imported,
-  });
+  };
+  if (idempotency) rememberIdempotentResponse(idempotency, response);
+  await persistLocalState();
+  return reply.code(201).send(response);
+});
+
+app.post('/api/v1/imports/findings/docx-preview', async (req, reply) => {
+  const user = getCurrentUser(req);
+  requireRoles(user, ['ADMIN', 'INTERNAL_OFFICER', 'SUPERVISOR']);
+  const data = await req.file();
+  if (!data) throw new HttpProblem(422, 'FINDING_DOCX_REQUIRED', 'Thiếu tệp DOCX', 'Hãy chọn tệp DOCX có bảng sai sót được hỗ trợ.');
+  if (!data.filename.toLowerCase().endsWith('.docx')) throw new HttpProblem(422, 'FINDING_DOCX_INVALID', 'Sai định dạng', 'Chỉ hỗ trợ tệp .docx ở nguồn này.');
+  try {
+    return reply.send({ fileName: data.filename, rows: await parseFindingDocx(await data.toBuffer()) });
+  } catch (error) {
+    if (error instanceof FindingDocumentImportError) throw new HttpProblem(422, 'FINDING_DOCX_UNSUPPORTED', 'Không thể bóc tách DOCX', error.message);
+    throw error;
+  }
 });
 
 // ----------------------------------------------------
@@ -3951,9 +4111,7 @@ app.get('/api/v1/dashboards/summary', async (req) => {
 
 app.get('/api/v1/reports/definitions', async (req) => {
   const user = getCurrentUser(req);
-  return user.roles.includes('ADMIN')
-    ? reportDefinitions
-    : reportDefinitions.filter(definition => definition.createdByUserId === user.id);
+  return reportDefinitions.filter(definition => canAccessReportDefinition(user, definition));
 });
 
 app.post('/api/v1/reports/definitions', async (req: FastifyRequest<{ Body: any }>, reply) => {
@@ -3969,12 +4127,53 @@ app.post('/api/v1/reports/definitions', async (req: FastifyRequest<{ Body: any }
     columns: body.columns,
     query: body.query,
     exportColumns: body.exportColumns,
+    visibility: body.visibility,
+    sharedWithRoles: body.sharedWithRoles,
+    sourceReportDefinitionId: body.sourceReportDefinitionId,
     createdByUserId: user.id,
     createdByName: user.fullName,
     createdAt: now,
     updatedAt: now,
   };
   reportDefinitions.unshift(definition);
+  await persistLocalState();
+  return reply.code(201).send(definition);
+});
+
+app.get('/api/v1/reports/dashboards', async (req) => {
+  const user = getCurrentUser(req);
+  return dashboardDefinitions
+    .filter(definition => canAccessDashboardDefinition(user, definition))
+    .map(definition => ({
+      ...definition,
+      reportDefinitionIds: definition.reportDefinitionIds.filter(id => {
+        const report = reportDefinitions.find(item => item.id === id);
+        return report ? canAccessReportDefinition(user, report) : false;
+      }),
+    }))
+    .filter(definition => definition.reportDefinitionIds.length > 0);
+});
+
+app.post('/api/v1/reports/dashboards', async (req: FastifyRequest<{ Body: any }>, reply) => {
+  const user = getCurrentUser(req);
+  const body = CreateDashboardDefinitionSchema.parse(req.body);
+  const reports = body.reportDefinitionIds.map(id => reportDefinitions.find(definition => definition.id === id));
+  if (reports.some(report => !report || !canAccessReportDefinition(user, report))) {
+    throw new HttpProblem(403, 'DASHBOARD_REPORT_ACCESS_DENIED', 'Không có quyền tạo dashboard', 'Chỉ có thể thêm các báo cáo bạn được phép xem vào dashboard.');
+  }
+  const now = new Date().toISOString();
+  const definition: DashboardDefinition = {
+    id: `dashboard-${crypto.randomUUID()}`,
+    name: body.name,
+    reportDefinitionIds: body.reportDefinitionIds,
+    visibility: body.visibility,
+    sharedWithRoles: body.sharedWithRoles,
+    createdByUserId: user.id,
+    createdByName: user.fullName,
+    createdAt: now,
+    updatedAt: now,
+  };
+  dashboardDefinitions.unshift(definition);
   await persistLocalState();
   return reply.code(201).send(definition);
 });

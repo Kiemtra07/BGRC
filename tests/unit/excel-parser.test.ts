@@ -136,4 +136,18 @@ describe('ExcelFastIngestionService', () => {
     expect(invalidCalendarDate).toMatchObject({ status: 'ERROR', customers: [] });
     expect(invalidCalendarDate.message).toMatch(/dòng 2.*2026-02-29/i);
   });
+
+  it('deduplicates identical pasted rows while preserving different error codes', () => {
+    const result = ExcelFastIngestionService.parsePastedExcelText([
+      'Tên khách hàng\tCIF\tMã sai sót',
+      'Khách hàng trùng\t12345678\tTD01.01',
+      'Khách hàng trùng\t12345678\ttd01.01',
+      'Khách hàng trùng\t12345678\tTD03.07',
+    ].join('\n'), user);
+
+    expect(result.status).toBe('SUCCESS');
+    expect(result.totalErrorsExtracted).toBe(2);
+    expect(result.customers[0].errors.map(error => error.errorCode)).toEqual(['TD01.01', 'TD03.07']);
+    expect(result.duplicateRowsCount).toBe(1);
+  });
 });

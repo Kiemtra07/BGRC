@@ -22,12 +22,19 @@ try {
   assert.equal(await workspace.getByText('Thiết lập báo cáo', { exact: true }).count(), 0, 'Người xem không được thấy khối thiết lập kỹ thuật');
   await page.getByLabel('Mẫu báo cáo').waitFor();
   await page.getByLabel('Xem theo').waitFor();
-  const filterCard = workspace.locator('div').filter({ has: page.getByRole('button', { name: 'Thêm điều kiện', exact: true }) }).first();
-  assert.ok((await filterCard.boundingBox()).height < 430, 'Bộ lọc mặc định phải gọn trên desktop');
+  const filterActionRow = page.getByRole('button', { name: 'Thêm điều kiện', exact: true }).locator('xpath=..');
+  assert.ok((await filterActionRow.boundingBox()).height < 100, 'Hàng thao tác bộ lọc phải gọn trên desktop');
 
   await page.getByRole('button', { name: 'Lưu cách xem', exact: true }).click();
   await page.getByRole('button', { name: 'Lưu mẫu', exact: true }).waitFor();
-  await page.getByRole('button', { name: 'Lưu cách xem', exact: true }).click();
+  await page.getByLabel('Tên mẫu báo cáo').fill('Dashboard smoke');
+  await page.getByRole('button', { name: 'Lưu mẫu', exact: true }).click();
+  await page.getByLabel('Dashboard').waitFor();
+  await page.getByRole('button', { name: 'Tạo dashboard', exact: true }).click();
+  await page.getByLabel('Tên dashboard').fill('Dashboard smoke');
+  await workspace.locator('fieldset').filter({ hasText: 'Báo cáo hiển thị' }).locator('input[type="checkbox"]').first().check();
+  await page.getByRole('button', { name: 'Lưu dashboard', exact: true }).click();
+  await page.getByTestId('report-dashboard').waitFor();
 
   const xlsxButton = page.getByRole('button', { name: /Xuất Excel/ });
   const xlsxResponsePromise = page.waitForResponse(response => response.url().includes('/api/v1/reports/exports') && response.request().postDataJSON()?.format === 'xlsx', { timeout: 5000 }).catch(() => null);
@@ -70,6 +77,16 @@ try {
   await page.getByRole('button', { name: 'Xem báo cáo', exact: true }).click();
   await reportResponse;
   await page.screenshot({ path: path.resolve('tests/e2e/artifacts/reports-filtered-desktop.png'), fullPage: true });
+
+  await page.getByLabel('Cột bảng chéo').selectOption('dimension.workflow_status');
+  const pivotResponse = page.waitForResponse(response => response.url().includes('/api/v1/reports/runs') && response.request().method() === 'POST' && response.status() === 200);
+  await page.getByRole('button', { name: 'Xem báo cáo', exact: true }).click();
+  await pivotResponse;
+  await page.getByRole('tab', { name: 'Bảng chéo', exact: true }).click();
+  await page.getByTestId('report-crosstab').waitFor();
+  await page.getByRole('tab', { name: 'Biểu đồ', exact: true }).click();
+  await page.getByLabel('Loại biểu đồ').selectOption('line');
+  await page.getByTestId('report-chart').waitFor();
 
   for (const width of [320, 375, 414, 768, 1440]) {
     await page.setViewportSize({ width, height: 900 });
