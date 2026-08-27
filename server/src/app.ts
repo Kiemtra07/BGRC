@@ -799,6 +799,9 @@ const DEFAULT_REPORT_EXPORT_FIELDS = new Set<ReportFieldKey>([
   'dimension.campaign', 'dimension.campaign_decision', 'dimension.cif', 'dimension.customer', 'dimension.cluster', 'dimension.branch', 'dimension.department',
   'dimension.officer', 'dimension.error_code', 'dimension.workflow_status', 'measure.credit_balance', 'measure.exposure', 'date.deadline',
 ]);
+// Keep every existing report rule usable after the filter-setting upgrade. Administrators can
+// narrow this list in the report catalog without invalidating legacy report templates on upgrade.
+const DEFAULT_REPORT_FILTER_FIELDS = new Set<ReportFieldKey>(REPORT_FIELD_CATALOG.map(field => field.key));
 const DEFAULT_REPORT_METRICS = new Set<ReportMetricKey>([
   'metric.customer_count', 'metric.finding_count', 'metric.exposure_sum',
 ]);
@@ -810,6 +813,7 @@ function createDefaultReportCatalogConfiguration(): ReportCatalogConfiguration {
     fields: REPORT_FIELD_CATALOG.map((field, index) => ({
       ...field,
       isActive: true,
+      filterable: DEFAULT_REPORT_FILTER_FIELDS.has(field.key),
       defaultExport: DEFAULT_REPORT_EXPORT_FIELDS.has(field.key),
       sortOrder: index,
     })),
@@ -2052,6 +2056,7 @@ function normalizedReportCatalogConfiguration(): ReportCatalogConfiguration {
         ...base,
         label: configured?.label || base.label,
         isActive: configured?.isActive ?? true,
+        filterable: (configured?.isActive ?? true) && (configured?.filterable ?? DEFAULT_REPORT_FILTER_FIELDS.has(base.key)),
         groupable: base.groupable && (configured?.groupable ?? base.groupable),
         exportable: base.exportable && (configured?.exportable ?? base.exportable),
         defaultExport: configured?.defaultExport ?? DEFAULT_REPORT_EXPORT_FIELDS.has(base.key),
@@ -2097,7 +2102,7 @@ function assertReportConfigurationAvailable(query: ReportRunRequest, columns?: R
   const configuration = normalizedReportCatalogConfiguration();
   const fields = new Map(configuration.fields.map(field => [field.key, field]));
   const metrics = new Map(configuration.metrics.map(metric => [metric.key, metric]));
-  const unavailableRule = query.rules.find(rule => !fields.get(rule.key)?.isActive);
+  const unavailableRule = query.rules.find(rule => !fields.get(rule.key)?.isActive || !fields.get(rule.key)?.filterable);
   if (unavailableRule) {
     throw new HttpProblem(422, 'REPORT_FIELD_DISABLED', 'Trường báo cáo đã tắt', 'Bộ lọc đang dùng một trường không còn được quản trị viên cho phép.');
   }

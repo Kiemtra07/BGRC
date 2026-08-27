@@ -53,6 +53,17 @@ describe('UI and business terminology architecture', () => {
     expect(read('src/components/reports/ReportsWorkspace.tsx')).toContain('data-testid="reports-workspace"');
   });
 
+  it('keeps the case queue compact while reserving cluster for filtering context', () => {
+    const appSource = read('src/App.tsx');
+
+    expect(appSource).not.toContain('>Cụm địa bàn</th>');
+    expect(appSource).not.toContain('>{customer.clusterName}</td>');
+    expect(appSource).toContain('CaseStatusBadge');
+    expect(appSource).toContain('slaStatusLabels');
+    expect(appSource).toContain('findings.slice(0, 3)');
+    expect(appSource).toContain('Tất cả mã lỗi:');
+  });
+
   it('supports filtered and reusable report definitions', () => {
     const reports = read('src/components/reports/ReportsWorkspace.tsx');
     const reportCatalogManager = read('src/components/admin/ReportCatalogManager.tsx');
@@ -80,6 +91,21 @@ describe('UI and business terminology architecture', () => {
     expect(apiSource).toContain('downloadReportCsv');
     expect(apiSource).toContain('downloadReportHtml');
     expect(apiSource).toContain('downloadReportXlsx');
+  });
+
+  it('keeps operational screens concise while making report filters configurable', () => {
+    const detail = read('src/components/portal/FindingDetailPage.tsx');
+    const reports = read('src/components/reports/ReportsWorkspace.tsx');
+    const reportCatalog = read('src/components/admin/ReportCatalogManager.tsx');
+    const auditTrail = read('src/components/admin/AuditTrailViewer.tsx');
+
+    expect(detail).toContain('finding.isSpecialCase &&');
+    expect(detail).not.toContain('Tuyến duyệt lấy tự động theo cấu hình');
+    expect(reports).toContain('filterable');
+    expect(reports).toContain('Lọc dữ liệu');
+    expect(reports).not.toContain('Chọn điều kiện cần xem, sau đó xuất Excel hoặc HTML khi cần.');
+    expect(reportCatalog).toContain('Cho phép lọc');
+    expect(auditTrail).not.toContain('Chỉ dữ liệu thử nghiệm ở local/test mới được xóa');
   });
 
   it('guards workflow commands with durable idempotency and evidence-aware controls', () => {

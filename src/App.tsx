@@ -13,7 +13,7 @@ import { FastDataIngestion } from './components/internal/FastDataIngestion';
 import { ReportsWorkspace } from './components/reports/ReportsWorkspace';
 import { FindingGridWorkspace } from './components/reports/FindingGridWorkspace';
 import { UserProfile as LegacyUserProfile } from './types';
-import { userRoleLabels, workflowStatusLabels } from './content/ui-copy';
+import { slaStatusLabels, userRoleLabels, workflowStatusLabels } from './content/ui-copy';
 import { LoginPage } from './components/auth/LoginPage';
 
 type Surface = 'CASES' | 'IMPORT' | 'REPORTS' | 'ADMIN';
@@ -279,20 +279,20 @@ export const App: React.FC = () => {
               />
             </div> : <>
             <div className="hidden overflow-x-auto md:block">
-              <table className="w-full min-w-[980px] text-left text-xs">
-                <thead className="bg-white text-[10px] font-bold uppercase tracking-wide text-slate-500"><tr><th className="px-5 py-3">Khách hàng / CIF</th><th className="px-5 py-3">Cụm địa bàn</th><th className="px-5 py-3">Chi nhánh / phòng</th><th className="px-5 py-3">Các mã lỗi</th><th className="px-5 py-3">Tình trạng</th><th className="px-5 py-3"></th></tr></thead>
+              <table className="w-full min-w-[760px] text-left text-xs">
+                <thead className="bg-white text-[10px] font-bold uppercase tracking-wide text-slate-500"><tr><th className="px-4 py-3">Khách hàng / CIF</th><th className="px-4 py-3">Chi nhánh / phòng</th><th className="px-4 py-3">Mã lỗi</th><th className="px-4 py-3">Tình trạng & hạn xử lý</th><th className="px-4 py-3"><span className="sr-only">Mở hồ sơ</span></th></tr></thead>
                 <tbody className="divide-y divide-slate-100">{customerCases.map(items => <CustomerRow key={`${items[0].branchCode}:${items[0].cif}`} findings={items} onOpen={() => openCase(items)} />)}</tbody>
               </table>
             </div>
 
-            <div className="space-y-3 bg-slate-50 p-3 md:hidden">
+            <div className="space-y-2 bg-slate-50 p-2 md:hidden">
               {customerCases.map(items => {
                 const customer = items[0];
-                return <button data-testid="customer-card" key={`${customer.branchCode}:${customer.cif}`} onClick={() => openCase(items)} className="w-full rounded-2xl border border-slate-200 bg-white p-4 text-left shadow-sm">
-                  <div className="flex items-start justify-between gap-3"><div><div className="text-[10px] font-bold text-[#006b68]">CIF {customer.cif}</div><h3 className="mt-1 text-sm font-bold text-slate-900">{customer.customerName}</h3></div><ChevronRight className="h-5 w-5 text-slate-400" /></div>
-                  <p className="mt-2 text-[11px] text-slate-500">CN {customer.branchCode} · {customer.department || 'Chưa phân phòng'}</p>
-                  <div className="mt-3 flex flex-wrap gap-1.5">{items.map(item => <span key={item.id} className="rounded-md border border-teal-200 bg-teal-50 px-2 py-1 font-mono text-[10px] font-black text-[#006b68]">{item.errorCode}</span>)}</div>
-                  <div className="mt-3 border-t border-slate-100 pt-3 text-[11px] font-semibold text-slate-600">{items.length} mã lỗi · {new Set(items.map(item => workflowStatusLabels[item.workflowStatus])).size} trạng thái</div>
+                return <button data-testid="customer-card" key={`${customer.branchCode}:${customer.cif}`} onClick={() => openCase(items)} className="w-full rounded-xl border border-slate-200 bg-white p-3 text-left shadow-sm transition-colors active:bg-teal-50">
+                  <div className="flex items-start justify-between gap-3"><div className="min-w-0"><div className="text-[10px] font-bold text-[#006b68]">CIF {customer.cif}</div><h3 className="mt-0.5 truncate text-sm font-bold text-slate-900">{customer.customerName}</h3></div><ChevronRight className="mt-1 h-4 w-4 shrink-0 text-slate-400" /></div>
+                  <p className="mt-1 truncate text-[11px] text-slate-500">CN {customer.branchCode} · {customer.department || 'Chưa phân phòng'}</p>
+                  <ErrorCodeBadges findings={items} className="mt-2" />
+                  <div className="mt-2 flex items-center justify-between gap-2 border-t border-slate-100 pt-2"><span className="text-[10px] font-semibold text-slate-500">{items.length} mã lỗi</span><CaseStatusBadge findings={items} compact /></div>
                 </button>;
               })}
             </div>
@@ -313,7 +313,40 @@ const NavButton: React.FC<{ active: boolean; onClick: () => void; icon: React.Re
 const Kpi: React.FC<{ icon: React.ReactElement; label: string; value: number }> = ({ icon, label, value }) => <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between"><div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-50 text-[#006b68]">{React.cloneElement(icon, { className: 'h-4 w-4' } as React.HTMLAttributes<HTMLElement>)}</div><div className="text-xl font-black text-slate-900 sm:text-2xl">{value}</div></div><div className="mt-3 text-[11px] font-bold text-slate-500">{label}</div></div>;
 export const OverdueKpi: React.FC<{ overdueCount: number }> = ({ overdueCount }) => <Kpi icon={<BarChart3 />} label="Quá hạn" value={overdueCount} />;
 
+const slaPriority: Record<Finding['slaStatus'], number> = { CLOSED: 0, ON_TRACK: 1, DUE_SOON: 2, OVERDUE: 3 };
+const workflowPriority: Record<Finding['workflowStatus'], number> = {
+  WAIVED_RESOLVED: 0, PENDING: 1, SUBMITTED_BRANCH: 2, SUBMITTED_INTERNAL: 3, SUBMITTED_BRANCH_LEADER: 4, REJECTED: 5,
+};
+
+const errorCodeTitle = (findings: Finding[]) => `Tất cả mã lỗi: ${findings.map(item => item.errorCode).join(', ')}`;
+
+const ErrorCodeBadges: React.FC<{ findings: Finding[]; className?: string }> = ({ findings, className = '' }) => {
+  const shown = findings.slice(0, 3);
+  return <div className={`flex max-w-[220px] flex-wrap gap-1 ${className}`} title={errorCodeTitle(findings)}>
+    {shown.map(item => <span key={item.id} className="rounded border border-teal-200 bg-teal-50 px-1.5 py-0.5 font-mono text-[9px] font-black leading-4 text-[#006b68]">{item.errorCode}</span>)}
+    {findings.length > shown.length && <span className="rounded border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[9px] font-bold leading-4 text-slate-600">+{findings.length - shown.length}</span>}
+  </div>;
+};
+
+const CaseStatusBadge: React.FC<{ findings: Finding[]; compact?: boolean }> = ({ findings, compact = false }) => {
+  const highestSla = findings.reduce<Finding['slaStatus']>((current, finding) => {
+    const candidate = finding.isOverdue ? 'OVERDUE' : finding.slaStatus;
+    return slaPriority[candidate] > slaPriority[current] ? candidate : current;
+  }, 'CLOSED');
+  const highestWorkflow = findings.reduce<Finding['workflowStatus']>((current, finding) => workflowPriority[finding.workflowStatus] > workflowPriority[current] ? finding.workflowStatus : current, 'WAIVED_RESOLVED');
+  const slaClass: Record<Finding['slaStatus'], string> = {
+    ON_TRACK: 'border-emerald-200 bg-emerald-50 text-emerald-800', DUE_SOON: 'border-amber-200 bg-amber-50 text-amber-800', OVERDUE: 'border-red-800 bg-red-700 text-white', CLOSED: 'border-slate-200 bg-slate-50 text-slate-600',
+  };
+  const workflowClass: Record<Finding['workflowStatus'], string> = {
+    PENDING: 'text-slate-600', SUBMITTED_BRANCH: 'text-blue-700', SUBMITTED_BRANCH_LEADER: 'text-orange-700', SUBMITTED_INTERNAL: 'text-violet-700', REJECTED: 'text-red-700', WAIVED_RESOLVED: 'text-emerald-700',
+  };
+  return <div className={`flex min-w-0 items-center gap-1.5 ${compact ? 'justify-end' : 'flex-wrap'}`} aria-label={`Tình trạng: ${workflowStatusLabels[highestWorkflow]}. Hạn xử lý: ${slaStatusLabels[highestSla]}.`}>
+    <span className={`whitespace-nowrap rounded border px-1.5 py-0.5 text-[9px] font-black leading-4 ${slaClass[highestSla]}`}>{slaStatusLabels[highestSla]}</span>
+    <span className={`max-w-[150px] truncate text-[10px] font-bold ${workflowClass[highestWorkflow]}`}>{workflowStatusLabels[highestWorkflow]}</span>
+  </div>;
+};
+
 const CustomerRow: React.FC<{ findings: Finding[]; onOpen: () => void }> = ({ findings, onOpen }) => {
   const customer = findings[0];
-  return <tr onClick={onOpen} className="cursor-pointer hover:bg-teal-50/40"><td className="px-5 py-4"><div className="font-bold text-slate-900">{customer.customerName}</div><div className="mt-1 font-mono text-[10px] font-bold text-[#006b68]">CIF {customer.cif}</div></td><td className="px-5 py-4 text-slate-600">{customer.clusterName}</td><td className="px-5 py-4"><div className="font-semibold">{customer.branchCode} · {customer.branchName}</div><div className="mt-1 text-[10px] text-slate-500">{customer.department} · {customer.officerName}</div></td><td className="px-5 py-4"><div className="flex max-w-[280px] flex-wrap gap-1">{findings.map(item => <span key={item.id} className="rounded-md border border-teal-200 bg-teal-50 px-2 py-1 font-mono text-[10px] font-black text-[#006b68]">{item.errorCode}</span>)}</div></td><td className="px-5 py-4"><div className="space-y-1">{[...new Set(findings.map(item => item.workflowStatus))].map(status => <div key={status} className="text-[10px] font-semibold text-slate-600">{workflowStatusLabels[status]}</div>)}</div></td><td className="px-5 py-4 text-right"><button className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-3 py-2 font-bold text-[#006b68]">Mở hồ sơ <ChevronRight className="h-4 w-4" /></button></td></tr>;
+  return <tr className="hover:bg-teal-50/40"><td className="px-4 py-3"><div className="font-bold text-slate-900">{customer.customerName}</div><div className="mt-0.5 font-mono text-[10px] font-bold text-[#006b68]">CIF {customer.cif}</div></td><td className="px-4 py-3"><div className="font-semibold">{customer.branchCode} · {customer.branchName}</div><div className="mt-0.5 truncate text-[10px] text-slate-500">{customer.department || 'Chưa phân phòng'} · {customer.officerName || 'Chưa phân công'}</div></td><td className="px-4 py-3"><ErrorCodeBadges findings={findings} /></td><td className="px-4 py-3"><CaseStatusBadge findings={findings} /></td><td className="px-4 py-3 text-right"><button type="button" onClick={onOpen} aria-label={`Mở hồ sơ ${customer.customerName}`} className="inline-flex min-h-9 min-w-9 items-center justify-center rounded-lg border border-slate-200 text-[#006b68] transition-colors hover:border-teal-200 hover:bg-teal-50"><ChevronRight className="h-4 w-4" /></button></td></tr>;
 };

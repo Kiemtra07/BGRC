@@ -397,6 +397,7 @@ describe('customer case, branch control, import and reporting', () => {
         key: field.key,
         label: field.label,
         isActive: field.isActive,
+        filterable: field.filterable,
         groupable: field.groupable,
         exportable: field.exportable,
         defaultExport: field.defaultExport,
@@ -414,7 +415,7 @@ describe('customer case, branch control, import and reporting', () => {
     changedPayload.fields = changedPayload.fields.map((field: any) => field.key === 'dimension.branch'
       ? { ...field, label: 'Đơn vị kinh doanh' }
       : field.key === 'flag.overdue'
-        ? { ...field, isActive: false, defaultExport: false }
+        ? { ...field, isActive: false, filterable: false, defaultExport: false }
         : field);
 
     try {

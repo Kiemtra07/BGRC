@@ -76,6 +76,7 @@ describe('standard reporting keys', () => {
         key: field.key,
         label: labelOf(index),
         isActive: true,
+        filterable: ['dimension.cluster', 'dimension.branch', 'dimension.department', 'dimension.officer', 'dimension.workflow_status', 'dimension.sla_status'].includes(field.key),
         groupable: field.groupable,
         exportable: field.exportable,
         defaultExport: field.exportable,
@@ -90,5 +91,25 @@ describe('standard reporting keys', () => {
     const clash = UpdateReportCatalogConfigurationSchema.safeParse(configuration(() => 'Trùng tên'));
     expect(clash.success).toBe(false);
     expect(clash.success === false && clash.error.issues.some(issue => issue.message.includes('bị trùng'))).toBe(true);
+  });
+
+  it('persists the administrator-selected fields that may be used as report filters', () => {
+    const parsed = UpdateReportCatalogConfigurationSchema.parse({
+      expectedVersion: 1,
+      fields: REPORT_FIELD_CATALOG.map((field, index) => ({
+        key: field.key,
+        label: field.label,
+        isActive: true,
+        filterable: field.key === 'dimension.branch' || field.key === 'dimension.officer',
+        groupable: field.groupable,
+        exportable: field.exportable,
+        defaultExport: field.exportable,
+        sortOrder: index,
+      })),
+      metrics: REPORT_METRIC_CATALOG.map((metric, index) => ({ key: metric.key, label: metric.label, isActive: true, sortOrder: index })),
+    });
+
+    expect(parsed.fields.find(field => field.key === 'dimension.branch')?.filterable).toBe(true);
+    expect(parsed.fields.find(field => field.key === 'dimension.cif')?.filterable).toBe(false);
   });
 });

@@ -95,7 +95,7 @@ export const CampaignManager: React.FC<Props> = ({ campaigns, users, orgUnits, c
 
   return <section className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <div><h2 className="text-lg font-black text-slate-900">Chuyên đề kiểm tra</h2><p className="text-xs text-slate-500">Phân công đoàn kiểm tra, chi nhánh và loại báo cáo.</p></div>
+      <div><h2 className="text-lg font-black text-slate-900">Chuyên đề kiểm tra</h2></div>
       <div className="flex flex-wrap gap-2"><input ref={importInputRef} type="file" accept=".docx,.pdf,.xlsx,.xls" className="hidden" onChange={importDocument} /><button type="button" disabled={importBusy} onClick={() => importInputRef.current?.click()} className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-[#006b68] px-4 text-xs font-bold text-[#006b68] disabled:opacity-50"><FileUp className="h-4 w-4" />{importBusy ? 'Đang bóc tách...' : 'Nhập DOCX, PDF hoặc Excel'}</button><button type="button" onClick={beginCreate} className="inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#006b68] px-4 text-xs font-bold text-white"><Plus className="h-4 w-4" />Tạo chuyên đề</button></div>
     </div>
     {error && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">{error}</div>}

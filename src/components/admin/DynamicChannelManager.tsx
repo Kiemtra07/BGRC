@@ -37,7 +37,7 @@ export const DynamicChannelManager: React.FC<Props> = ({ channels, onChannelCrea
     <div className="space-y-4">
       <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div><h3 className="text-base font-extrabold text-slate-900">Loại báo cáo</h3><p className="mt-1 text-xs text-slate-500">Quản lý form, luồng phê duyệt, SLA và tích hợp.</p></div>
+          <div><h3 className="text-base font-extrabold text-slate-900">Loại báo cáo</h3></div>
           <div className="flex flex-col gap-2 sm:flex-row">
             <button type="button" onClick={() => setIsImporterOpen(true)} className="inline-flex items-center justify-center gap-2 rounded-lg border border-slate-300 px-3 py-2 text-xs font-bold text-slate-700 hover:bg-slate-50"><Sheet className="h-4 w-4" /> Tạo từ Excel</button>
             <button type="button" onClick={() => setEditor('NEW')} className="inline-flex items-center justify-center gap-2 rounded-lg bg-[#006b68] px-3 py-2 text-xs font-bold text-white hover:bg-[#005956]"><Plus className="h-4 w-4" /> Tạo loại báo cáo</button>

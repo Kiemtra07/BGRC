@@ -97,7 +97,6 @@ export const ReportCatalogManager: React.FC = () => {
         <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h3 className="flex items-center gap-2 text-base font-bold text-slate-900"><Database className="h-5 w-5 text-[#006b68]" />Trường báo cáo</h3>
-            <p className="mt-1 text-xs leading-5 text-slate-500">Đổi tên hiển thị, chọn nội dung được dùng và sắp xếp thứ tự trên màn Báo cáo.</p>
           </div>
           <div className="flex gap-2">
             <button type="button" onClick={() => void load()} disabled={busy || saving} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-slate-200 px-3 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50 disabled:opacity-50"><RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} />Tải lại</button>
@@ -155,8 +154,9 @@ const FieldConfigurationRow: React.FC<{
         <div className="text-[11px] font-bold text-slate-500">Kiểu dữ liệu</div>
         <div className="mt-1.5 inline-flex min-h-10 items-center rounded-lg bg-slate-100 px-3 text-xs font-semibold text-slate-700">{valueTypeLabel(field.valueType)}</div>
       </div>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4 xl:grid-cols-2 2xl:grid-cols-4">
-        <CheckControl label="Hiển thị" checked={field.isActive} onChange={checked => onChange({ isActive: checked, defaultExport: checked ? field.defaultExport : false })} />
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-3 2xl:grid-cols-5">
+        <CheckControl label="Hiển thị" checked={field.isActive} onChange={checked => onChange({ isActive: checked, filterable: checked ? field.filterable : false, defaultExport: checked ? field.defaultExport : false })} />
+        <CheckControl label="Cho phép lọc" checked={field.filterable} disabled={!field.isActive} onChange={checked => onChange({ filterable: checked })} />
         <CheckControl label="Cho phép nhóm" checked={field.groupable} disabled={!base.groupable} onChange={checked => onChange({ groupable: checked })} />
         <CheckControl label="Cho phép xuất" checked={field.exportable} disabled={!base.exportable} onChange={checked => onChange({ exportable: checked, defaultExport: checked ? field.defaultExport : false })} />
         <CheckControl label="Cột xuất mặc định" checked={field.defaultExport} disabled={!field.isActive || !field.exportable} onChange={checked => onChange({ defaultExport: checked })} />

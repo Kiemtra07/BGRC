@@ -146,6 +146,8 @@ export interface ReportFieldDefinition {
   operators: ReportOperatorKey[];
   groupable: boolean;
   exportable: boolean;
+  /** Present on the runtime catalog; omitted only by an older server during a rolling upgrade. */
+  filterable?: boolean;
   defaultExport?: boolean;
   options?: ReportFieldOption[];
 }
@@ -208,6 +210,8 @@ export interface ReportMetricDefinition {
 
 export interface ReportCatalogFieldConfiguration extends ReportFieldDefinition {
   isActive: boolean;
+  /** Whether this field is offered in the report filter builder. */
+  filterable: boolean;
   defaultExport: boolean;
   sortOrder: number;
 }
@@ -252,6 +256,7 @@ const ReportCatalogFieldConfigurationInputSchema = z.object({
   key: ReportFieldKeySchema,
   label: z.string().trim().min(1).max(100),
   isActive: z.boolean(),
+  filterable: z.boolean(),
   groupable: z.boolean(),
   exportable: z.boolean(),
   defaultExport: z.boolean(),
@@ -288,6 +293,9 @@ export const UpdateReportCatalogConfigurationSchema = z.object({
     }
     if (field.defaultExport && (!field.isActive || !field.exportable)) {
       context.addIssue({ code: z.ZodIssueCode.custom, path: ['fields', index, 'defaultExport'], message: 'Cột xuất mặc định phải đang bật và được phép xuất' });
+    }
+    if (field.filterable && !field.isActive) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['fields', index, 'filterable'], message: 'Trường dùng để lọc phải đang hiển thị' });
     }
   });
   if (!configuration.fields.some(field => field.isActive && field.groupable)) {

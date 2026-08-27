@@ -744,6 +744,7 @@ var ReportCatalogFieldConfigurationInputSchema = z11.object({
   key: ReportFieldKeySchema,
   label: z11.string().trim().min(1).max(100),
   isActive: z11.boolean(),
+  filterable: z11.boolean(),
   groupable: z11.boolean(),
   exportable: z11.boolean(),
   defaultExport: z11.boolean(),
@@ -778,6 +779,9 @@ var UpdateReportCatalogConfigurationSchema = z11.object({
     }
     if (field.defaultExport && (!field.isActive || !field.exportable)) {
       context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields", index, "defaultExport"], message: "C\u1ED9t xu\u1EA5t m\u1EB7c \u0111\u1ECBnh ph\u1EA3i \u0111ang b\u1EADt v\xE0 \u0111\u01B0\u1EE3c ph\xE9p xu\u1EA5t" });
+    }
+    if (field.filterable && !field.isActive) {
+      context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields", index, "filterable"], message: "Tr\u01B0\u1EDDng d\xF9ng \u0111\u1EC3 l\u1ECDc ph\u1EA3i \u0111ang hi\u1EC3n th\u1ECB" });
     }
   });
   if (!configuration.fields.some((field) => field.isActive && field.groupable)) {
@@ -3596,6 +3600,7 @@ var DEFAULT_REPORT_EXPORT_FIELDS = /* @__PURE__ */ new Set([
   "measure.exposure",
   "date.deadline"
 ]);
+var DEFAULT_REPORT_FILTER_FIELDS = new Set(REPORT_FIELD_CATALOG.map((field) => field.key));
 var DEFAULT_REPORT_METRICS = /* @__PURE__ */ new Set([
   "metric.customer_count",
   "metric.finding_count",
@@ -3608,6 +3613,7 @@ function createDefaultReportCatalogConfiguration() {
     fields: REPORT_FIELD_CATALOG.map((field, index) => ({
       ...field,
       isActive: true,
+      filterable: DEFAULT_REPORT_FILTER_FIELDS.has(field.key),
       defaultExport: DEFAULT_REPORT_EXPORT_FIELDS.has(field.key),
       sortOrder: index
     })),
@@ -4590,6 +4596,7 @@ function normalizedReportCatalogConfiguration() {
         ...base,
         label: configured?.label || base.label,
         isActive: configured?.isActive ?? true,
+        filterable: (configured?.isActive ?? true) && (configured?.filterable ?? DEFAULT_REPORT_FILTER_FIELDS.has(base.key)),
         groupable: base.groupable && (configured?.groupable ?? base.groupable),
         exportable: base.exportable && (configured?.exportable ?? base.exportable),
         defaultExport: configured?.defaultExport ?? DEFAULT_REPORT_EXPORT_FIELDS.has(base.key),
@@ -4633,7 +4640,7 @@ function assertReportConfigurationAvailable(query, columns) {
   const configuration = normalizedReportCatalogConfiguration();
   const fields = new Map(configuration.fields.map((field) => [field.key, field]));
   const metrics = new Map(configuration.metrics.map((metric) => [metric.key, metric]));
-  const unavailableRule = query.rules.find((rule) => !fields.get(rule.key)?.isActive);
+  const unavailableRule = query.rules.find((rule) => !fields.get(rule.key)?.isActive || !fields.get(rule.key)?.filterable);
   if (unavailableRule) {
     throw new HttpProblem(422, "REPORT_FIELD_DISABLED", "Tr\u01B0\u1EDDng b\xE1o c\xE1o \u0111\xE3 t\u1EAFt", "B\u1ED9 l\u1ECDc \u0111ang d\xF9ng m\u1ED9t tr\u01B0\u1EDDng kh\xF4ng c\xF2n \u0111\u01B0\u1EE3c qu\u1EA3n tr\u1ECB vi\xEAn cho ph\xE9p.");
   }

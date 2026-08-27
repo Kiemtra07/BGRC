@@ -36,6 +36,8 @@ export const ReportsWorkspace: React.FC = () => {
   const metricsByKey = useMemo(() => new Map(catalog?.metrics.map(metric => [metric.key, metric]) || []), [catalog]);
   const operatorsByKey = useMemo(() => new Map(catalog?.operators.map(operator => [operator.key, operator]) || []), [catalog]);
   const groupFields = useMemo(() => catalog?.fields.filter(field => field.groupable) || [], [catalog]);
+  const filterFields = useMemo(() => catalog?.fields.filter(field => field.filterable !== false) || [], [catalog]);
+  const filterableCatalog = useMemo(() => catalog ? { ...catalog, fields: filterFields } : null, [catalog, filterFields]);
 
   const loadCatalog = async () => {
     try {
@@ -79,7 +81,7 @@ export const ReportsWorkspace: React.FC = () => {
   useEffect(() => { if (catalog) void runReport(activeQuery); }, [activeQuery, catalog]);
 
   const addRule = () => {
-    const field = catalog?.fields.find(item => item.key === 'dimension.branch') || catalog?.fields[0];
+    const field = filterFields.find(item => item.key === 'dimension.branch') || filterFields[0];
     if (!field) return;
     setDraftQuery(current => ({ ...current, rules: [...current.rules, { key: field.key, operator: field.operators[0] }] }));
   };
@@ -145,9 +147,7 @@ export const ReportsWorkspace: React.FC = () => {
   return <section className="space-y-5" data-testid="reports-workspace">
     <div className="rounded-2xl bg-[#006b68] p-5 text-white sm:flex sm:items-center sm:justify-between">
       <div>
-        <div className="mb-2 flex items-center gap-2 text-teal-100"><FileBarChart className="h-5 w-5" /><span className="text-xs font-bold uppercase tracking-widest">Dữ liệu tổng hợp</span></div>
-        <h2 className="text-xl font-bold sm:text-2xl">Báo cáo</h2>
-        <p className="mt-1 text-xs leading-5 text-teal-50">Chọn điều kiện cần xem, sau đó xuất Excel hoặc HTML khi cần.</p>
+        <h2 className="flex items-center gap-2 text-xl font-bold sm:text-2xl"><FileBarChart className="h-5 w-5" />Báo cáo</h2>
       </div>
       <div className="mt-4 flex flex-wrap gap-2 sm:mt-0">
         <button type="button" onClick={() => void runReport()} disabled={!catalog || busy} className="rounded-xl bg-white/10 p-2.5 hover:bg-white/20 disabled:opacity-50" aria-label="Làm mới báo cáo"><RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} /></button>
@@ -177,11 +177,11 @@ export const ReportsWorkspace: React.FC = () => {
       {showSaveForm && <div className="mt-3 flex flex-col gap-2 rounded-xl bg-slate-50 p-3 sm:flex-row"><label className="sr-only" htmlFor="report-name">Tên mẫu báo cáo</label><input id="report-name" value={reportName} onChange={event => setReportName(event.target.value)} className={`${CONTROL_CLASS} flex-1`} placeholder="Tên mẫu, ví dụ: Tồn đọng Chi nhánh 635" /><button type="button" disabled={saving} onClick={() => void saveDefinition()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#005a57] disabled:opacity-50"><Save className="h-4 w-4" />{saving ? 'Đang lưu' : 'Lưu mẫu'}</button></div>}
 
       <div className="my-4 border-t border-slate-100" />
-      <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2 text-sm font-bold text-slate-900"><Filter className="h-4 w-4 text-[#006b68]" />Bộ lọc <span className="font-medium text-slate-400">{draftQuery.rules.length || 'Không có'}</span></div><button type="button" onClick={addRule} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#006b68] px-3 py-2 text-xs font-bold text-[#006b68] hover:bg-teal-50"><Plus className="h-4 w-4" />Thêm điều kiện</button></div>
+      <div className="flex flex-wrap items-center justify-between gap-3"><div className="flex items-center gap-2 text-sm font-bold text-slate-900"><Filter className="h-4 w-4 text-[#006b68]" />Lọc dữ liệu <span className="font-medium text-slate-400">{draftQuery.rules.length}</span></div><button type="button" onClick={addRule} disabled={!filterFields.length} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-[#006b68] px-3 py-2 text-xs font-bold text-[#006b68] hover:bg-teal-50 disabled:opacity-50"><Plus className="h-4 w-4" />Thêm điều kiện</button></div>
 
-      {draftQuery.rules.length === 0 ? <button type="button" onClick={addRule} className="mt-3 flex min-h-12 w-full items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-left text-xs text-slate-500 hover:border-teal-300 hover:bg-teal-50/50"><span>Đang xem toàn bộ dữ liệu trong phạm vi được cấp.</span><span className="shrink-0 font-bold text-[#006b68]">Thêm lọc</span></button> : <div className="mt-3 space-y-3">
+      {draftQuery.rules.length === 0 ? <button type="button" onClick={addRule} disabled={!filterFields.length} className="mt-3 flex min-h-12 w-full items-center justify-between gap-3 rounded-xl border border-dashed border-slate-300 bg-slate-50 px-4 py-3 text-left text-xs text-slate-500 hover:border-teal-300 hover:bg-teal-50/50 disabled:opacity-50"><span>Chọn trường lọc: chi nhánh, cán bộ QLKH, trạng thái...</span><span className="shrink-0 font-bold text-[#006b68]">Thêm lọc</span></button> : <div className="mt-3 space-y-3">
         {draftQuery.rules.length > 1 && <label className="flex items-center gap-2 text-xs font-semibold text-slate-600"><span>Điều kiện:</span><select aria-label="Cách ghép điều kiện" value={draftQuery.match} onChange={event => setDraftQuery(current => ({ ...current, match: event.target.value as ReportRunRequest['match'] }))} className="min-h-9 rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700"><option value="ALL">Đồng thời thỏa tất cả</option><option value="ANY">Thỏa ít nhất một điều kiện</option></select></label>}
-        {draftQuery.rules.map((rule, index) => <FilterRuleEditor key={`${index}-${rule.key}`} index={index} rule={rule} field={fieldsByKey.get(rule.key)} catalog={catalog} onChange={next => replaceRule(index, next)} onRemove={() => removeRule(index)} />)}
+        {draftQuery.rules.map((rule, index) => <FilterRuleEditor key={`${index}-${rule.key}`} index={index} rule={rule} field={fieldsByKey.get(rule.key)} catalog={filterableCatalog} onChange={next => replaceRule(index, next)} onRemove={() => removeRule(index)} />)}
       </div>}
 
       <div className="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between"><span className="text-[11px] text-slate-500">{draftQuery.rules.length === 0 ? 'Không áp dụng bộ lọc' : `${draftQuery.rules.length} điều kiện đang chọn`}</span><div className="grid grid-cols-2 gap-2 sm:flex"><button type="button" onClick={resetFilters} className="min-h-10 rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">Xóa lọc</button><button type="button" onClick={applyFilters} className="min-h-10 rounded-xl bg-[#006b68] px-4 py-2 text-xs font-bold text-white hover:bg-[#005a57]">Xem báo cáo</button></div></div>
@@ -250,7 +250,7 @@ const normalizeQueryForCatalog = (query: ReportRunRequest, catalog: ReportCatalo
   const requestedGroup = fields.get(query.groupBy);
   const groupBy = requestedGroup?.groupable ? requestedGroup.key : fallbackGroup?.key || 'dimension.branch';
   const nextMetrics = metrics.length ? metrics : catalog.metrics.map(metric => metric.key);
-  return { ...query, rules: query.rules.filter(rule => fields.has(rule.key)), groupBy, metrics: nextMetrics, sort: query.sort && nextMetrics.includes(query.sort.key) ? query.sort : undefined };
+  return { ...query, rules: query.rules.filter(rule => fields.get(rule.key)?.filterable !== false), groupBy, metrics: nextMetrics, sort: query.sort && nextMetrics.includes(query.sort.key) ? query.sort : undefined };
 };
 const legacyDefinitionToQuery = (definition: ReportDefinition): ReportRunRequest => {
   const rules: ReportFilterRule[] = []; const filters = definition.filters || {};

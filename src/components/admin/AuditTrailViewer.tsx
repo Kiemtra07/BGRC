@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Database, Download, History, RefreshCw, Search, Trash2 } from 'lucide-react';
+import { AlertCircle, Download, History, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { AuditLogEntry, UserRole, WorkflowCommand } from '../../../shared/contracts';
 import { api } from '../../services/api';
 import { securityEventLabels, userRoleLabels, workflowEventLabels } from '../../content/ui-copy';
@@ -96,16 +96,7 @@ export const AuditTrailViewer: React.FC = () => {
     <div className="space-y-6">
       <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h3 className="text-base font-bold text-slate-900">Nhật ký xử lý</h3>
-            <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
-              Tải CSV theo dữ liệu đang lọc. Chỉ dữ liệu thử nghiệm ở local/test mới được xóa; production giữ nhật ký để kiểm toán.
-            </p>
-          </div>
-          <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-[#006b68]/20 bg-[#006b68]/10 px-3 py-1 text-xs font-bold text-[#006b68]">
-            <Database className="h-3.5 w-3.5" />
-            Có thể xuất CSV
-          </span>
+          <h3 className="text-base font-bold text-slate-900">Nhật ký xử lý</h3>
         </div>
       </section>
 
