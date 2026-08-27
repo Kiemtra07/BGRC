@@ -63,7 +63,7 @@ export interface ReportFilterQuery {
 export const ReportFilterSchema = z.object({
   branchCode: z.string().trim().min(1).max(50).optional(),
   department: z.string().trim().min(1).max(255).optional(),
-  workflowStatus: z.enum(['PENDING', 'SUBMITTED_BRANCH', 'SUBMITTED_INTERNAL', 'REJECTED', 'WAIVED_RESOLVED']).optional(),
+  workflowStatus: z.enum(['PENDING', 'SUBMITTED_BRANCH', 'SUBMITTED_BRANCH_LEADER', 'SUBMITTED_INTERNAL', 'REJECTED', 'WAIVED_RESOLVED']).optional(),
   errorCode: z.string().trim().min(2).max(50).optional(),
   dateFrom: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),

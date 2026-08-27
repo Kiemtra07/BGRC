@@ -1,6 +1,7 @@
 import {
   UserProfile, Finding, CustomerCase, ReportChannel, OrgUnit, DashboardSummary, ReportSummary,
   SubmitBranchCommandDTO, BranchControlApproveCommandDTO, BranchControlRejectCommandDTO,
+  BranchLeaderApproveCommandDTO, BranchLeaderRejectCommandDTO, SetFindingApprovalRouteDTO,
   InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO,
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, ReportFilterQuery,
   AuditLogEntry, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
@@ -11,6 +12,12 @@ import {
   LoginDTO, LoginResponse,
   AuditCampaign, CreateAuditCampaignDTO, UpdateAuditCampaignDTO,
 } from '../../shared/contracts';
+
+export interface FindingApprovalCandidates {
+  branchControllers: UserProfile[];
+  branchLeaders: UserProfile[];
+  internalApprovers: UserProfile[];
+}
 
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '');
 const API_BASE = `${configuredApiBase || '/api'}/v1`;
@@ -133,6 +140,10 @@ class ApiService {
     return this.request(`/findings?${new URLSearchParams(params).toString()}`);
   }
   public getFindingById(id: string): Promise<Finding> { return this.request(`/findings/${id}`); }
+  public getApprovalCandidates(id: string): Promise<FindingApprovalCandidates> { return this.request(`/findings/${id}/approval-candidates`); }
+  public setApprovalRoute(id: string, dto: SetFindingApprovalRouteDTO): Promise<Finding> {
+    return this.request(`/findings/${id}/approval-route`, { method: 'PUT', body: JSON.stringify(dto) });
+  }
   public getMyWork = (): Promise<MyWorkQueue> => this.request('/workspace/my-work');
   public followFinding = (id: string): Promise<FindingFollowResult> => this.request(`/findings/${id}/follow`, { method: 'PUT' });
   public unfollowFinding = (id: string): Promise<FindingFollowResult> => this.request(`/findings/${id}/follow`, { method: 'DELETE' });
@@ -181,6 +192,12 @@ class ApiService {
   }
   public branchControlReject(id: string, dto: BranchControlRejectCommandDTO): Promise<Finding> {
     return this.workflowCommand(`/findings/${id}/actions/branch-control-reject`, dto);
+  }
+  public branchLeaderApprove(id: string, dto: BranchLeaderApproveCommandDTO): Promise<Finding> {
+    return this.workflowCommand(`/findings/${id}/actions/branch-leader-approve`, dto);
+  }
+  public branchLeaderReject(id: string, dto: BranchLeaderRejectCommandDTO): Promise<Finding> {
+    return this.workflowCommand(`/findings/${id}/actions/branch-leader-reject`, dto);
   }
   public internalWaive(id: string, dto: InternalWaiveCommandDTO): Promise<Finding> {
     return this.workflowCommand(`/findings/${id}/actions/internal-waive`, dto);

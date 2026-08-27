@@ -46,6 +46,21 @@ describe('WorkflowCommandService (P0 Decision Invariants)', () => {
     scopes: [{ scopeType: 'ALL' }],
   };
 
+  const mockBranchLeader: UserProfile = {
+    id: 'user-branch-leader-635',
+    username: 'lanhdao.635',
+    email: 'lanhdao.635@bank.com',
+    fullName: 'Lãnh đạo Chi nhánh Nam Buôn Hồ',
+    portal: 'BRANCH',
+    roles: ['BRANCH_LEADER'],
+    primaryRole: 'BRANCH_LEADER',
+    branchCode: '635',
+    branchName: 'Chi nhánh Nam Buôn Hồ',
+    department: 'Ban Giám đốc',
+    isActive: true,
+    scopes: [{ scopeType: 'BRANCH', orgUnitCode: '635', branchName: 'Chi nhánh Nam Buôn Hồ' }],
+  };
+
   const initialFinding: Finding = {
     id: 'find-test-01',
     channelId: 'chan-audit-bgs',
@@ -111,6 +126,43 @@ describe('WorkflowCommandService (P0 Decision Invariants)', () => {
 
     expect(updated.workflowStatus).toBe('SUBMITTED_INTERNAL');
     expect(updated.version).toBe(3);
+  });
+
+  it('routes a leader-required case from its selected controller to its selected branch leader', () => {
+    const findingInBranch = {
+      ...initialFinding,
+      workflowStatus: 'SUBMITTED_BRANCH' as const,
+      version: 2,
+      approvalRoute: {
+        branchControllerUserId: mockBranchController.id,
+        branchLeaderUserId: mockBranchLeader.id,
+        requiresBranchLeaderApproval: true,
+      },
+    };
+
+    const updated = service.executeBranchControlApprove(findingInBranch, { expectedVersion: 2 }, mockBranchController);
+
+    expect(updated.workflowStatus).toBe('SUBMITTED_BRANCH_LEADER');
+  });
+
+  it('rejects a branch controller who was not selected in the finding route', () => {
+    const otherController: UserProfile = {
+      ...mockBranchController,
+      id: 'user-branch-controller-other-635',
+      username: 'kiemsoat.khac.635',
+    };
+    const findingInBranch: Finding = {
+      ...initialFinding,
+      workflowStatus: 'SUBMITTED_BRANCH',
+      version: 2,
+      approvalRoute: {
+        branchControllerUserId: mockBranchController.id,
+        requiresBranchLeaderApproval: false,
+      },
+    };
+
+    expect(() => service.executeBranchControlApprove(findingInBranch, { expectedVersion: 2 }, otherController))
+      .toThrow('APPROVER_NOT_ASSIGNED');
   });
 
   it('P0-04: Branch control reject -> moves to REJECTED and records rejection projection', () => {

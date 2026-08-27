@@ -95,7 +95,7 @@ export interface DynamicWorkflowStage {
 export interface DynamicWorkflowConfig {
   id: string;
   channelId: string;
-  workflowType: 'ONE_TIER' | 'TWO_TIER';
+  workflowType: 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER';
   stages: DynamicWorkflowStage[];
 }
 
@@ -174,11 +174,11 @@ export interface ReportChannelVersion {
 
 const UserRoleSchema = z.enum([
   'ADMIN', 'SUPERVISOR', 'INTERNAL_APPROVER', 'INTERNAL_OFFICER',
-  'BRANCH_CONTROLLER', 'BRANCH_INPUT', 'VIEWER',
+  'BRANCH_CONTROLLER', 'BRANCH_LEADER', 'BRANCH_INPUT', 'VIEWER',
 ]);
 
 const WorkflowStatusSchema = z.enum([
-  'PENDING', 'SUBMITTED_BRANCH', 'SUBMITTED_INTERNAL', 'REJECTED', 'WAIVED_RESOLVED',
+  'PENDING', 'SUBMITTED_BRANCH', 'SUBMITTED_BRANCH_LEADER', 'SUBMITTED_INTERNAL', 'REJECTED', 'WAIVED_RESOLVED',
 ]);
 
 export const DynamicFieldDefinitionSchema = z.object({
@@ -282,8 +282,8 @@ const DynamicWorkflowStageSchema = z.object({
 export const DynamicWorkflowConfigSchema = z.object({
   id: z.string().trim().min(1),
   channelId: z.string(),
-  workflowType: z.enum(['ONE_TIER', 'TWO_TIER']),
-  stages: z.array(DynamicWorkflowStageSchema).min(2).max(3),
+  workflowType: z.enum(['ONE_TIER', 'TWO_TIER', 'THREE_TIER']),
+  stages: z.array(DynamicWorkflowStageSchema).min(2).max(4),
 });
 
 export const DynamicSlaConfigSchema = z.object({

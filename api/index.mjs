@@ -40,6 +40,7 @@ var COPLUS_ROLE_CODES = [
   "CB2_KTGSTT",
   "CBHT_CN",
   "CB_GSKT_TH",
+  "LD_CN",
   "LD_GSKT_TH",
   "ADMIN_HT"
 ];
@@ -123,6 +124,13 @@ var COPLUS_ROLE_CATALOG = [
     capabilities: ["BRANCH_CONTROLLER"]
   },
   {
+    code: "LD_CN",
+    label: "L\xE3nh \u0111\u1EA1o chi nh\xE1nh",
+    group: "CHI_NHANH",
+    responsibility: "Ph\xEA duy\u1EC7t h\u1ED3 s\u01A1 kh\u1EAFc ph\u1EE5c khi tuy\u1EBFn duy\u1EC7t c\u1EE7a h\u1ED3 s\u01A1 y\xEAu c\u1EA7u c\u1EA5p l\xE3nh \u0111\u1EA1o chi nh\xE1nh.",
+    capabilities: ["BRANCH_LEADER"]
+  },
+  {
     code: "LD_GSKT_TH",
     label: "L\xE3nh \u0111\u1EA1o nh\xF3m Gi\xE1m s\xE1t H\u0110KT / T\u1ED5ng h\u1EE3p",
     group: "HO_TRO_GIAM_SAT",
@@ -157,6 +165,7 @@ var UserRoleSchema = z3.enum([
   "INTERNAL_APPROVER",
   "INTERNAL_OFFICER",
   "BRANCH_CONTROLLER",
+  "BRANCH_LEADER",
   "BRANCH_INPUT",
   "VIEWER"
 ]);
@@ -190,7 +199,7 @@ var CreateUserSchema = z3.object({
       message: "primaryRole ph\u1EA3i n\u1EB1m trong roles"
     });
   }
-  const branchRoles = /* @__PURE__ */ new Set(["BRANCH_INPUT", "BRANCH_CONTROLLER"]);
+  const branchRoles = /* @__PURE__ */ new Set(["BRANCH_INPUT", "BRANCH_CONTROLLER", "BRANCH_LEADER"]);
   const internalRoles = /* @__PURE__ */ new Set(["ADMIN", "SUPERVISOR", "INTERNAL_APPROVER", "INTERNAL_OFFICER"]);
   if (value.portal === "BRANCH" && value.roles.some((role) => internalRoles.has(role))) {
     context.addIssue({
@@ -206,11 +215,11 @@ var CreateUserSchema = z3.object({
       message: "User n\u1ED9i b\u1ED9 kh\xF4ng \u0111\u01B0\u1EE3c mang vai tr\xF2 chi nh\xE1nh"
     });
   }
-  if (value.primaryRole === "BRANCH_CONTROLLER" && (!value.branchCode || !value.department)) {
+  if (["BRANCH_CONTROLLER", "BRANCH_LEADER"].includes(value.primaryRole) && (!value.branchCode || !value.department)) {
     context.addIssue({
       code: z3.ZodIssueCode.custom,
       path: ["branchCode"],
-      message: "BRANCH_CONTROLLER ph\u1EA3i c\xF3 branchCode v\xE0 department"
+      message: "Vai tr\xF2 ki\u1EC3m so\xE1t ho\u1EB7c l\xE3nh \u0111\u1EA1o chi nh\xE1nh ph\u1EA3i c\xF3 branchCode v\xE0 department"
     });
   }
   if (value.primaryRole === "BRANCH_INPUT" && (!value.branchCode || !value.department)) {
@@ -277,12 +286,14 @@ var UserRoleSchema2 = z5.enum([
   "INTERNAL_APPROVER",
   "INTERNAL_OFFICER",
   "BRANCH_CONTROLLER",
+  "BRANCH_LEADER",
   "BRANCH_INPUT",
   "VIEWER"
 ]);
 var WorkflowStatusSchema = z5.enum([
   "PENDING",
   "SUBMITTED_BRANCH",
+  "SUBMITTED_BRANCH_LEADER",
   "SUBMITTED_INTERNAL",
   "REJECTED",
   "WAIVED_RESOLVED"
@@ -387,8 +398,8 @@ var DynamicWorkflowStageSchema = z5.object({
 var DynamicWorkflowConfigSchema = z5.object({
   id: z5.string().trim().min(1),
   channelId: z5.string(),
-  workflowType: z5.enum(["ONE_TIER", "TWO_TIER"]),
-  stages: z5.array(DynamicWorkflowStageSchema).min(2).max(3)
+  workflowType: z5.enum(["ONE_TIER", "TWO_TIER", "THREE_TIER"]),
+  stages: z5.array(DynamicWorkflowStageSchema).min(2).max(4)
 });
 var DynamicSlaConfigSchema = z5.object({
   defaultDays: z5.number().int().min(1).max(365),
@@ -467,6 +478,24 @@ var BranchControlApproveCommandSchema = z7.object({
 var BranchControlRejectCommandSchema = z7.object({
   expectedVersion: z7.number().int().min(1),
   reason: z7.string().min(5, "L\xFD do tr\u1EA3 v\u1EC1 b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 5 k\xFD t\u1EF1")
+});
+var BranchLeaderApproveCommandSchema = z7.object({
+  expectedVersion: z7.number().int().min(1),
+  notes: z7.string().optional()
+});
+var BranchLeaderRejectCommandSchema = z7.object({
+  expectedVersion: z7.number().int().min(1),
+  reason: z7.string().min(5, "L\xFD do tr\u1EA3 v\u1EC1 b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 5 k\xFD t\u1EF1")
+});
+var SetFindingApprovalRouteSchema = z7.object({
+  branchControllerUserId: z7.string().trim().min(1),
+  branchLeaderUserId: z7.string().trim().min(1).optional(),
+  internalApproverUserId: z7.string().trim().min(1).optional(),
+  requiresBranchLeaderApproval: z7.boolean()
+}).superRefine((value, context) => {
+  if (value.requiresBranchLeaderApproval && !value.branchLeaderUserId) {
+    context.addIssue({ code: z7.ZodIssueCode.custom, path: ["branchLeaderUserId"], message: "C\u1EA7n ch\u1ECDn l\xE3nh \u0111\u1EA1o chi nh\xE1nh cho tuy\u1EBFn duy\u1EC7t n\xE0y." });
+  }
 });
 var InternalWaiveCommandSchema = z7.object({
   expectedVersion: z7.number().int().min(1),
@@ -568,7 +597,7 @@ import { z as z11 } from "zod";
 var ReportFilterSchema = z11.object({
   branchCode: z11.string().trim().min(1).max(50).optional(),
   department: z11.string().trim().min(1).max(255).optional(),
-  workflowStatus: z11.enum(["PENDING", "SUBMITTED_BRANCH", "SUBMITTED_INTERNAL", "REJECTED", "WAIVED_RESOLVED"]).optional(),
+  workflowStatus: z11.enum(["PENDING", "SUBMITTED_BRANCH", "SUBMITTED_BRANCH_LEADER", "SUBMITTED_INTERNAL", "REJECTED", "WAIVED_RESOLVED"]).optional(),
   errorCode: z11.string().trim().min(2).max(50).optional(),
   dateFrom: z11.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   dateTo: z11.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
@@ -883,6 +912,12 @@ var UpdateAuditCampaignSchema = CampaignInputSchema.partial().extend({
 
 // server/src/modules/workflow/workflow-service.ts
 var WorkflowCommandService = class {
+  assertSelectedApprover(finding, user, field, label) {
+    const selectedUserId = finding.approvalRoute?.[field];
+    if (selectedUserId && selectedUserId !== user.id) {
+      throw new Error(`403: APPROVER_NOT_ASSIGNED \u2014 H\u1ED3 s\u01A1 n\xE0y \u0111\u01B0\u1EE3c ph\xE2n cho ${label} kh\xE1c duy\u1EC7t.`);
+    }
+  }
   validateTransition(finding, command, user) {
     if (finding.workflowStatus === "WAIVED_RESOLVED") {
       throw new Error("409: FINDING_IS_TERMINAL \u2014 H\u1ED3 s\u01A1 \u0111\xE3 \u0111\u01B0\u1EE3c b\u1ECF l\u1ED7i v\u0129nh vi\u1EC5n, kh\xF4ng th\u1EC3 ch\u1EC9nh s\u1EEDa.");
@@ -904,6 +939,7 @@ var WorkflowCommandService = class {
         if (!user.roles.includes("BRANCH_CONTROLLER")) {
           throw new Error("403: FORBIDDEN \u2014 Ch\u1EC9 Ki\u1EC3m so\xE1t chi nh\xE1nh m\u1EDBi c\xF3 quy\u1EC1n \u0111\u1ED3ng \xFD x\u1EED l\xFD l\u1ED7i.");
         }
+        this.assertSelectedApprover(finding, user, "branchControllerUserId", "ng\u01B0\u1EDDi ki\u1EC3m so\xE1t chi nh\xE1nh");
         break;
       }
       case "BRANCH_CONTROL_REJECT": {
@@ -913,6 +949,27 @@ var WorkflowCommandService = class {
         if (!user.roles.includes("BRANCH_CONTROLLER")) {
           throw new Error("403: FORBIDDEN \u2014 Ch\u1EC9 Ki\u1EC3m so\xE1t chi nh\xE1nh m\u1EDBi c\xF3 quy\u1EC1n chuy\u1EC3n tr\u1EA3 h\u1ED3 s\u01A1.");
         }
+        this.assertSelectedApprover(finding, user, "branchControllerUserId", "ng\u01B0\u1EDDi ki\u1EC3m so\xE1t chi nh\xE1nh");
+        break;
+      }
+      case "BRANCH_LEADER_APPROVE": {
+        if (finding.workflowStatus !== "SUBMITTED_BRANCH_LEADER") {
+          throw new Error(`409: INVALID_TRANSITION \u2014 H\u1ED3 s\u01A1 ph\u1EA3i \u1EDF tr\u1EA1ng th\xE1i CH\u1EDC L\xC3NH \u0110\u1EA0O CHI NH\xC1NH (hi\u1EC7n t\u1EA1i: ${finding.workflowStatus})`);
+        }
+        if (!user.roles.includes("BRANCH_LEADER")) {
+          throw new Error("403: FORBIDDEN \u2014 Ch\u1EC9 L\xE3nh \u0111\u1EA1o chi nh\xE1nh m\u1EDBi c\xF3 quy\u1EC1n ph\xEA duy\u1EC7t b\u01B0\u1EDBc n\xE0y.");
+        }
+        this.assertSelectedApprover(finding, user, "branchLeaderUserId", "l\xE3nh \u0111\u1EA1o chi nh\xE1nh");
+        break;
+      }
+      case "BRANCH_LEADER_REJECT": {
+        if (finding.workflowStatus !== "SUBMITTED_BRANCH_LEADER") {
+          throw new Error(`409: INVALID_TRANSITION \u2014 H\u1ED3 s\u01A1 ph\u1EA3i \u1EDF tr\u1EA1ng th\xE1i CH\u1EDC L\xC3NH \u0110\u1EA0O CHI NH\xC1NH (hi\u1EC7n t\u1EA1i: ${finding.workflowStatus})`);
+        }
+        if (!user.roles.includes("BRANCH_LEADER")) {
+          throw new Error("403: FORBIDDEN \u2014 Ch\u1EC9 L\xE3nh \u0111\u1EA1o chi nh\xE1nh m\u1EDBi c\xF3 quy\u1EC1n chuy\u1EC3n tr\u1EA3 h\u1ED3 s\u01A1.");
+        }
+        this.assertSelectedApprover(finding, user, "branchLeaderUserId", "l\xE3nh \u0111\u1EA1o chi nh\xE1nh");
         break;
       }
       case "INTERNAL_WAIVE": {
@@ -922,6 +979,7 @@ var WorkflowCommandService = class {
         if (!user.roles.includes("INTERNAL_APPROVER") && !user.roles.includes("SUPERVISOR")) {
           throw new Error("403: FORBIDDEN \u2014 Ch\u1EC9 Kh\u1ED1i N\u1ED9i B\u1ED9 / L\xE3nh \u0111\u1EA1o m\u1EDBi c\xF3 quy\u1EC1n ph\xEA duy\u1EC7t b\u1ECF l\u1ED7i.");
         }
+        this.assertSelectedApprover(finding, user, "internalApproverUserId", "ng\u01B0\u1EDDi duy\u1EC7t n\u1ED9i b\u1ED9");
         break;
       }
       case "INTERNAL_REJECT": {
@@ -931,6 +989,7 @@ var WorkflowCommandService = class {
         if (!user.roles.includes("INTERNAL_APPROVER") && !user.roles.includes("SUPERVISOR")) {
           throw new Error("403: FORBIDDEN \u2014 Ch\u1EC9 Kh\u1ED1i N\u1ED9i B\u1ED9 m\u1EDBi c\xF3 quy\u1EC1n t\u1EEB ch\u1ED1i b\u1ECF l\u1ED7i.");
         }
+        this.assertSelectedApprover(finding, user, "internalApproverUserId", "ng\u01B0\u1EDDi duy\u1EC7t n\u1ED9i b\u1ED9");
         break;
       }
       default:
@@ -962,7 +1021,7 @@ var WorkflowCommandService = class {
     }
     const updated = {
       ...finding,
-      workflowStatus: "SUBMITTED_INTERNAL",
+      workflowStatus: finding.approvalRoute?.requiresBranchLeaderApproval ? "SUBMITTED_BRANCH_LEADER" : "SUBMITTED_INTERNAL",
       version: finding.version + 1,
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
@@ -984,6 +1043,34 @@ var WorkflowCommandService = class {
       updatedAt: (/* @__PURE__ */ new Date()).toISOString()
     };
     return updated;
+  }
+  executeBranchLeaderApprove(finding, dto, user) {
+    this.validateTransition(finding, "BRANCH_LEADER_APPROVE", user);
+    if (dto.expectedVersion !== finding.version) {
+      throw new Error(`409: VERSION_CONFLICT \u2014 Version conflict (${finding.version} != ${dto.expectedVersion})`);
+    }
+    return {
+      ...finding,
+      workflowStatus: "SUBMITTED_INTERNAL",
+      version: finding.version + 1,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
+  }
+  executeBranchLeaderReject(finding, dto, user) {
+    this.validateTransition(finding, "BRANCH_LEADER_REJECT", user);
+    if (dto.expectedVersion !== finding.version) {
+      throw new Error(`409: VERSION_CONFLICT \u2014 Version conflict (${finding.version} != ${dto.expectedVersion})`);
+    }
+    return {
+      ...finding,
+      workflowStatus: "REJECTED",
+      rejectedFromStage: "BRANCH_LEADER_REVIEW",
+      rejectionReason: dto.reason,
+      rejectedByUserName: user.fullName,
+      rejectedAt: (/* @__PURE__ */ new Date()).toISOString(),
+      version: finding.version + 1,
+      updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+    };
   }
   executeInternalWaive(finding, dto, user) {
     this.validateTransition(finding, "INTERNAL_WAIVE", user);
@@ -2949,11 +3036,18 @@ function defaultWorkflowConfig(channelId = "", workflowType = "TWO_TIER") {
     allowedRoles: ["INTERNAL_APPROVER", "SUPERVISOR"],
     availableButtons: []
   };
+  const branchLeaderStage = {
+    stageId: "branch-leader",
+    stageName: "L\xE3nh \u0111\u1EA1o chi nh\xE1nh",
+    statusCode: "SUBMITTED_BRANCH_LEADER",
+    allowedRoles: ["BRANCH_LEADER"],
+    availableButtons: []
+  };
   return {
     id: `workflow-${channelId || "draft"}`,
     channelId,
     workflowType,
-    stages: workflowType === "ONE_TIER" ? [branchStage, headOfficeStage] : [branchStage, branchControlStage, headOfficeStage]
+    stages: workflowType === "ONE_TIER" ? [branchStage, headOfficeStage] : workflowType === "THREE_TIER" ? [branchStage, branchControlStage, branchLeaderStage, headOfficeStage] : [branchStage, branchControlStage, headOfficeStage]
   };
 }
 function defaultIntegrationConfig() {
@@ -2978,7 +3072,7 @@ function defaultIntegrationConfig() {
 function normalizedReportChannel(channel) {
   const configVersion = Number.isInteger(channel.configVersion) && channel.configVersion > 0 ? channel.configVersion : 1;
   const currentVersionId = channel.currentVersionId || `${channel.id}-v${configVersion}`;
-  const workflowType = channel.workflowConfig?.workflowType === "ONE_TIER" ? "ONE_TIER" : "TWO_TIER";
+  const workflowType = channel.workflowConfig?.workflowType === "ONE_TIER" ? "ONE_TIER" : channel.workflowConfig?.workflowType === "THREE_TIER" ? "THREE_TIER" : "TWO_TIER";
   return {
     ...channel,
     configVersion,
@@ -3799,6 +3893,34 @@ function getScopedFindingOrThrow(id, user) {
   }
   return finding;
 }
+function approvalCandidatesForFinding(finding) {
+  const branchUsers = appUsers.filter((user) => user.isActive && user.branchCode === finding.branchCode);
+  return {
+    branchControllers: branchUsers.filter((user) => user.roles.includes("BRANCH_CONTROLLER")),
+    branchLeaders: branchUsers.filter((user) => user.roles.includes("BRANCH_LEADER")),
+    internalApprovers: appUsers.filter((user) => user.isActive && (user.roles.includes("INTERNAL_APPROVER") || user.roles.includes("SUPERVISOR")))
+  };
+}
+function assertApprovalRouteCandidates(finding, actor, route) {
+  const candidates = approvalCandidatesForFinding(finding);
+  const controller = candidates.branchControllers.find((user) => user.id === route.branchControllerUserId);
+  if (!controller) {
+    throw new HttpProblem(422, "ROUTE_CONTROLLER_INVALID", "Ng\u01B0\u1EDDi ki\u1EC3m so\xE1t kh\xF4ng h\u1EE3p l\u1EC7", "Ch\u1EC9 \u0111\u01B0\u1EE3c ch\u1ECDn Ki\u1EC3m so\xE1t chi nh\xE1nh \u0111ang ho\u1EA1t \u0111\u1ED9ng c\xF9ng chi nh\xE1nh c\u1EE7a h\u1ED3 s\u01A1.");
+  }
+  if (route.requiresBranchLeaderApproval && !candidates.branchLeaders.some((user) => user.id === route.branchLeaderUserId)) {
+    throw new HttpProblem(422, "ROUTE_LEADER_INVALID", "L\xE3nh \u0111\u1EA1o chi nh\xE1nh kh\xF4ng h\u1EE3p l\u1EC7", "C\u1EA7n ch\u1ECDn L\xE3nh \u0111\u1EA1o chi nh\xE1nh \u0111ang ho\u1EA1t \u0111\u1ED9ng c\xF9ng chi nh\xE1nh c\u1EE7a h\u1ED3 s\u01A1.");
+  }
+  if (route.internalApproverUserId && !candidates.internalApprovers.some((user) => user.id === route.internalApproverUserId)) {
+    throw new HttpProblem(422, "ROUTE_INTERNAL_APPROVER_INVALID", "Ng\u01B0\u1EDDi duy\u1EC7t n\u1ED9i b\u1ED9 kh\xF4ng h\u1EE3p l\u1EC7", "Ch\u1EC9 \u0111\u01B0\u1EE3c ch\u1ECDn ng\u01B0\u1EDDi duy\u1EC7t n\u1ED9i b\u1ED9 ho\u1EB7c l\xE3nh \u0111\u1EA1o \u0111ang ho\u1EA1t \u0111\u1ED9ng.");
+  }
+  const selectedIds = [route.branchControllerUserId, route.branchLeaderUserId, route.internalApproverUserId].filter(Boolean);
+  if (new Set(selectedIds).size !== selectedIds.length) {
+    throw new HttpProblem(422, "ROUTE_APPROVERS_MUST_DIFFER", "Tuy\u1EBFn duy\u1EC7t kh\xF4ng h\u1EE3p l\u1EC7", "M\u1ED7i c\u1EA5p duy\u1EC7t ph\u1EA3i l\xE0 m\u1ED9t ng\u01B0\u1EDDi kh\xE1c nhau.");
+  }
+  if (selectedIds.includes(actor.id)) {
+    throw new HttpProblem(422, "ROUTE_SELF_APPROVAL_FORBIDDEN", "Kh\xF4ng \u0111\u01B0\u1EE3c t\u1EF1 duy\u1EC7t", "Ng\u01B0\u1EDDi thi\u1EBFt l\u1EADp tuy\u1EBFn duy\u1EC7t kh\xF4ng th\u1EC3 ch\u1ECDn ch\xEDnh m\xECnh l\xE0m ng\u01B0\u1EDDi duy\u1EC7t cho h\u1ED3 s\u01A1 n\xE0y.");
+  }
+}
 function availableEvidencesForFinding(findingId) {
   return evidences.filter((evidence) => evidence.findingId === findingId && evidence.status === "AVAILABLE");
 }
@@ -3840,6 +3962,9 @@ function isActionableForUser(finding, user) {
   }
   if (user.roles.includes("BRANCH_CONTROLLER")) {
     return finding.workflowStatus === "SUBMITTED_BRANCH";
+  }
+  if (user.roles.includes("BRANCH_LEADER")) {
+    return finding.workflowStatus === "SUBMITTED_BRANCH_LEADER";
   }
   if (user.roles.some((role) => ["SUPERVISOR", "INTERNAL_APPROVER", "INTERNAL_OFFICER"].includes(role))) {
     return finding.workflowStatus === "SUBMITTED_INTERNAL";
@@ -4063,6 +4188,7 @@ var reportFieldAccessors = {
 var workflowStatusLabels = {
   PENDING: "Ch\u1EDD chi nh\xE1nh kh\u1EAFc ph\u1EE5c",
   SUBMITTED_BRANCH: "Ch\u1EDD Ki\u1EC3m so\xE1t chi nh\xE1nh",
+  SUBMITTED_BRANCH_LEADER: "Ch\u1EDD L\xE3nh \u0111\u1EA1o chi nh\xE1nh",
   SUBMITTED_INTERNAL: "Ch\u1EDD Kh\u1ED1i N\u1ED9i B\u1ED9",
   REJECTED: "\u0110\xE3 chuy\u1EC3n tr\u1EA3",
   WAIVED_RESOLVED: "\u0110\xE3 \u0111\xF3ng l\u1ED7i"
@@ -4969,8 +5095,9 @@ app.post("/api/v1/findings/:id/sub-items/review", async (req) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const branchReview = user.roles.includes("BRANCH_CONTROLLER") && finding.workflowStatus === "SUBMITTED_BRANCH";
+  const branchLeaderReview = user.roles.includes("BRANCH_LEADER") && finding.workflowStatus === "SUBMITTED_BRANCH_LEADER";
   const internalReview = user.roles.some((role) => ["SUPERVISOR", "INTERNAL_APPROVER"].includes(role)) && finding.workflowStatus === "SUBMITTED_INTERNAL";
-  if (!branchReview && !internalReview) {
+  if (!branchReview && !branchLeaderReview && !internalReview) {
     throw new HttpProblem(409, "SUB_ITEM_REVIEW_NOT_ALLOWED", "Ch\u01B0a \u0111\u1EBFn b\u01B0\u1EDBc \u0111\xE1nh gi\xE1 \xFD sai s\xF3t", "T\xE0i kho\u1EA3n ho\u1EB7c tr\u1EA1ng th\xE1i h\u1ED3 s\u01A1 kh\xF4ng ph\xF9 h\u1EE3p \u0111\u1EC3 \u0111\xE1nh gi\xE1 t\u1EEBng \xFD sai s\xF3t.");
   }
   const dto = ReviewFindingSubItemsSchema.parse(req.body);
@@ -5111,6 +5238,39 @@ app.post("/api/v1/imports/findings", async (req, reply) => {
     findings: imported
   });
 });
+app.get("/api/v1/findings/:id/approval-candidates", async (req) => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  return approvalCandidatesForFinding(finding);
+});
+app.put("/api/v1/findings/:id/approval-route", async (req) => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  requireRoles(user, ["ADMIN", "SUPERVISOR", "INTERNAL_OFFICER", "BRANCH_INPUT"]);
+  if (finding.workflowStatus !== "PENDING" && finding.workflowStatus !== "REJECTED") {
+    throw new HttpProblem(409, "ROUTE_LOCKED_AFTER_SUBMISSION", "Tuy\u1EBFn duy\u1EC7t \u0111\xE3 kh\xF3a", "Ch\u1EC9 \u0111\u01B0\u1EE3c thay \u0111\u1ED5i ng\u01B0\u1EDDi duy\u1EC7t khi h\u1ED3 s\u01A1 \u0111ang ch\u1EDD ho\u1EB7c \u0111\xE3 b\u1ECB tr\u1EA3 v\u1EC1.");
+  }
+  const route = SetFindingApprovalRouteSchema.parse(req.body);
+  assertApprovalRouteCandidates(finding, user, route);
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  finding.approvalRoute = { ...route, assignedByUserId: user.id, assignedAt: now };
+  finding.version += 1;
+  finding.updatedAt = now;
+  workflowEvents.push({
+    id: `evt-${crypto5.randomUUID()}`,
+    findingId: finding.id,
+    command: "SET_APPROVAL_ROUTE",
+    fromStatus: finding.workflowStatus,
+    toStatus: finding.workflowStatus,
+    actorUserId: user.id,
+    actorName: user.fullName,
+    actorRole: user.primaryRole,
+    notes: `\u0110\xE3 ch\u1ECDn tuy\u1EBFn duy\u1EC7t: Ki\u1EC3m so\xE1t ${route.branchControllerUserId}${route.requiresBranchLeaderApproval ? `, L\xE3nh \u0111\u1EA1o ${route.branchLeaderUserId}` : ""}${route.internalApproverUserId ? `, N\u1ED9i b\u1ED9 ${route.internalApproverUserId}` : ""}.`,
+    createdAt: now
+  });
+  await persistLocalState();
+  return finding;
+});
 app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
@@ -5119,10 +5279,19 @@ app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
+    if (dto.expectedVersion !== finding.version) {
+      throw new HttpProblem(409, "VERSION_CONFLICT", "Xung \u0111\u1ED9t phi\xEAn b\u1EA3n", `H\u1ED3 s\u01A1 \u0111\xE3 \u0111\u01B0\u1EE3c c\u1EADp nh\u1EADt b\u1EDFi ng\u01B0\u1EDDi kh\xE1c (version hi\u1EC7n t\u1EA1i: ${finding.version}, expected: ${dto.expectedVersion}).`);
+    }
     const pinnedVersion = reportChannelVersions.find((version) => version.id === finding.channelVersionId);
     const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.workflowType ?? "TWO_TIER";
-    const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     requireAvailableEvidence(finding);
+    if (workflowType !== "ONE_TIER" && !finding.approvalRoute?.branchControllerUserId) {
+      throw new HttpProblem(422, "ROUTE_CONTROLLER_REQUIRED", "Thi\u1EBFu tuy\u1EBFn duy\u1EC7t", "C\u1EA7n ch\u1ECDn ng\u01B0\u1EDDi ki\u1EC3m so\xE1t chi nh\xE1nh tr\u01B0\u1EDBc khi n\u1ED9p h\u1ED3 s\u01A1.");
+    }
+    if (workflowType === "THREE_TIER" && !finding.approvalRoute?.requiresBranchLeaderApproval) {
+      throw new HttpProblem(422, "ROUTE_LEADER_REQUIRED", "Thi\u1EBFu tuy\u1EBFn duy\u1EC7t", "Quy tr\xECnh ba c\u1EA5p y\xEAu c\u1EA7u ch\u1ECDn L\xE3nh \u0111\u1EA1o chi nh\xE1nh tr\u01B0\u1EDBc khi n\u1ED9p h\u1ED3 s\u01A1.");
+    }
+    const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     Object.assign(finding, updated);
     workflowEvents.push({
       id: `evt-${crypto5.randomUUID()}`,
@@ -5159,7 +5328,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-approve", async (req, repl
       findingId: finding.id,
       command: "BRANCH_CONTROL_APPROVE",
       fromStatus,
-      toStatus: "SUBMITTED_INTERNAL",
+      toStatus: updated.workflowStatus,
       actorUserId: user.id,
       actorName: user.fullName,
       actorRole: user.primaryRole,
@@ -5194,6 +5363,66 @@ app.post("/api/v1/findings/:id/actions/branch-control-reject", async (req, reply
       actorRole: user.primaryRole,
       rejectionReason: dto.reason,
       rejectedFromStage: "BRANCH_CONTROL_REVIEW",
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    rememberIdempotentResponse(idempotency, finding);
+    await persistLocalState();
+    return finding;
+  } catch (err) {
+    throw workflowErrorToProblem(err);
+  }
+});
+app.post("/api/v1/findings/:id/actions/branch-leader-approve", async (req) => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  const dto = BranchLeaderApproveCommandSchema.parse(req.body);
+  const idempotency = idempotencyContext(req, user, dto);
+  if (idempotency.replay) return idempotency.replay;
+  const fromStatus = finding.workflowStatus;
+  try {
+    const updated = workflowService.executeBranchLeaderApprove(finding, dto, user);
+    requireAvailableEvidence(finding);
+    Object.assign(finding, updated);
+    workflowEvents.push({
+      id: `evt-${crypto5.randomUUID()}`,
+      findingId: finding.id,
+      command: "BRANCH_LEADER_APPROVE",
+      fromStatus,
+      toStatus: updated.workflowStatus,
+      actorUserId: user.id,
+      actorName: user.fullName,
+      actorRole: user.primaryRole,
+      notes: dto.notes || "L\xE3nh \u0111\u1EA1o chi nh\xE1nh \u0111\u1ED3ng \xFD chuy\u1EC3n h\u1ED3 s\u01A1 l\xEAn Kh\u1ED1i N\u1ED9i B\u1ED9.",
+      createdAt: (/* @__PURE__ */ new Date()).toISOString()
+    });
+    rememberIdempotentResponse(idempotency, finding);
+    await persistLocalState();
+    return finding;
+  } catch (err) {
+    throw workflowErrorToProblem(err);
+  }
+});
+app.post("/api/v1/findings/:id/actions/branch-leader-reject", async (req) => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  const dto = BranchLeaderRejectCommandSchema.parse(req.body);
+  const idempotency = idempotencyContext(req, user, dto);
+  if (idempotency.replay) return idempotency.replay;
+  const fromStatus = finding.workflowStatus;
+  try {
+    const updated = workflowService.executeBranchLeaderReject(finding, dto, user);
+    Object.assign(finding, updated);
+    workflowEvents.push({
+      id: `evt-${crypto5.randomUUID()}`,
+      findingId: finding.id,
+      command: "BRANCH_LEADER_REJECT",
+      fromStatus,
+      toStatus: updated.workflowStatus,
+      actorUserId: user.id,
+      actorName: user.fullName,
+      actorRole: user.primaryRole,
+      rejectionReason: dto.reason,
+      rejectedFromStage: "BRANCH_LEADER_REVIEW",
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     });
     rememberIdempotentResponse(idempotency, finding);

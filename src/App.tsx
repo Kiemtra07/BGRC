@@ -263,7 +263,7 @@ export const App: React.FC = () => {
           <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
             <div className="space-y-3 border-b border-slate-200 bg-slate-50 p-3 sm:flex sm:items-center sm:justify-between sm:space-y-0 sm:p-4">
               <div className="flex gap-1.5 overflow-x-auto pb-1 sm:pb-0">
-                {([['ALL', 'Tất cả'], ['PENDING', 'Chờ chi nhánh'], ['SUBMITTED_BRANCH', 'Chờ kiểm soát'], ['SUBMITTED_INTERNAL', 'Chờ phê duyệt HT'], ['REJECTED', 'Cần bổ sung'], ['WAIVED_RESOLVED', 'Đã đóng']] as const).map(([key, label]) => <button key={key} onClick={() => setFilter(key)} className={`whitespace-nowrap rounded-lg px-3 py-2 text-[11px] font-bold ${filter === key ? 'bg-[#006b68] text-white' : 'text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}
+                {([['ALL', 'Tất cả'], ['PENDING', 'Chờ chi nhánh'], ['SUBMITTED_BRANCH', 'Chờ kiểm soát'], ['SUBMITTED_BRANCH_LEADER', 'Chờ lãnh đạo CN'], ['SUBMITTED_INTERNAL', 'Chờ phê duyệt HT'], ['REJECTED', 'Cần bổ sung'], ['WAIVED_RESOLVED', 'Đã đóng']] as const).map(([key, label]) => <button key={key} onClick={() => setFilter(key)} className={`whitespace-nowrap rounded-lg px-3 py-2 text-[11px] font-bold ${filter === key ? 'bg-[#006b68] text-white' : 'text-slate-600 hover:bg-slate-200'}`}>{label}</button>)}
               </div>
               <div className="relative"><Search className="absolute left-3 top-2.5 h-4 w-4 text-slate-400" /><input value={search} onChange={event => setSearch(event.target.value)} placeholder="Tìm CIF, khách hàng, mã lỗi..." className="w-full rounded-xl border border-slate-300 bg-white py-2 pl-9 pr-3 text-xs outline-none focus:border-[#006b68] sm:w-72" /></div>
             </div>

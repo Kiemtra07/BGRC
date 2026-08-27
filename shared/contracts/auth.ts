@@ -67,6 +67,7 @@ const UserRoleSchema = z.enum([
   'INTERNAL_APPROVER',
   'INTERNAL_OFFICER',
   'BRANCH_CONTROLLER',
+  'BRANCH_LEADER',
   'BRANCH_INPUT',
   'VIEWER',
 ]);
@@ -101,7 +102,7 @@ export const CreateUserSchema = z.object({
       message: 'primaryRole phải nằm trong roles',
     });
   }
-  const branchRoles = new Set(['BRANCH_INPUT', 'BRANCH_CONTROLLER']);
+  const branchRoles = new Set(['BRANCH_INPUT', 'BRANCH_CONTROLLER', 'BRANCH_LEADER']);
   const internalRoles = new Set(['ADMIN', 'SUPERVISOR', 'INTERNAL_APPROVER', 'INTERNAL_OFFICER']);
   if (value.portal === 'BRANCH' && value.roles.some(role => internalRoles.has(role))) {
     context.addIssue({
@@ -117,11 +118,11 @@ export const CreateUserSchema = z.object({
       message: 'User nội bộ không được mang vai trò chi nhánh',
     });
   }
-  if (value.primaryRole === 'BRANCH_CONTROLLER' && (!value.branchCode || !value.department)) {
+  if (['BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(value.primaryRole) && (!value.branchCode || !value.department)) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['branchCode'],
-      message: 'BRANCH_CONTROLLER phải có branchCode và department',
+      message: 'Vai trò kiểm soát hoặc lãnh đạo chi nhánh phải có branchCode và department',
     });
   }
   if (value.primaryRole === 'BRANCH_INPUT' && (!value.branchCode || !value.department)) {

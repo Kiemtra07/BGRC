@@ -19,6 +19,8 @@ import {
   DashboardSummary,
   BranchControlApproveCommandSchema,
   BranchControlRejectCommandSchema,
+  BranchLeaderApproveCommandSchema,
+  BranchLeaderRejectCommandSchema,
   BulkFindingImportSchema,
   CreateOrgUnitSchema,
   CreateUserSchema,
@@ -28,6 +30,7 @@ import {
   InternalWaiveCommandSchema,
   PaginationQuerySchema,
   SubmitBranchCommandSchema,
+  SetFindingApprovalRouteSchema,
   WebFormFindingSchema,
   WebFormFindingDTO,
   ReportSummary,
@@ -350,7 +353,7 @@ function defaultSchemaConfig(channelCode = 'report_type'): NonNullable<ReportCha
   };
 }
 
-function defaultWorkflowConfig(channelId = '', workflowType: 'ONE_TIER' | 'TWO_TIER' = 'TWO_TIER'): NonNullable<ReportChannel['workflowConfig']> {
+function defaultWorkflowConfig(channelId = '', workflowType: 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER' = 'TWO_TIER'): NonNullable<ReportChannel['workflowConfig']> {
   const branchStage = {
     stageId: 'branch-remediation',
     stageName: 'Chi nhánh khắc phục',
@@ -372,13 +375,22 @@ function defaultWorkflowConfig(channelId = '', workflowType: 'ONE_TIER' | 'TWO_T
     allowedRoles: ['INTERNAL_APPROVER' as const, 'SUPERVISOR' as const],
     availableButtons: [],
   };
+  const branchLeaderStage = {
+    stageId: 'branch-leader',
+    stageName: 'Lãnh đạo chi nhánh',
+    statusCode: 'SUBMITTED_BRANCH_LEADER' as const,
+    allowedRoles: ['BRANCH_LEADER' as const],
+    availableButtons: [],
+  };
   return {
     id: `workflow-${channelId || 'draft'}`,
     channelId,
     workflowType,
     stages: workflowType === 'ONE_TIER'
       ? [branchStage, headOfficeStage]
-      : [branchStage, branchControlStage, headOfficeStage],
+      : workflowType === 'THREE_TIER'
+        ? [branchStage, branchControlStage, branchLeaderStage, headOfficeStage]
+        : [branchStage, branchControlStage, headOfficeStage],
   };
 }
 
@@ -405,7 +417,9 @@ function defaultIntegrationConfig(): NonNullable<ReportChannel['integrationConfi
 function normalizedReportChannel(channel: ReportChannel): ReportChannel {
   const configVersion = Number.isInteger(channel.configVersion) && channel.configVersion > 0 ? channel.configVersion : 1;
   const currentVersionId = channel.currentVersionId || `${channel.id}-v${configVersion}`;
-  const workflowType = channel.workflowConfig?.workflowType === 'ONE_TIER' ? 'ONE_TIER' : 'TWO_TIER';
+  const workflowType = channel.workflowConfig?.workflowType === 'ONE_TIER'
+    ? 'ONE_TIER'
+    : channel.workflowConfig?.workflowType === 'THREE_TIER' ? 'THREE_TIER' : 'TWO_TIER';
   return {
     ...channel,
     configVersion,
@@ -1356,6 +1370,40 @@ function getScopedFindingOrThrow(id: string, user: UserProfile): Finding {
   return finding;
 }
 
+function approvalCandidatesForFinding(finding: Finding) {
+  const branchUsers = appUsers.filter(user => user.isActive && user.branchCode === finding.branchCode);
+  return {
+    branchControllers: branchUsers.filter(user => user.roles.includes('BRANCH_CONTROLLER')),
+    branchLeaders: branchUsers.filter(user => user.roles.includes('BRANCH_LEADER')),
+    internalApprovers: appUsers.filter(user => user.isActive && (user.roles.includes('INTERNAL_APPROVER') || user.roles.includes('SUPERVISOR'))),
+  };
+}
+
+function assertApprovalRouteCandidates(
+  finding: Finding,
+  actor: UserProfile,
+  route: { branchControllerUserId: string; branchLeaderUserId?: string; internalApproverUserId?: string; requiresBranchLeaderApproval: boolean },
+): void {
+  const candidates = approvalCandidatesForFinding(finding);
+  const controller = candidates.branchControllers.find(user => user.id === route.branchControllerUserId);
+  if (!controller) {
+    throw new HttpProblem(422, 'ROUTE_CONTROLLER_INVALID', 'Người kiểm soát không hợp lệ', 'Chỉ được chọn Kiểm soát chi nhánh đang hoạt động cùng chi nhánh của hồ sơ.');
+  }
+  if (route.requiresBranchLeaderApproval && !candidates.branchLeaders.some(user => user.id === route.branchLeaderUserId)) {
+    throw new HttpProblem(422, 'ROUTE_LEADER_INVALID', 'Lãnh đạo chi nhánh không hợp lệ', 'Cần chọn Lãnh đạo chi nhánh đang hoạt động cùng chi nhánh của hồ sơ.');
+  }
+  if (route.internalApproverUserId && !candidates.internalApprovers.some(user => user.id === route.internalApproverUserId)) {
+    throw new HttpProblem(422, 'ROUTE_INTERNAL_APPROVER_INVALID', 'Người duyệt nội bộ không hợp lệ', 'Chỉ được chọn người duyệt nội bộ hoặc lãnh đạo đang hoạt động.');
+  }
+  const selectedIds = [route.branchControllerUserId, route.branchLeaderUserId, route.internalApproverUserId].filter(Boolean) as string[];
+  if (new Set(selectedIds).size !== selectedIds.length) {
+    throw new HttpProblem(422, 'ROUTE_APPROVERS_MUST_DIFFER', 'Tuyến duyệt không hợp lệ', 'Mỗi cấp duyệt phải là một người khác nhau.');
+  }
+  if (selectedIds.includes(actor.id)) {
+    throw new HttpProblem(422, 'ROUTE_SELF_APPROVAL_FORBIDDEN', 'Không được tự duyệt', 'Người thiết lập tuyến duyệt không thể chọn chính mình làm người duyệt cho hồ sơ này.');
+  }
+}
+
 function availableEvidencesForFinding(findingId: string): EvidenceObject[] {
   return evidences.filter(evidence => evidence.findingId === findingId && evidence.status === 'AVAILABLE');
 }
@@ -1403,6 +1451,9 @@ function isActionableForUser(finding: Finding, user: UserProfile): boolean {
   }
   if (user.roles.includes('BRANCH_CONTROLLER')) {
     return finding.workflowStatus === 'SUBMITTED_BRANCH';
+  }
+  if (user.roles.includes('BRANCH_LEADER')) {
+    return finding.workflowStatus === 'SUBMITTED_BRANCH_LEADER';
   }
   if (user.roles.some(role => ['SUPERVISOR', 'INTERNAL_APPROVER', 'INTERNAL_OFFICER'].includes(role))) {
     return finding.workflowStatus === 'SUBMITTED_INTERNAL';
@@ -1645,6 +1696,7 @@ const reportFieldAccessors: Record<ReportFieldKey, (finding: Finding) => ReportF
 const workflowStatusLabels: Record<Finding['workflowStatus'], string> = {
   PENDING: 'Chờ chi nhánh khắc phục',
   SUBMITTED_BRANCH: 'Chờ Kiểm soát chi nhánh',
+  SUBMITTED_BRANCH_LEADER: 'Chờ Lãnh đạo chi nhánh',
   SUBMITTED_INTERNAL: 'Chờ Khối Nội Bộ',
   REJECTED: 'Đã chuyển trả',
   WAIVED_RESOLVED: 'Đã đóng lỗi',
@@ -2699,8 +2751,9 @@ app.post('/api/v1/findings/:id/sub-items/review', async (req: FastifyRequest<{ P
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const branchReview = user.roles.includes('BRANCH_CONTROLLER') && finding.workflowStatus === 'SUBMITTED_BRANCH';
+  const branchLeaderReview = user.roles.includes('BRANCH_LEADER') && finding.workflowStatus === 'SUBMITTED_BRANCH_LEADER';
   const internalReview = user.roles.some(role => ['SUPERVISOR', 'INTERNAL_APPROVER'].includes(role)) && finding.workflowStatus === 'SUBMITTED_INTERNAL';
-  if (!branchReview && !internalReview) {
+  if (!branchReview && !branchLeaderReview && !internalReview) {
     throw new HttpProblem(409, 'SUB_ITEM_REVIEW_NOT_ALLOWED', 'Chưa đến bước đánh giá ý sai sót', 'Tài khoản hoặc trạng thái hồ sơ không phù hợp để đánh giá từng ý sai sót.');
   }
   const dto = ReviewFindingSubItemsSchema.parse(req.body);
@@ -2855,6 +2908,41 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
 // WORKFLOW COMMAND ACTIONS (P0-01 to P0-09)
 // ----------------------------------------------------
 
+app.get('/api/v1/findings/:id/approval-candidates', async (req: FastifyRequest<{ Params: { id: string } }>) => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  return approvalCandidatesForFinding(finding);
+});
+
+app.put('/api/v1/findings/:id/approval-route', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  requireRoles(user, ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'BRANCH_INPUT']);
+  if (finding.workflowStatus !== 'PENDING' && finding.workflowStatus !== 'REJECTED') {
+    throw new HttpProblem(409, 'ROUTE_LOCKED_AFTER_SUBMISSION', 'Tuyến duyệt đã khóa', 'Chỉ được thay đổi người duyệt khi hồ sơ đang chờ hoặc đã bị trả về.');
+  }
+  const route = SetFindingApprovalRouteSchema.parse(req.body);
+  assertApprovalRouteCandidates(finding, user, route);
+  const now = new Date().toISOString();
+  finding.approvalRoute = { ...route, assignedByUserId: user.id, assignedAt: now };
+  finding.version += 1;
+  finding.updatedAt = now;
+  workflowEvents.push({
+    id: `evt-${crypto.randomUUID()}`,
+    findingId: finding.id,
+    command: 'SET_APPROVAL_ROUTE',
+    fromStatus: finding.workflowStatus,
+    toStatus: finding.workflowStatus,
+    actorUserId: user.id,
+    actorName: user.fullName,
+    actorRole: user.primaryRole,
+    notes: `Đã chọn tuyến duyệt: Kiểm soát ${route.branchControllerUserId}${route.requiresBranchLeaderApproval ? `, Lãnh đạo ${route.branchLeaderUserId}` : ''}${route.internalApproverUserId ? `, Nội bộ ${route.internalApproverUserId}` : ''}.`,
+    createdAt: now,
+  });
+  await persistLocalState();
+  return finding;
+});
+
 // 1. Submit Branch (Branch nộp hồ sơ)
 app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>, reply) => {
   const user = getCurrentUser(req);
@@ -2865,12 +2953,22 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
   const fromStatus = finding.workflowStatus;
 
   try {
+    if (dto.expectedVersion !== finding.version) {
+      throw new HttpProblem(409, 'VERSION_CONFLICT', 'Xung đột phiên bản', `Hồ sơ đã được cập nhật bởi người khác (version hiện tại: ${finding.version}, expected: ${dto.expectedVersion}).`);
+    }
     const pinnedVersion = reportChannelVersions.find(version => version.id === finding.channelVersionId);
     const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType
       ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.workflowType
       ?? 'TWO_TIER';
-    const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
+    // Preserve the evidence gate as the first actionable error for branch users.
     requireAvailableEvidence(finding);
+    if (workflowType !== 'ONE_TIER' && !finding.approvalRoute?.branchControllerUserId) {
+      throw new HttpProblem(422, 'ROUTE_CONTROLLER_REQUIRED', 'Thiếu tuyến duyệt', 'Cần chọn người kiểm soát chi nhánh trước khi nộp hồ sơ.');
+    }
+    if (workflowType === 'THREE_TIER' && !finding.approvalRoute?.requiresBranchLeaderApproval) {
+      throw new HttpProblem(422, 'ROUTE_LEADER_REQUIRED', 'Thiếu tuyến duyệt', 'Quy trình ba cấp yêu cầu chọn Lãnh đạo chi nhánh trước khi nộp hồ sơ.');
+    }
+    const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     Object.assign(finding, updated);
 
     workflowEvents.push({
@@ -2913,7 +3011,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-approve', async (req: Fast
       findingId: finding.id,
       command: 'BRANCH_CONTROL_APPROVE',
       fromStatus,
-      toStatus: 'SUBMITTED_INTERNAL',
+      toStatus: updated.workflowStatus,
       actorUserId: user.id,
       actorName: user.fullName,
       actorRole: user.primaryRole,
@@ -2964,7 +3062,70 @@ app.post('/api/v1/findings/:id/actions/branch-control-reject', async (req: Fasti
   }
 });
 
-// 4. Internal Waive (Khối Nội Bộ Phê duyệt bỏ lỗi - Terminal state)
+// 4. Lãnh đạo chi nhánh phê duyệt hoặc chuyển trả theo tuyến đã chọn
+app.post('/api/v1/findings/:id/actions/branch-leader-approve', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>) => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  const dto = BranchLeaderApproveCommandSchema.parse(req.body);
+  const idempotency = idempotencyContext(req, user, dto);
+  if (idempotency.replay) return idempotency.replay;
+  const fromStatus = finding.workflowStatus;
+  try {
+    const updated = workflowService.executeBranchLeaderApprove(finding, dto, user);
+    requireAvailableEvidence(finding);
+    Object.assign(finding, updated);
+    workflowEvents.push({
+      id: `evt-${crypto.randomUUID()}`,
+      findingId: finding.id,
+      command: 'BRANCH_LEADER_APPROVE',
+      fromStatus,
+      toStatus: updated.workflowStatus,
+      actorUserId: user.id,
+      actorName: user.fullName,
+      actorRole: user.primaryRole,
+      notes: dto.notes || 'Lãnh đạo chi nhánh đồng ý chuyển hồ sơ lên Khối Nội Bộ.',
+      createdAt: new Date().toISOString(),
+    });
+    rememberIdempotentResponse(idempotency, finding);
+    await persistLocalState();
+    return finding;
+  } catch (err) {
+    throw workflowErrorToProblem(err);
+  }
+});
+
+app.post('/api/v1/findings/:id/actions/branch-leader-reject', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>) => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  const dto = BranchLeaderRejectCommandSchema.parse(req.body);
+  const idempotency = idempotencyContext(req, user, dto);
+  if (idempotency.replay) return idempotency.replay;
+  const fromStatus = finding.workflowStatus;
+  try {
+    const updated = workflowService.executeBranchLeaderReject(finding, dto, user);
+    Object.assign(finding, updated);
+    workflowEvents.push({
+      id: `evt-${crypto.randomUUID()}`,
+      findingId: finding.id,
+      command: 'BRANCH_LEADER_REJECT',
+      fromStatus,
+      toStatus: updated.workflowStatus,
+      actorUserId: user.id,
+      actorName: user.fullName,
+      actorRole: user.primaryRole,
+      rejectionReason: dto.reason,
+      rejectedFromStage: 'BRANCH_LEADER_REVIEW',
+      createdAt: new Date().toISOString(),
+    });
+    rememberIdempotentResponse(idempotency, finding);
+    await persistLocalState();
+    return finding;
+  } catch (err) {
+    throw workflowErrorToProblem(err);
+  }
+});
+
+// 5. Internal Waive (Khối Nội Bộ Phê duyệt bỏ lỗi - Terminal state)
 app.post('/api/v1/findings/:id/actions/internal-waive', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>, reply) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);

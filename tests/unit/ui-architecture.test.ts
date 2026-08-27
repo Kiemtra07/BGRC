@@ -160,8 +160,9 @@ describe('UI and business terminology architecture', () => {
     expect(editor).toContain('Lưu phiên bản mới');
     expect(workflow).toContain('ONE_TIER');
     expect(workflow).toContain('TWO_TIER');
-    expect(workflow).not.toContain('THREE_TIER');
+    expect(workflow).toContain('THREE_TIER');
     expect(workflow).toContain('Kiểm soát chi nhánh');
+    expect(workflow).toContain('Lãnh đạo chi nhánh');
     expect(workflow).toContain('Phê duyệt HT');
     expect(integration).toContain('Google Sheets');
     expect(integration).toContain('Email tự động');

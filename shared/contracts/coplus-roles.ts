@@ -24,6 +24,7 @@ export const COPLUS_ROLE_CODES = [
   'CB2_KTGSTT',
   'CBHT_CN',
   'CB_GSKT_TH',
+  'LD_CN',
   'LD_GSKT_TH',
   'ADMIN_HT',
 ] as const;
@@ -37,6 +38,7 @@ export type CoPlusRoleGroup =
   | 'KTGSTT_THAM_GIA_DOAN'
   | 'KTGSTT_KHONG_THAM_GIA_DOAN'
   | 'HO_TRO_GIAM_SAT'
+  | 'CHI_NHANH'
   | 'QUAN_TRI';
 
 export interface CoPlusRoleDefinition {
@@ -54,6 +56,7 @@ export const COPLUS_ROLE_GROUP_LABELS: Record<CoPlusRoleGroup, string> = {
   KTGSTT_THAM_GIA_DOAN: 'Ban KT&GSTT tham gia đoàn',
   KTGSTT_KHONG_THAM_GIA_DOAN: 'Ban KT&GSTT không tham gia đoàn',
   HO_TRO_GIAM_SAT: 'Hỗ trợ và giám sát tổng hợp',
+  CHI_NHANH: 'Chi nhánh',
   QUAN_TRI: 'Quản trị hệ thống',
 };
 
@@ -112,6 +115,11 @@ export const COPLUS_ROLE_CATALOG: CoPlusRoleDefinition[] = [
     code: 'CB_GSKT_TH', label: 'Cán bộ nhóm Giám sát HĐKT / Tổng hợp', group: 'HO_TRO_GIAM_SAT',
     responsibility: 'Rà soát hồ sơ khắc phục trước khi trình Khối Nội bộ, theo dõi tiến độ toàn hàng.',
     capabilities: ['BRANCH_CONTROLLER'],
+  },
+  {
+    code: 'LD_CN', label: 'Lãnh đạo chi nhánh', group: 'CHI_NHANH',
+    responsibility: 'Phê duyệt hồ sơ khắc phục khi tuyến duyệt của hồ sơ yêu cầu cấp lãnh đạo chi nhánh.',
+    capabilities: ['BRANCH_LEADER'],
   },
   {
     code: 'LD_GSKT_TH', label: 'Lãnh đạo nhóm Giám sát HĐKT / Tổng hợp', group: 'HO_TRO_GIAM_SAT',

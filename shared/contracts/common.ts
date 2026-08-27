@@ -8,6 +8,7 @@ export type UserRole =
   | 'INTERNAL_APPROVER' 
   | 'INTERNAL_OFFICER' 
   | 'BRANCH_CONTROLLER' 
+  | 'BRANCH_LEADER'
   | 'BRANCH_INPUT' 
   | 'VIEWER';
 
@@ -16,6 +17,7 @@ export type DataScopeType = 'ALL' | 'CLUSTER' | 'BRANCH' | 'DEPARTMENT';
 export type WorkflowStatus = 
   | 'PENDING'             // Chờ chi nhánh khắc phục
   | 'SUBMITTED_BRANCH'    // Chi nhánh đã nộp -> Chờ Kiểm soát chi nhánh
+  | 'SUBMITTED_BRANCH_LEADER' // Kiểm soát chi nhánh đồng ý -> Chờ Lãnh đạo chi nhánh
   | 'SUBMITTED_INTERNAL'  // Kiểm soát chi nhánh đồng ý -> Chờ Khối Nội Bộ phê duyệt
   | 'REJECTED'            // Bị trả về yêu cầu bổ sung
   | 'WAIVED_RESOLVED';    // Khối Nội Bộ đã phê duyệt bỏ lỗi (Trạng thái cuối)

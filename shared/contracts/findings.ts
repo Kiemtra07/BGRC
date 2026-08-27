@@ -19,6 +19,19 @@ export interface FindingSubItem {
   updatedAt: string;
 }
 
+/**
+ * The people selected for one finding's approval route. IDs are persisted with the finding so
+ * a later role or organisational change cannot silently redirect an in-flight approval.
+ */
+export interface FindingApprovalRoute {
+  branchControllerUserId?: string;
+  branchLeaderUserId?: string;
+  internalApproverUserId?: string;
+  requiresBranchLeaderApproval: boolean;
+  assignedByUserId?: string;
+  assignedAt?: string;
+}
+
 export interface Finding {
   id: string;
   campaignId?: string;
@@ -78,6 +91,9 @@ export interface Finding {
   rejectionReason?: string;
   rejectedByUserName?: string;
   rejectedAt?: string;
+
+  // Named route selected from eligible approvers before a branch submits the case.
+  approvalRoute?: FindingApprovalRoute;
 
   // Dynamic Custom Payload
   dynamicPayload?: Record<string, any>;

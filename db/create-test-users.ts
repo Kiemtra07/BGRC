@@ -1,5 +1,5 @@
 /**
- * Tạo 5 tài khoản thử nghiệm phủ đủ 5 vị trí trong luồng khắc phục sai sót.
+ * Tạo 6 tài khoản thử nghiệm phủ đủ các vị trí trong luồng khắc phục sai sót, gồm cả Lãnh đạo chi nhánh.
  *
  * Khác với seed demo: script gọi đúng API quản trị nên tài khoản đi qua toàn bộ kiểm tra (phạm vi
  * dữ liệu, nhóm nội bộ, trùng tên đăng nhập) và có mật khẩu thật lưu cùng state. Chúng là tài
@@ -34,7 +34,7 @@ if (!sharedPassword || sharedPassword.length < 12) {
 }
 
 /**
- * Năm vị trí đúng theo thứ tự hồ sơ đi qua: chi nhánh giải trình → giám sát rà soát → Ban phê
+ * Các vị trí đúng theo thứ tự hồ sơ đi qua: chi nhánh giải trình → kiểm soát → lãnh đạo chi nhánh (nếu bật) → Ban phê
  * duyệt. Hình dạng mỗi tài khoản (portal, nhóm, phòng) phải khớp ràng buộc của CreateUserSchema.
  */
 const positions: Array<{ coplusRole: CoPlusRoleCode; user: Omit<CreateUserDTO, 'password'> }> = [
@@ -67,6 +67,14 @@ const positions: Array<{ coplusRole: CoPlusRoleCode; user: Omit<CreateUserDTO, '
       fullName: 'Cán bộ giám sát HĐKT (thử nghiệm)', email: 'test.giamsat@bidv.com.vn', username: 'test.giamsat',
       portal: 'BRANCH', roles: ['BRANCH_CONTROLLER'], primaryRole: 'BRANCH_CONTROLLER', coplusRole: 'CB_GSKT_TH',
       branchCode: '635', branchName: 'Chi nhánh Nam Buôn Hồ', department: 'Phòng Kiểm soát chi nhánh', isActive: true,
+    },
+  },
+  {
+    coplusRole: 'LD_CN',
+    user: {
+      fullName: 'Lãnh đạo Chi nhánh 635 (thử nghiệm)', email: 'test.lanhdao@bidv.com.vn', username: 'test.lanhdao',
+      portal: 'BRANCH', roles: ['BRANCH_LEADER'], primaryRole: 'BRANCH_LEADER', coplusRole: 'LD_CN', isActive: true,
+      branchCode: '635', branchName: 'Chi nhánh Nam Buôn Hồ', department: 'Ban Giám đốc',
     },
   },
   {
@@ -107,9 +115,9 @@ for (const { coplusRole, user } of positions) {
 }
 
 console.log('\n== TÀI KHOẢN THỬ NGHIỆM ==');
-console.log(`Mật khẩu chung cho cả 5: ${sharedPassword}\n`);
+console.log(`Mật khẩu chung cho cả 6: ${sharedPassword}\n`);
 for (const row of results) {
   console.log(`  ${row.username.padEnd(16)} ${row.position.padEnd(46)} ${row.status}`);
 }
-console.log('\nThứ tự luồng: test.chinhanh giải trình → test.giamsat rà soát → test.giamdoc đóng lỗi.');
+console.log('\nThứ tự luồng: test.chinhanh giải trình → test.giamsat rà soát → test.lanhdao duyệt CN (nếu cấu hình) → test.giamdoc đóng lỗi.');
 console.log('Xoá khi không cần: Quản trị → Người dùng, hoặc đặt isActive=false.');

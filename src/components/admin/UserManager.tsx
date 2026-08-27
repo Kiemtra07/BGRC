@@ -307,7 +307,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated })
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="text-xs font-bold text-slate-700">Khối người dùng<select value={portal} onChange={event => handlePortalChange(event.target.value as 'INTERNAL' | 'BRANCH')} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs"><option value="INTERNAL">Khối nội bộ</option><option value="BRANCH">Mạng lưới chi nhánh</option></select></label>
                 <label className="text-xs font-bold text-slate-700">Vai trò<select value={role} onChange={event => setRole(event.target.value as UserRole)} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs">
-                  {portal === 'INTERNAL' ? <><option value="INTERNAL_OFFICER">Cán bộ kiểm tra</option><option value="INTERNAL_APPROVER">Phê duyệt HT</option><option value="SUPERVISOR">Lãnh đạo khối nội bộ</option><option value="ADMIN">Quản trị hệ thống</option></> : <><option value="BRANCH_INPUT">Cán bộ chi nhánh</option><option value="BRANCH_CONTROLLER">Kiểm soát chi nhánh</option></>}
+                  {portal === 'INTERNAL' ? <><option value="INTERNAL_OFFICER">Cán bộ kiểm tra</option><option value="INTERNAL_APPROVER">Phê duyệt HT</option><option value="SUPERVISOR">Lãnh đạo khối nội bộ</option><option value="ADMIN">Quản trị hệ thống</option></> : <><option value="BRANCH_INPUT">Cán bộ chi nhánh</option><option value="BRANCH_CONTROLLER">Kiểm soát chi nhánh</option><option value="BRANCH_LEADER">Lãnh đạo chi nhánh</option></>}
                 </select></label>
               </div>
 
