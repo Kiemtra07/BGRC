@@ -216,6 +216,17 @@ describe('UI and business terminology architecture', () => {
     expect(apiSource).toContain('getAuditEvents');
   });
 
+  it('offers filtered CSV download and confirmed clearing of test audit data', () => {
+    const viewer = read('src/components/admin/AuditTrailViewer.tsx');
+    const apiSource = read('src/services/api.ts');
+    expect(viewer).toContain('Tải CSV');
+    expect(viewer).toContain('window.confirm');
+    expect(viewer).toContain('api.downloadAuditEventsCsv');
+    expect(viewer).toContain('api.clearTestAuditEvents');
+    expect(apiSource).toContain('downloadAuditEventsCsv');
+    expect(apiSource).toContain('clearTestAuditEvents');
+  });
+
   it('keeps the consolidated app and customer headers keyboard accessible', () => {
     const appSource = read('src/App.tsx');
     const detailSource = read('src/components/portal/FindingDetailPage.tsx');

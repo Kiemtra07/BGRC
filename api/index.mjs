@@ -277,6 +277,17 @@ var CreateOrgUnitSchema = z4.object({
   isActive: z4.boolean().default(true),
   metadata: z4.record(z4.any()).optional()
 });
+var UpdateOrgUnitSchema = z4.object({
+  code: z4.string().trim().min(1).max(50).optional(),
+  name: z4.string().trim().min(1).max(200).optional(),
+  parentId: z4.string().trim().min(1).nullable().optional(),
+  leaderUserId: z4.string().trim().min(1).nullable().optional(),
+  isActive: z4.boolean().optional(),
+  metadata: z4.record(z4.any()).nullable().optional(),
+  expectedUpdatedAt: z4.string().datetime()
+}).refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), {
+  message: "C\u1EA7n c\xF3 \xEDt nh\u1EA5t m\u1ED9t thay \u0111\u1ED5i cho \u0111\u01A1n v\u1ECB."
+});
 
 // shared/contracts/channels.ts
 import { z as z5 } from "zod";
@@ -727,9 +738,9 @@ var REPORT_METRIC_CATALOG = [
   { key: "metric.resolved_count", label: "Sai s\xF3t \u0111\xE3 \u0111\xF3ng", unit: "COUNT" },
   { key: "metric.remediation_rate", label: "T\u1EF7 l\u1EC7 kh\u1EAFc ph\u1EE5c", unit: "PERCENT" }
 ];
-var firstDuplicateLabel = (labels) => {
+var firstDuplicateLabel = (labels2) => {
   const seen = /* @__PURE__ */ new Set();
-  for (const label of labels) {
+  for (const label of labels2) {
     const key = label.trim().toLocaleLowerCase("vi-VN");
     if (seen.has(key)) return label;
     seen.add(key);
@@ -2314,7 +2325,11 @@ var asciiFallback = (fileName) => {
   const normalized = fileName.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^\x20-\x7E]/g, "_").replace(/["\\\r\n]/g, "_").trim();
   return normalized || "evidence";
 };
-var buildInlineContentDisposition = (fileName) => `inline; filename="${asciiFallback(fileName)}"; filename*=UTF-8''${encodeRfc5987Value(fileName.normalize("NFC"))}`;
+var buildContentDisposition = (mode, fileName) => `${mode}; filename="${asciiFallback(fileName)}"; filename*=UTF-8''${encodeRfc5987Value(fileName.normalize("NFC"))}`;
+var buildInlineContentDisposition = (fileName) => buildContentDisposition("inline", fileName);
+var buildAttachmentContentDisposition = (fileName) => buildContentDisposition("attachment", fileName);
+var INLINE_SAFE_MIME_TYPES = /* @__PURE__ */ new Set(["application/pdf", "image/jpeg", "image/png"]);
+var isInlineSafeMimeType = (mimeType) => INLINE_SAFE_MIME_TYPES.has(mimeType.toLowerCase());
 
 // server/src/report-export.ts
 import JSZip from "jszip";
@@ -2676,9 +2691,20 @@ function requireSecret2(value) {
 function safeEqual(left, right) {
   return left.length === right.length && crypto4.timingSafeEqual(left, right);
 }
+var INTERNAL_ORIGIN = "https://audit-bgs.invalid";
 function requireSafeReturnTo(value) {
-  if (!value.startsWith("/") || value.startsWith("//")) throw new Error("Google OIDC return path is invalid.");
-  return value;
+  const invalid = () => new Error("Google OIDC return path is invalid.");
+  if (!value.startsWith("/")) throw invalid();
+  if (/[\\\u0000-\u001f\u007f]/.test(value)) throw invalid();
+  if (/^\/[/\\]/.test(value)) throw invalid();
+  let resolved;
+  try {
+    resolved = new URL(value, INTERNAL_ORIGIN);
+  } catch {
+    throw invalid();
+  }
+  if (resolved.origin !== INTERNAL_ORIGIN) throw invalid();
+  return `${resolved.pathname}${resolved.search}${resolved.hash}`;
 }
 function createGoogleOidcState({ secret, returnTo, now = Date.now() }) {
   requireSecret2(secret);
@@ -2794,12 +2820,177 @@ function validateCampaignTransition(from, to) {
   if (!allowed[from].includes(to)) throw new Error("CAMPAIGN_TRANSITION_INVALID");
 }
 
+// server/src/modules/campaigns/campaign-document-import.ts
+import JSZip2 from "jszip";
+import { readSheet } from "read-excel-file/node";
+var CampaignDocumentImportError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "CampaignDocumentImportError";
+  }
+};
+var labels = {
+  code: ["m\xE3 chuy\xEAn \u0111\u1EC1", "m\xE3 k\u1EBF ho\u1EA1ch", "m\xE3 ct"],
+  name: ["t\xEAn chuy\xEAn \u0111\u1EC1", "chuy\xEAn \u0111\u1EC1 ki\u1EC3m tra", "t\xEAn k\u1EBF ho\u1EA1ch"],
+  description: ["m\xF4 t\u1EA3", "n\u1ED9i dung ki\u1EC3m tra", "ph\u1EA1m vi ki\u1EC3m tra"],
+  decisionNo: ["s\u1ED1 quy\u1EBFt \u0111\u1ECBnh", "quy\u1EBFt \u0111\u1ECBnh", "s\u1ED1 q\u0111"],
+  startDate: ["t\u1EEB ng\xE0y", "ng\xE0y b\u1EAFt \u0111\u1EA7u", "th\u1EDDi gian b\u1EAFt \u0111\u1EA7u"],
+  endDate: ["\u0111\u1EBFn ng\xE0y", "ng\xE0y k\u1EBFt th\xFAc", "th\u1EDDi gian k\u1EBFt th\xFAc"]
+};
+function documentKind(fileName) {
+  const extension = fileName.trim().toLowerCase().match(/\.([a-z0-9]+)$/)?.[1];
+  if (extension === "docx") return "DOCX";
+  if (extension === "pdf") return "PDF";
+  if (extension === "xlsx" || extension === "xls") return "EXCEL";
+  throw new CampaignDocumentImportError("Ch\u1EC9 h\u1ED7 tr\u1EE3 t\u1EC7p DOCX, PDF ho\u1EB7c Excel (.xlsx, .xls).");
+}
+function decodeXml(value) {
+  return value.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
+}
+function cleanText(value) {
+  return value.replace(/\u00a0/g, " ").replace(/[ \t]+/g, " ").replace(/\r/g, "").trim();
+}
+function normalizeLabel(value) {
+  return cleanText(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/đ/g, "d");
+}
+function toIsoDate(value) {
+  if (value instanceof Date && !Number.isNaN(value.valueOf())) {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  }
+  const text = cleanText(String(value ?? ""));
+  const iso = /^(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})$/.exec(text);
+  if (iso) return `${iso[1]}-${iso[2].padStart(2, "0")}-${iso[3].padStart(2, "0")}`;
+  const vietnamese = /^(\d{1,2})[-/.](\d{1,2})[-/.](\d{4})$/.exec(text);
+  if (vietnamese) return `${vietnamese[3]}-${vietnamese[2].padStart(2, "0")}-${vietnamese[1].padStart(2, "0")}`;
+  return void 0;
+}
+function textDraft(lines) {
+  const draft = {};
+  for (const [field, fieldLabels] of Object.entries(labels)) {
+    const found = lines.find((line) => {
+      const normalized = normalizeLabel(line);
+      return fieldLabels.some((label) => normalized.startsWith(normalizeLabel(label)));
+    });
+    if (!found) continue;
+    const value = cleanText(found.replace(/^.*?(?::|–|-)/, ""));
+    if (!value || value === cleanText(found)) continue;
+    if (field === "startDate" || field === "endDate") {
+      const date = toIsoDate(value);
+      if (date) draft[field] = date;
+    } else {
+      draft[field] = value;
+    }
+  }
+  if (!draft.name) {
+    const heading = lines.find((line) => /^chuyên đề(?: kiểm tra)?\b/i.test(line));
+    if (heading) draft.name = cleanText(heading.replace(/^chuyên đề(?: kiểm tra)?\s*[:\-–]?\s*/i, "")) || heading;
+  }
+  return draft;
+}
+function warningsFor(draft) {
+  const missing2 = [
+    ["code", "m\xE3 chuy\xEAn \u0111\u1EC1"],
+    ["name", "t\xEAn chuy\xEAn \u0111\u1EC1"],
+    ["decisionNo", "s\u1ED1 quy\u1EBFt \u0111\u1ECBnh"],
+    ["startDate", "ng\xE0y b\u1EAFt \u0111\u1EA7u"],
+    ["endDate", "ng\xE0y k\u1EBFt th\xFAc"]
+  ].filter(([key]) => !draft[key]).map(([, label]) => label);
+  return [
+    ...missing2.length ? [`Ch\u01B0a tr\xEDch xu\u1EA5t \u0111\u01B0\u1EE3c ${missing2.join(", ")}; h\xE3y b\u1ED5 sung tr\u01B0\u1EDBc khi l\u01B0u.`] : [],
+    "Tr\u01B0\u1EDFng \u0111o\xE0n, th\xE0nh vi\xEAn, chi nh\xE1nh v\xE0 lo\u1EA1i b\xE1o c\xE1o kh\xF4ng t\u1EF1 suy di\u1EC5n t\u1EEB t\u1EC7p; qu\u1EA3n tr\u1ECB vi\xEAn ph\u1EA3i ch\u1ECDn tr\u01B0\u1EDBc khi l\u01B0u."
+  ];
+}
+async function extractDocxLines(buffer) {
+  let zip;
+  try {
+    zip = await JSZip2.loadAsync(buffer);
+  } catch {
+    throw new CampaignDocumentImportError("T\u1EC7p DOCX kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng th\u1EC3 m\u1EDF.");
+  }
+  const source = zip.file("word/document.xml");
+  if (!source) throw new CampaignDocumentImportError("T\u1EC7p DOCX kh\xF4ng c\xF3 n\u1ED9i dung v\u0103n b\u1EA3n \u0111\u1EC3 tr\xEDch xu\u1EA5t.");
+  const xml = await source.async("string");
+  return (xml.match(/<w:p\b[\s\S]*?<\/w:p>/g) ?? []).map((paragraph) => cleanText(decodeXml(paragraph.replace(/<w:tab\s*\/>/g, " ").replace(/<w:t[^>]*>/g, "").replace(/<\/w:t>/g, "").replace(/<[^>]+>/g, " ")))).filter(Boolean);
+}
+async function extractPdfLines(buffer) {
+  try {
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+    const pages = await Promise.all(Array.from({ length: document.numPages }, async (_, index) => {
+      const content = await (await document.getPage(index + 1)).getTextContent();
+      return content.items.map((item) => "str" in item ? item.str : "").join(" ");
+    }));
+    return pages.map(cleanText).filter(Boolean);
+  } catch {
+    throw new CampaignDocumentImportError("Kh\xF4ng th\u1EC3 \u0111\u1ECDc v\u0103n b\u1EA3n trong PDF. N\u1EBFu \u0111\xE2y l\xE0 b\u1EA3n scan, h\xE3y d\xF9ng PDF c\xF3 OCR ho\u1EB7c nh\u1EADp th\u1EE7 c\xF4ng.");
+  }
+}
+async function extractExcelDraft(buffer) {
+  let rows;
+  try {
+    rows = await readSheet(buffer);
+  } catch {
+    throw new CampaignDocumentImportError("T\u1EC7p Excel kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng th\u1EC3 \u0111\u1ECDc.");
+  }
+  const headerIndex = rows.findIndex((row) => row.some((cell) => labels.name.some((label) => normalizeLabel(String(cell ?? "")).includes(normalizeLabel(label)))));
+  if (headerIndex < 0) throw new CampaignDocumentImportError("Kh\xF4ng t\xECm th\u1EA5y d\xF2ng ti\xEAu \u0111\u1EC1 Excel cho chuy\xEAn \u0111\u1EC1.");
+  const headers = rows[headerIndex].map((cell) => normalizeLabel(String(cell ?? "")));
+  const values = rows.slice(headerIndex + 1).find((row) => row.some((cell) => cleanText(String(cell ?? ""))));
+  if (!values) throw new CampaignDocumentImportError("Excel ch\u01B0a c\xF3 d\xF2ng d\u1EEF li\u1EC7u chuy\xEAn \u0111\u1EC1 \u0111\u1EC3 tr\xEDch xu\u1EA5t.");
+  const draft = {};
+  for (const [field, fieldLabels] of Object.entries(labels)) {
+    const column = headers.findIndex((header) => fieldLabels.some((label) => header.includes(normalizeLabel(label))));
+    if (column < 0) continue;
+    const value = values[column];
+    if (value === null || value === void 0 || cleanText(String(value)) === "") continue;
+    if (field === "startDate" || field === "endDate") {
+      const date = toIsoDate(value);
+      if (date) draft[field] = date;
+    } else {
+      draft[field] = cleanText(String(value));
+    }
+  }
+  return draft;
+}
+async function extractCampaignImportDraft(fileName, buffer) {
+  if (!buffer.length) throw new CampaignDocumentImportError("T\u1EC7p t\u1EA3i l\xEAn \u0111ang tr\u1ED1ng.");
+  const kind = documentKind(fileName);
+  const draft = kind === "EXCEL" ? await extractExcelDraft(buffer) : textDraft(kind === "DOCX" ? await extractDocxLines(buffer) : await extractPdfLines(buffer));
+  return { source: { fileName, kind }, draft, warnings: warningsFor(draft) };
+}
+
 // server/src/app.ts
 var app = fastify({
-  logger: process.env.NODE_ENV !== "test"
+  logger: process.env.NODE_ENV !== "test",
+  // Trên Vercel mọi yêu cầu đi qua edge proxy, nên nếu không tin x-forwarded-for thì req.ip luôn
+  // là IP của proxy và nhật ký an ninh sẽ ghi cùng một địa chỉ cho tất cả mọi người. Bật ở đây
+  // chỉ ảnh hưởng tới việc ghi nhật ký — không có quyết định phân quyền nào dựa trên IP.
+  trustProxy: process.env.TRUST_PROXY === "true" || process.env.VERCEL === "1"
 });
 var allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? "http://localhost:3000,http://127.0.0.1:3000").split(",").map((origin) => origin.trim()).filter(Boolean);
 app.register(cors, { origin: allowedOrigins, credentials: true });
+var API_CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  // Tệp HTML báo cáo tự chứa toàn bộ CSS trong thẻ <style> nội tuyến và không nạp gì từ bên ngoài.
+  "img-src 'self' data:",
+  "style-src 'unsafe-inline'"
+].join("; ");
+app.addHook("onSend", async (_request, reply) => {
+  reply.header("Content-Security-Policy", API_CONTENT_SECURITY_POLICY);
+  reply.header("X-Content-Type-Options", "nosniff");
+  reply.header("X-Frame-Options", "DENY");
+  reply.header("Referrer-Policy", "no-referrer");
+  reply.header("Cross-Origin-Opener-Policy", "same-origin");
+  reply.header("Cross-Origin-Resource-Policy", "same-origin");
+  reply.header("Permissions-Policy", "geolocation=(), microphone=(), camera=(), payment=()");
+  reply.header("Cache-Control", "no-store");
+  if (process.env.NODE_ENV === "production") {
+    reply.header("Strict-Transport-Security", "max-age=31536000; includeSubDomains");
+  }
+});
 app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } });
 var internalSlaPath = "/api/v1/internal/sla/run";
 var publicPaths = /* @__PURE__ */ new Set([
@@ -3439,6 +3630,8 @@ var workspaceWatchTargets = [];
 var reportChannelVersions = [];
 var authSessions = [];
 var googleDriveOAuthCredential;
+var securityEvents = [];
+var loginAttempts = [];
 var DEMO_SEED_ENABLED = process.env.NODE_ENV === "production" ? false : process.env.SEED_DEMO_DATA !== "false";
 var DEMO_SEED_IDS = {
   users: appUsers.map((user) => user.id),
@@ -3487,7 +3680,9 @@ var hydratedState = await stateRepository.load({
   authSessions,
   auditCampaigns,
   credentials: credentialDirectory,
-  googleDriveOAuthCredential
+  googleDriveOAuthCredential,
+  securityEvents,
+  loginAttempts
 });
 orgUnits = hydratedState.orgUnits;
 appUsers = hydratedState.appUsers;
@@ -3527,6 +3722,8 @@ findingFollows = hydratedState.findingFollows ?? [];
 workspaceAccepted = hydratedState.workspaceAccepted ?? [];
 workspaceWatchTargets = hydratedState.workspaceWatchTargets ?? [];
 authSessions = hydratedState.authSessions ?? [];
+securityEvents = hydratedState.securityEvents ?? [];
+loginAttempts = hydratedState.loginAttempts ?? [];
 authSessionStore = new AuthSessionStore({ records: authSessions });
 auditCampaigns = hydratedState.auditCampaigns?.length ? hydratedState.auditCampaigns : auditCampaigns;
 googleDriveOAuthCredential = hydratedState.googleDriveOAuthCredential;
@@ -3676,7 +3873,9 @@ function currentLocalState() {
     authSessions,
     auditCampaigns,
     credentials: credentialDirectory,
-    googleDriveOAuthCredential
+    googleDriveOAuthCredential,
+    securityEvents,
+    loginAttempts
   };
 }
 var durableState = new DurableStateCoordinator(currentLocalState());
@@ -3697,6 +3896,8 @@ function restoreDurableLocalState(restored) {
   workspaceAccepted = restored.workspaceAccepted ?? [];
   workspaceWatchTargets = restored.workspaceWatchTargets ?? [];
   authSessions = restored.authSessions ?? [];
+  securityEvents = restored.securityEvents ?? [];
+  loginAttempts = restored.loginAttempts ?? [];
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
   if (restored.credentials?.length) credentialDirectory = restored.credentials;
@@ -3882,6 +4083,76 @@ function getCurrentUser(req) {
     throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Kh\xF4ng t\xECm th\u1EA5y ng\u1EEF c\u1EA3nh ng\u01B0\u1EDDi d\xF9ng cho y\xEAu c\u1EA7u.");
   }
   return user;
+}
+var SECURITY_EVENT_RETENTION = 5e3;
+function recordSecurityEvent(event) {
+  securityEvents.push({ ...event, id: `sec-${crypto5.randomUUID()}`, occurredAt: (/* @__PURE__ */ new Date()).toISOString() });
+  if (securityEvents.length > SECURITY_EVENT_RETENTION) {
+    securityEvents = securityEvents.slice(-SECURITY_EVENT_RETENTION);
+  }
+}
+function recordUserSecurityEvent(req, user, event) {
+  recordSecurityEvent({
+    ...event,
+    actorUserId: user.id,
+    actorName: user.fullName,
+    actorRole: user.primaryRole,
+    ipAddress: req.ip
+  });
+}
+var LOGIN_FAILURE_LIMIT = 8;
+var LOGIN_FAILURE_WINDOW_MS = 15 * 6e4;
+var LOGIN_LOCKOUT_MS = 15 * 6e4;
+var LOGIN_BURST_LIMIT = 300;
+var LOGIN_BURST_WINDOW_MS = 6e4;
+var loginBurstWindowStartedAt = 0;
+var loginBurstCount = 0;
+function assertLoginBurstAllowed(now) {
+  if (now - loginBurstWindowStartedAt > LOGIN_BURST_WINDOW_MS) {
+    loginBurstWindowStartedAt = now;
+    loginBurstCount = 0;
+  }
+  loginBurstCount += 1;
+  if (loginBurstCount > LOGIN_BURST_LIMIT) {
+    throw new HttpProblem(429, "LOGIN_RATE_LIMITED", "Qu\xE1 nhi\u1EC1u y\xEAu c\u1EA7u \u0111\u0103ng nh\u1EADp", "M\xE1y ch\u1EE7 \u0111ang nh\u1EADn qu\xE1 nhi\u1EC1u l\u01B0\u1EE3t \u0111\u0103ng nh\u1EADp. H\xE3y th\u1EED l\u1EA1i sau m\u1ED9t ph\xFAt.");
+  }
+}
+function pruneLoginAttempts(nowMs) {
+  const before = loginAttempts.length;
+  loginAttempts = loginAttempts.filter((item) => (item.lockedUntil ? Date.parse(item.lockedUntil) > nowMs : false) || nowMs - Date.parse(item.lastFailedAt) <= LOGIN_FAILURE_WINDOW_MS);
+  return loginAttempts.length !== before;
+}
+function assertLoginNotLocked(usernameKey, nowMs) {
+  const record = loginAttempts.find((item) => item.key === usernameKey);
+  if (!record?.lockedUntil) return;
+  const remainingMs = Date.parse(record.lockedUntil) - nowMs;
+  if (remainingMs <= 0) return;
+  const minutes = Math.max(1, Math.ceil(remainingMs / 6e4));
+  throw new HttpProblem(
+    429,
+    "LOGIN_TEMPORARILY_LOCKED",
+    "T\xE0i kho\u1EA3n t\u1EA1m kho\xE1",
+    `\u0110\xE3 nh\u1EADp sai m\u1EADt kh\u1EA9u qu\xE1 ${LOGIN_FAILURE_LIMIT} l\u1EA7n. H\xE3y th\u1EED l\u1EA1i sau kho\u1EA3ng ${minutes} ph\xFAt ho\u1EB7c li\xEAn h\u1EC7 qu\u1EA3n tr\u1ECB vi\xEAn \u0111\u1EC3 \u0111\u1EB7t l\u1EA1i m\u1EADt kh\u1EA9u.`
+  );
+}
+function recordLoginFailure(usernameKey, nowMs) {
+  const now = new Date(nowMs).toISOString();
+  let record = loginAttempts.find((item) => item.key === usernameKey);
+  if (!record || nowMs - Date.parse(record.firstFailedAt) > LOGIN_FAILURE_WINDOW_MS) {
+    record = { key: usernameKey, failedCount: 0, firstFailedAt: now, lastFailedAt: now };
+    loginAttempts = [...loginAttempts.filter((item) => item.key !== usernameKey), record];
+  }
+  record.failedCount += 1;
+  record.lastFailedAt = now;
+  if (record.failedCount >= LOGIN_FAILURE_LIMIT) {
+    record.lockedUntil = new Date(nowMs + LOGIN_LOCKOUT_MS).toISOString();
+  }
+  return { locked: Boolean(record.lockedUntil) };
+}
+function clearLoginFailures(usernameKey) {
+  const before = loginAttempts.length;
+  loginAttempts = loginAttempts.filter((item) => item.key !== usernameKey);
+  return loginAttempts.length !== before;
 }
 function filterFindingsByScope(items, user) {
   return items.filter((finding) => hasFindingAccess(user, finding));
@@ -4419,26 +4690,38 @@ function rememberIdempotentResponse(context, response) {
   }
 }
 app.get("/api/v1/health", async () => ({ status: "UP", timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
-function buildReadinessPayload(dataStore, evidenceStorage) {
+var REDACTED_DIAGNOSTIC = "Chi ti\u1EBFt l\u1ED7i ch\u1EC9 hi\u1EC3n th\u1ECB cho qu\u1EA3n tr\u1ECB vi\xEAn \u0111\xE3 \u0111\u0103ng nh\u1EADp.";
+function buildReadinessPayload(dataStore, evidenceStorage, options = {}) {
+  const includeDiagnostics = options.includeDiagnostics ?? false;
+  const diagnostic = (warning, fallback) => includeDiagnostics ? warning ?? fallback : REDACTED_DIAGNOSTIC;
   const postgresUnavailable = dataStore.mode === "postgres" && !dataStore.ready;
-  const dataStoreMessage = dataStore.mode === "postgres" ? postgresUnavailable ? `Postgres kh\xF4ng s\u1EB5n s\xE0ng. ${dataStore.warning ?? "Kh\xF4ng th\u1EC3 x\xE1c nh\u1EADn k\u1EBFt n\u1ED1i database."}` : "Postgres \u0111\xE3 k\u1EBFt n\u1ED1i; state \u0111ang l\u01B0u b\u1EC1n v\u1EEFng ngo\xE0i filesystem serverless." : dataStore.durable ? "Local mode \u0111ang l\u01B0u tr\u1EA1ng th\xE1i b\u1EC1n v\u1EEFng b\u1EB1ng JSON nguy\xEAn t\u1EED." : "Local mode \u0111ang ch\u1EA1y b\u1EB1ng b\u1ED9 nh\u1EDB; d\u1EEF li\u1EC7u s\u1EBD m\u1EA5t khi ti\u1EBFn tr\xECnh d\u1EEBng.";
-  const evidenceMessage = evidenceStorage.ready ? "" : evidenceStorage.mode === "google-drive" ? ` Google Drive ch\u01B0a s\u1EB5n s\xE0ng. ${evidenceStorage.warning ?? "Adapter API v3 ch\u01B0a \u0111\u01B0\u1EE3c c\xE0i \u0111\u1EB7t."} H\u1EC7 th\u1ED1ng kh\xF4ng fallback local.` : ` Ch\u1EBF \u0111\u1ED9 l\u01B0u minh ch\u1EE9ng kh\xF4ng h\u1EE3p l\u1EC7. ${evidenceStorage.warning ?? "C\u1EA7n c\u1EA5u h\xECnh EVIDENCE_STORAGE_MODE h\u1EE3p l\u1EC7."} H\u1EC7 th\u1ED1ng kh\xF4ng fallback local.`;
+  const dataStoreMessage = dataStore.mode === "postgres" ? postgresUnavailable ? `Postgres kh\xF4ng s\u1EB5n s\xE0ng. ${diagnostic(dataStore.warning, "Kh\xF4ng th\u1EC3 x\xE1c nh\u1EADn k\u1EBFt n\u1ED1i database.")}` : "Postgres \u0111\xE3 k\u1EBFt n\u1ED1i; state \u0111ang l\u01B0u b\u1EC1n v\u1EEFng ngo\xE0i filesystem serverless." : dataStore.durable ? "Local mode \u0111ang l\u01B0u tr\u1EA1ng th\xE1i b\u1EC1n v\u1EEFng b\u1EB1ng JSON nguy\xEAn t\u1EED." : "Local mode \u0111ang ch\u1EA1y b\u1EB1ng b\u1ED9 nh\u1EDB; d\u1EEF li\u1EC7u s\u1EBD m\u1EA5t khi ti\u1EBFn tr\xECnh d\u1EEBng.";
+  const evidenceMessage = evidenceStorage.ready ? "" : evidenceStorage.mode === "google-drive" ? ` Google Drive ch\u01B0a s\u1EB5n s\xE0ng. ${diagnostic(evidenceStorage.warning, "Adapter API v3 ch\u01B0a \u0111\u01B0\u1EE3c c\xE0i \u0111\u1EB7t.")} H\u1EC7 th\u1ED1ng kh\xF4ng fallback local.` : ` Ch\u1EBF \u0111\u1ED9 l\u01B0u minh ch\u1EE9ng kh\xF4ng h\u1EE3p l\u1EC7. ${diagnostic(evidenceStorage.warning, "C\u1EA7n c\u1EA5u h\xECnh EVIDENCE_STORAGE_MODE h\u1EE3p l\u1EC7.")} H\u1EC7 th\u1ED1ng kh\xF4ng fallback local.`;
   const ready = !postgresUnavailable && evidenceStorage.ready;
   const message = `${dataStoreMessage}${evidenceMessage} Ch\u01B0a ph\u1EA3i tr\u1EA1ng th\xE1i production-ready.`;
+  const redactedDataStore = includeDiagnostics || !("warning" in dataStore) || dataStore.warning === void 0 ? dataStore : { ...dataStore, warning: REDACTED_DIAGNOSTIC };
+  const redactedEvidenceStorage = includeDiagnostics || evidenceStorage.warning === void 0 ? evidenceStorage : { ...evidenceStorage, warning: REDACTED_DIAGNOSTIC };
   return {
     status: "DEGRADED",
     ready,
     checks: {
-      dataStore,
-      evidenceStorage,
+      dataStore: redactedDataStore,
+      evidenceStorage: redactedEvidenceStorage,
       auth: { mode: "local-credential-session", productionSafe: false }
     },
     message
   };
 }
-app.get("/api/v1/ready", async () => buildReadinessPayload(
+function optionalAdminViewer(request) {
+  const session = authSessionStore.resolve(cookieValue(request, "audit_bgs_session") ?? "");
+  if (!session) return void 0;
+  const user = appUsers.find((item) => item.id === session.userId && item.isActive);
+  return user?.roles.includes("ADMIN") ? user : void 0;
+}
+app.get("/api/v1/ready", async (req) => buildReadinessPayload(
   await stateRepository.getStatus(),
-  await googleDriveService.getStorageStatus()
+  await googleDriveService.getStorageStatus(),
+  { includeDiagnostics: Boolean(optionalAdminViewer(req)) }
 ));
 function requireCronAuthorization(request) {
   const secret = process.env.CRON_SECRET;
@@ -4495,6 +4778,11 @@ app.get("/api/v1/integrations/google-drive/callback", async (req, reply) => {
     googleDriveService.setOAuthRefreshToken(void 0);
     throw new HttpProblem(503, "GOOGLE_OAUTH_TOKEN_STORAGE_FAILED", "Kh\xF4ng th\u1EC3 l\u01B0u k\u1EBFt n\u1ED1i Google Drive", "Ki\u1EC3m tra GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY r\u1ED3i k\u1EBFt n\u1ED1i l\u1EA1i.");
   }
+  recordUserSecurityEvent(req, user, {
+    type: "ADMIN_GOOGLE_DRIVE_CONNECTED",
+    outcome: "SUCCESS",
+    detail: "\u0110\u1EA5u n\u1ED1i Google Drive c\xE1 nh\xE2n l\xE0m kho minh ch\u1EE9ng."
+  });
   await persistLocalState();
   return reply.type("text/html; charset=utf-8").send('<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Google Drive \u0111\xE3 k\u1EBFt n\u1ED1i</title></head><body><p>\u0110\xE3 k\u1EBFt n\u1ED1i Google Drive c\xE1 nh\xE2n. B\u1EA1n c\xF3 th\u1EC3 \u0111\xF3ng c\u1EEDa s\u1ED5 n\xE0y v\xE0 quay l\u1EA1i AuditBGS.</p></body></html>');
 });
@@ -4521,8 +4809,22 @@ app.get("/api/v1/auth/google/callback", async (req, reply) => {
   const email = oidc.identity.email;
   const user = appUsers.find((candidate) => candidate.isActive && [candidate.email, candidate.googleWorkspaceEmail].some((candidateEmail) => candidateEmail?.toLocaleLowerCase("en-US") === email));
   if (!user) {
+    recordSecurityEvent({
+      type: "AUTH_OIDC_LOGIN_REJECTED",
+      outcome: "FAILURE",
+      subject: email,
+      detail: "Email Google \u0111\xE3 x\xE1c th\u1EF1c nh\u01B0ng ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5p t\xE0i kho\u1EA3n trong h\u1EC7 th\u1ED1ng.",
+      ipAddress: req.ip
+    });
+    await persistLocalState();
     throw new HttpProblem(403, "GOOGLE_OIDC_USER_NOT_PROVISIONED", "T\xE0i kho\u1EA3n Google ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5p quy\u1EC1n", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n t\u1EA1o user v\xE0 g\xE1n role cho email Google n\xE0y tr\u01B0\u1EDBc.");
   }
+  recordUserSecurityEvent(req, user, {
+    type: "AUTH_OIDC_LOGIN_SUCCEEDED",
+    outcome: "SUCCESS",
+    subject: email,
+    detail: "\u0110\u0103ng nh\u1EADp b\u1EB1ng Google OIDC."
+  });
   await createAuthenticatedSession(user, reply);
   return reply.redirect(oidc.returnTo);
 });
@@ -4530,20 +4832,69 @@ app.post("/api/v1/auth/login", async (req, reply) => {
   if (process.env.AUTH_MODE === "oidc") {
     throw new HttpProblem(405, "OIDC_LOGIN_REQUIRED", "H\xE3y \u0111\u0103ng nh\u1EADp b\u1EB1ng Google", "M\xF4i tr\u01B0\u1EDDng n\xE0y ch\u1EC9 ch\u1EA5p nh\u1EADn Google OIDC.");
   }
+  const nowMs = Date.now();
+  assertLoginBurstAllowed(nowMs);
   const credentials = LoginSchema.parse(req.body);
   const normalizedUsername = credentials.username.toLocaleLowerCase("vi-VN");
+  pruneLoginAttempts(nowMs);
+  try {
+    assertLoginNotLocked(normalizedUsername, nowMs);
+  } catch (error) {
+    recordSecurityEvent({
+      type: "AUTH_LOGIN_THROTTLED",
+      outcome: "FAILURE",
+      subject: normalizedUsername,
+      detail: "T\u1EEB ch\u1ED1i \u0111\u0103ng nh\u1EADp v\xEC t\xEAn \u0111\u0103ng nh\u1EADp \u0111ang b\u1ECB kho\xE1 t\u1EA1m th\u1EDDi.",
+      ipAddress: req.ip
+    });
+    await persistLocalState();
+    throw error;
+  }
   const directoryEntry = credentialDirectory.find((item) => item.username === normalizedUsername);
   const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? unknownUserPasswordHash);
   const user = directoryEntry ? appUsers.find((item) => item.id === directoryEntry.userId && item.isActive) : void 0;
   if (!passwordValid || !user) {
+    const { locked } = recordLoginFailure(normalizedUsername, nowMs);
+    recordSecurityEvent({
+      type: "AUTH_LOGIN_FAILED",
+      outcome: "FAILURE",
+      subject: normalizedUsername,
+      detail: locked ? `Sai m\u1EADt kh\u1EA9u; \u0111\xE3 kho\xE1 t\u1EA1m th\u1EDDi ${LOGIN_LOCKOUT_MS / 6e4} ph\xFAt sau ${LOGIN_FAILURE_LIMIT} l\u1EA7n sai.` : "T\xE0i kho\u1EA3n ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng.",
+      ipAddress: req.ip
+    });
+    await persistLocalState();
     throw new HttpProblem(401, "INVALID_CREDENTIALS", "\u0110\u0103ng nh\u1EADp kh\xF4ng th\xE0nh c\xF4ng", "T\xE0i kho\u1EA3n ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng.");
   }
+  clearLoginFailures(normalizedUsername);
+  recordSecurityEvent({
+    type: "AUTH_LOGIN_SUCCEEDED",
+    outcome: "SUCCESS",
+    actorUserId: user.id,
+    actorName: user.fullName,
+    actorRole: user.primaryRole,
+    subject: normalizedUsername,
+    detail: "\u0110\u0103ng nh\u1EADp b\u1EB1ng t\xEAn \u0111\u0103ng nh\u1EADp v\xE0 m\u1EADt kh\u1EA9u.",
+    ipAddress: req.ip
+  });
   const expiresAt = await createAuthenticatedSession(user, reply);
   return { user, expiresAt };
 });
 app.post("/api/v1/auth/logout", async (req, reply) => {
   const token = cookieValue(req, "audit_bgs_session");
+  const endingSession = token ? authSessionStore.resolve(token) : void 0;
   if (token) authSessionStore.revoke(token);
+  if (endingSession) {
+    const owner = appUsers.find((item) => item.id === endingSession.userId);
+    recordSecurityEvent({
+      type: "AUTH_LOGOUT",
+      outcome: "SUCCESS",
+      actorUserId: endingSession.userId,
+      actorName: owner?.fullName,
+      actorRole: owner?.primaryRole,
+      detail: "K\u1EBFt th\xFAc phi\xEAn \u0111\u0103ng nh\u1EADp.",
+      ipAddress: req.ip
+    });
+  }
   authSessions = authSessionStore.records();
   await persistLocalState();
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
@@ -4602,6 +4953,35 @@ app.patch("/api/v1/admin/campaigns/:id", async (req) => {
   auditCampaigns[index] = { ...current, ...changes, version: current.version + 1, updatedAt: (/* @__PURE__ */ new Date()).toISOString() };
   await persistLocalState();
   return auditCampaigns[index];
+});
+app.delete("/api/v1/admin/campaigns/:id", async (req, reply) => {
+  requireAdmin(getCurrentUser(req));
+  const index = auditCampaigns.findIndex((item) => item.id === req.params.id);
+  if (index < 0) throw new HttpProblem(404, "CAMPAIGN_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y chuy\xEAn \u0111\u1EC1", "Chuy\xEAn \u0111\u1EC1 kh\xF4ng t\u1ED3n t\u1EA1i.");
+  const campaign = auditCampaigns[index];
+  if (campaign.status !== "DRAFT") {
+    throw new HttpProblem(409, "CAMPAIGN_DELETE_REQUIRES_DRAFT", "Ch\u01B0a th\u1EC3 x\xF3a chuy\xEAn \u0111\u1EC1", "Ch\u1EC9 c\xF3 th\u1EC3 x\xF3a chuy\xEAn \u0111\u1EC1 \u1EDF tr\u1EA1ng th\xE1i nh\xE1p. H\xE3y \u0111\xF3ng v\xE0 l\u01B0u tr\u1EEF chuy\xEAn \u0111\u1EC1 \u0111\xE3 v\u1EADn h\xE0nh.");
+  }
+  if (findings.some((finding) => finding.campaignId === campaign.id)) {
+    throw new HttpProblem(409, "CAMPAIGN_HAS_FINDINGS", "Ch\u01B0a th\u1EC3 x\xF3a chuy\xEAn \u0111\u1EC1", "Chuy\xEAn \u0111\u1EC1 \u0111\xE3 c\xF3 h\u1ED3 s\u01A1 li\xEAn quan n\xEAn kh\xF4ng \u0111\u01B0\u1EE3c x\xF3a \u0111\u1EC3 b\u1EA3o to\xE0n l\u1ECBch s\u1EED.");
+  }
+  auditCampaigns.splice(index, 1);
+  await persistLocalState();
+  return reply.code(204).send();
+});
+app.post("/api/v1/admin/campaigns/import-draft", async (req, reply) => {
+  requireAdmin(getCurrentUser(req));
+  const data = await req.file();
+  if (!data) throw new HttpProblem(422, "CAMPAIGN_IMPORT_FILE_REQUIRED", "Thi\u1EBFu t\u1EC7p chuy\xEAn \u0111\u1EC1", "H\xE3y t\u1EA3i l\xEAn m\u1ED9t t\u1EC7p DOCX, PDF ho\u1EB7c Excel.");
+  const buffer = await data.toBuffer();
+  try {
+    return reply.send(await extractCampaignImportDraft(data.filename, buffer));
+  } catch (error) {
+    if (error instanceof CampaignDocumentImportError) {
+      throw new HttpProblem(422, "CAMPAIGN_IMPORT_UNREADABLE", "Kh\xF4ng th\u1EC3 b\xF3c t\xE1ch t\u1EC7p chuy\xEAn \u0111\u1EC1", error.message);
+    }
+    throw error;
+  }
 });
 app.post("/api/v1/admin/campaigns/:id/provision-drive", async (req) => {
   const user = getCurrentUser(req);
@@ -4682,35 +5062,51 @@ app.get("/api/v1/org-units/branches", async (req) => {
 });
 app.get("/api/v1/admin/org-units", async (req) => {
   requireAdmin(getCurrentUser(req));
-  return orgUnits.map((unit) => {
-    const parent = orgUnits.find((candidate) => candidate.id === unit.parentId);
-    const leader = appUsers.find((candidate) => candidate.id === unit.leaderUserId);
-    return {
-      ...unit,
-      parentName: parent?.name,
-      leaderName: leader?.fullName ?? unit.leaderName
-    };
-  });
+  return orgUnits.map(projectOrgUnit);
 });
-app.post("/api/v1/admin/org-units", async (req) => {
-  requireAdmin(getCurrentUser(req));
-  const body = CreateOrgUnitSchema.parse(req.body);
-  if (orgUnits.some((unit) => unit.code.toLowerCase() === body.code.toLowerCase())) {
-    throw new HttpProblem(409, "ORG_UNIT_CODE_EXISTS", "M\xE3 \u0111\u01A1n v\u1ECB \u0111\xE3 t\u1ED3n t\u1EA1i", "Vui l\xF2ng s\u1EED d\u1EE5ng m\u1ED9t m\xE3 \u0111\u01A1n v\u1ECB kh\xE1c.");
-  }
+function projectOrgUnit(unit) {
+  const parent = orgUnits.find((candidate) => candidate.id === unit.parentId);
+  const leader = appUsers.find((candidate) => candidate.id === unit.leaderUserId);
+  return { ...unit, parentName: parent?.name, leaderName: leader?.fullName ?? unit.leaderName };
+}
+function assertOrgUnitParent(type, parentId, ownId) {
   const expectedParentType = {
     INTERNAL_TEAM: "HEAD_OFFICE",
     CLUSTER: "HEAD_OFFICE",
     BRANCH: "CLUSTER",
     DEPARTMENT: "BRANCH"
   };
-  if (body.type !== "HEAD_OFFICE") {
-    const parent = orgUnits.find((unit) => unit.id === body.parentId);
-    const requiredType = expectedParentType[body.type];
-    if (!parent || parent.type !== requiredType) {
-      throw new HttpProblem(422, "ORG_PARENT_INVALID", "\u0110\u01A1n v\u1ECB cha kh\xF4ng h\u1EE3p l\u1EC7", `${body.type} ph\u1EA3i tr\u1EF1c thu\u1ED9c ${requiredType}.`);
-    }
+  if (type === "HEAD_OFFICE") {
+    if (parentId) throw new HttpProblem(422, "ORG_PARENT_INVALID", "\u0110\u01A1n v\u1ECB cha kh\xF4ng h\u1EE3p l\u1EC7", "H\u1ED9i s\u1EDF kh\xF4ng \u0111\u01B0\u1EE3c tr\u1EF1c thu\u1ED9c \u0111\u01A1n v\u1ECB kh\xE1c.");
+    return;
   }
+  const parent = orgUnits.find((unit) => unit.id === parentId);
+  const requiredType = expectedParentType[type];
+  if (!parent || parent.id === ownId || parent.type !== requiredType) {
+    throw new HttpProblem(422, "ORG_PARENT_INVALID", "\u0110\u01A1n v\u1ECB cha kh\xF4ng h\u1EE3p l\u1EC7", `${type} ph\u1EA3i tr\u1EF1c thu\u1ED9c ${requiredType}.`);
+  }
+}
+function assertOrgUnitLeader(leaderUserId) {
+  if (leaderUserId && !appUsers.some((user) => user.id === leaderUserId && user.isActive)) {
+    throw new HttpProblem(422, "ORG_LEADER_INVALID", "Ng\u01B0\u1EDDi ph\u1EE5 tr\xE1ch kh\xF4ng h\u1EE3p l\u1EC7", "Ng\u01B0\u1EDDi ph\u1EE5 tr\xE1ch ph\u1EA3i l\xE0 t\xE0i kho\u1EA3n \u0111ang ho\u1EA1t \u0111\u1ED9ng.");
+  }
+}
+function dependentOrgUnitReferences(unit) {
+  const references = [];
+  if (orgUnits.some((candidate) => candidate.parentId === unit.id)) references.push("\u0111\u01A1n v\u1ECB con");
+  if (appUsers.some((user) => user.orgUnitId === unit.id || user.internalTeamId === unit.id || user.branchCode === unit.code)) references.push("ng\u01B0\u1EDDi d\xF9ng \u0111ang ph\xE2n c\xF4ng");
+  if (findings.some((finding) => finding.branchCode === unit.code)) references.push("h\u1ED3 s\u01A1 l\u1ECBch s\u1EED");
+  if (auditCampaigns.some((campaign) => campaign.branchCodes.includes(unit.code))) references.push("chuy\xEAn \u0111\u1EC1 \u0111ang tham chi\u1EBFu");
+  return references;
+}
+app.post("/api/v1/admin/org-units", async (req) => {
+  requireAdmin(getCurrentUser(req));
+  const body = CreateOrgUnitSchema.parse(req.body);
+  if (orgUnits.some((unit) => unit.code.toLowerCase() === body.code.toLowerCase())) {
+    throw new HttpProblem(409, "ORG_UNIT_CODE_EXISTS", "M\xE3 \u0111\u01A1n v\u1ECB \u0111\xE3 t\u1ED3n t\u1EA1i", "Vui l\xF2ng s\u1EED d\u1EE5ng m\u1ED9t m\xE3 \u0111\u01A1n v\u1ECB kh\xE1c.");
+  }
+  assertOrgUnitParent(body.type, body.parentId);
+  assertOrgUnitLeader(body.leaderUserId);
   const newUnit = {
     id: `org-${crypto5.randomUUID()}`,
     code: body.code,
@@ -4725,7 +5121,56 @@ app.post("/api/v1/admin/org-units", async (req) => {
   };
   orgUnits.push(newUnit);
   await persistLocalState();
-  return newUnit;
+  return projectOrgUnit(newUnit);
+});
+app.patch("/api/v1/admin/org-units/:id", async (req) => {
+  requireAdmin(getCurrentUser(req));
+  const body = UpdateOrgUnitSchema.parse(req.body);
+  const index = orgUnits.findIndex((unit) => unit.id === req.params.id);
+  if (index < 0) throw new HttpProblem(404, "ORG_UNIT_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y \u0111\u01A1n v\u1ECB", "\u0110\u01A1n v\u1ECB kh\xF4ng t\u1ED3n t\u1EA1i.");
+  const current = orgUnits[index];
+  if (current.updatedAt !== body.expectedUpdatedAt) {
+    throw new HttpProblem(409, "ORG_UNIT_VERSION_CONFLICT", "\u0110\u01A1n v\u1ECB \u0111\xE3 thay \u0111\u1ED5i", "H\xE3y t\u1EA3i l\u1EA1i d\u1EEF li\u1EC7u m\u1EDBi nh\u1EA5t tr\u01B0\u1EDBc khi l\u01B0u.");
+  }
+  const requestedCode = body.code;
+  if (requestedCode !== void 0 && orgUnits.some((unit) => unit.id !== current.id && unit.code.toLocaleLowerCase("vi-VN") === requestedCode.toLocaleLowerCase("vi-VN"))) {
+    throw new HttpProblem(409, "ORG_UNIT_CODE_EXISTS", "M\xE3 \u0111\u01A1n v\u1ECB \u0111\xE3 t\u1ED3n t\u1EA1i", "Vui l\xF2ng s\u1EED d\u1EE5ng m\u1ED9t m\xE3 \u0111\u01A1n v\u1ECB kh\xE1c.");
+  }
+  const nextParentId = body.parentId === null ? void 0 : body.parentId ?? current.parentId;
+  assertOrgUnitParent(current.type, nextParentId, current.id);
+  const nextLeaderUserId = body.leaderUserId === null ? void 0 : body.leaderUserId ?? current.leaderUserId;
+  assertOrgUnitLeader(nextLeaderUserId);
+  if (body.isActive === false) {
+    const references = dependentOrgUnitReferences(current);
+    if (references.length) throw new HttpProblem(409, "ORG_UNIT_HAS_DEPENDENCIES", "Ch\u01B0a th\u1EC3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng \u0111\u01A1n v\u1ECB", `H\xE3y x\u1EED l\xFD ${references.join(", ")} tr\u01B0\u1EDBc khi ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng \u0111\u01A1n v\u1ECB.`);
+  }
+  const { expectedUpdatedAt: _expectedUpdatedAt, ...changes } = body;
+  orgUnits[index] = {
+    ...current,
+    ...changes,
+    parentId: nextParentId,
+    leaderUserId: nextLeaderUserId,
+    metadata: body.metadata === null ? void 0 : body.metadata ?? current.metadata,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  await persistLocalState();
+  return projectOrgUnit(orgUnits[index]);
+});
+app.delete("/api/v1/admin/org-units/:id", async (req, reply) => {
+  requireAdmin(getCurrentUser(req));
+  const index = orgUnits.findIndex((unit) => unit.id === req.params.id);
+  if (index < 0) throw new HttpProblem(404, "ORG_UNIT_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y \u0111\u01A1n v\u1ECB", "\u0110\u01A1n v\u1ECB kh\xF4ng t\u1ED3n t\u1EA1i.");
+  const current = orgUnits[index];
+  if (current.type === "HEAD_OFFICE") {
+    throw new HttpProblem(409, "ORG_UNIT_ROOT_PROTECTED", "Kh\xF4ng th\u1EC3 x\xF3a H\u1ED9i s\u1EDF", "H\u1ED9i s\u1EDF l\xE0 \u0111\u01A1n v\u1ECB g\u1ED1c c\u1EE7a c\u01A1 c\u1EA5u t\u1ED5 ch\u1EE9c.");
+  }
+  const references = dependentOrgUnitReferences(current);
+  if (references.length) {
+    throw new HttpProblem(409, "ORG_UNIT_HAS_DEPENDENCIES", "Ch\u01B0a th\u1EC3 x\xF3a \u0111\u01A1n v\u1ECB", `H\xE3y x\u1EED l\xFD ${references.join(", ")} tr\u01B0\u1EDBc khi x\xF3a \u0111\u01A1n v\u1ECB.`);
+  }
+  orgUnits.splice(index, 1);
+  await persistLocalState();
+  return reply.code(204).send();
 });
 app.get("/api/v1/admin/users", async (req) => {
   requireAdmin(getCurrentUser(req));
@@ -4803,6 +5248,12 @@ app.post("/api/v1/admin/users", async (req) => {
     passwordHash: await hashPassword(body.password ?? temporaryPassword)
   });
   appUsers.push(newUser);
+  recordUserSecurityEvent(req, getCurrentUser(req), {
+    type: "ADMIN_USER_CREATED",
+    outcome: "SUCCESS",
+    subject: newUser.username,
+    detail: `C\u1EA5p t\xE0i kho\u1EA3n ${newUser.fullName} v\u1EDBi vai tr\xF2 ${newUser.roles.join(", ")} (${newUser.portal}).`
+  });
   if (internalTeam && body.teamRole === "LEAD") {
     internalTeam.leaderUserId = newUser.id;
     internalTeam.leaderName = newUser.fullName;
@@ -4823,7 +5274,14 @@ app.post("/api/v1/admin/users/:id/password", async (req) => {
   const existing = credentialDirectory.find((item) => item.userId === user.id);
   if (existing) existing.passwordHash = passwordHash;
   else credentialDirectory.push({ userId: user.id, username: user.username.toLocaleLowerCase("vi-VN"), passwordHash });
-  authSessionStore.revokeAllForUser(user.id);
+  const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+  clearLoginFailures(user.username.toLocaleLowerCase("vi-VN"));
+  recordUserSecurityEvent(req, getCurrentUser(req), {
+    type: "ADMIN_USER_PASSWORD_RESET",
+    outcome: "SUCCESS",
+    subject: user.username,
+    detail: `\u0110\u1EB7t l\u1EA1i m\u1EADt kh\u1EA9u cho ${user.fullName}; thu h\u1ED3i ${revokedSessions} phi\xEAn \u0111ang m\u1EDF.`
+  });
   authSessions = authSessionStore.records();
   await persistLocalState();
   return { user, temporaryPassword };
@@ -4948,8 +5406,7 @@ app.delete("/api/v1/admin/channels/:id", async (req, reply) => {
   await persistLocalState();
   return reply.code(204).send();
 });
-app.get("/api/v1/admin/audit-events", async (req) => {
-  requireAdmin(getCurrentUser(req));
+function getAuditLogEntries() {
   return workflowEvents.map((event) => {
     const finding = findings.find((item) => item.id === event.findingId);
     return {
@@ -4965,7 +5422,79 @@ app.get("/api/v1/admin/audit-events", async (req) => {
       errorCode: finding?.errorCode ?? "",
       branchCode: finding?.branchCode ?? ""
     };
-  }).sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+  }).concat(securityEvents.map((event) => ({
+    id: event.id,
+    timestamp: event.occurredAt,
+    eventType: event.type,
+    actorName: event.actorName ?? event.subject ?? "Kh\xF4ng x\xE1c \u0111\u1ECBnh",
+    actorRole: event.actorRole ?? "",
+    targetEntity: event.subject ?? "H\u1EC7 th\u1ED1ng",
+    details: event.ipAddress ? `${event.detail} (IP ${event.ipAddress})` : event.detail,
+    findingId: "",
+    cif: "",
+    errorCode: "",
+    branchCode: ""
+  }))).sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+}
+function filterAuditLogEntries(entries, query) {
+  const keyword = query?.trim().toLocaleLowerCase("vi");
+  if (!keyword) return entries;
+  return entries.filter((entry) => [
+    entry.eventType,
+    entry.actorName,
+    entry.actorRole,
+    entry.targetEntity,
+    entry.details,
+    entry.cif,
+    entry.errorCode,
+    entry.branchCode
+  ].some((value) => value.toLocaleLowerCase("vi").includes(keyword)));
+}
+function auditCsvCell(value) {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+function canClearTestAuditEvents() {
+  return DEMO_SEED_ENABLED && process.env.NODE_ENV !== "production" && process.env.DATA_STORE_MODE !== "postgres";
+}
+app.get("/api/v1/admin/audit-events", async (req) => {
+  requireAdmin(getCurrentUser(req));
+  return getAuditLogEntries();
+});
+app.get("/api/v1/admin/audit-events/export", async (req, reply) => {
+  requireAdmin(getCurrentUser(req));
+  const rows = filterAuditLogEntries(getAuditLogEntries(), req.query.query).map((entry) => [
+    entry.timestamp,
+    entry.eventType,
+    entry.actorName,
+    entry.actorRole,
+    entry.targetEntity,
+    entry.details,
+    entry.cif,
+    entry.errorCode,
+    entry.branchCode
+  ].map(auditCsvCell).join(","));
+  const csv = [
+    "Th\u1EDDi gian,S\u1EF1 ki\u1EC7n,Ng\u01B0\u1EDDi thao t\xE1c,Vai tr\xF2,\u0110\u1ED1i t\u01B0\u1EE3ng,Chi ti\u1EBFt,CIF,M\xE3 l\u1ED7i,M\xE3 chi nh\xE1nh",
+    ...rows
+  ].join("\n");
+  const date = (/* @__PURE__ */ new Date()).toISOString().slice(0, 10);
+  return reply.type("text/csv; charset=utf-8").header("Content-Disposition", `attachment; filename="nhat-ky-xu-ly-${date}.csv"`).send(`\uFEFF${csv}`);
+});
+app.delete("/api/v1/admin/audit-events", async (req) => {
+  requireAdmin(getCurrentUser(req));
+  if (!canClearTestAuditEvents()) {
+    throw new HttpProblem(
+      409,
+      "AUDIT_LOG_CLEAR_FORBIDDEN",
+      "Kh\xF4ng th\u1EC3 x\xF3a nh\u1EADt k\xFD v\u1EADn h\xE0nh",
+      "Ch\u1EC9 m\xF4i tr\u01B0\u1EDDng local/test c\xF3 d\u1EEF li\u1EC7u th\u1EED nghi\u1EC7m m\u1EDBi cho ph\xE9p x\xF3a nh\u1EADt k\xFD."
+    );
+  }
+  const cleared = workflowEvents.length + securityEvents.length;
+  workflowEvents = [];
+  securityEvents = [];
+  await persistLocalState();
+  return { cleared };
 });
 app.get("/api/v1/workspace/my-work", async (req) => {
   const user = getCurrentUser(req);
@@ -5617,8 +6146,18 @@ app.get("/api/v1/evidence/:driveFileId/content", async (req, reply) => {
   if (!result) {
     throw new HttpProblem(404, "EVIDENCE_CONTENT_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y n\u1ED9i dung minh ch\u1EE9ng", "Metadata t\u1ED3n t\u1EA1i nh\u01B0ng n\u1ED9i dung t\u1EC7p hi\u1EC7n kh\xF4ng kh\u1EA3 d\u1EE5ng.");
   }
-  reply.header("Content-Disposition", buildInlineContentDisposition(result.fileName));
-  reply.header("Content-Type", result.mimeType);
+  const mimeType = evidence.mimeType;
+  const fileName = evidence.fileName || result.fileName;
+  reply.header("Content-Disposition", isInlineSafeMimeType(mimeType) ? buildInlineContentDisposition(fileName) : buildAttachmentContentDisposition(fileName));
+  reply.header("Content-Type", mimeType);
+  reply.header("X-Content-Type-Options", "nosniff");
+  recordUserSecurityEvent(req, user, {
+    type: "DATA_EVIDENCE_DOWNLOADED",
+    outcome: "SUCCESS",
+    subject: evidence.findingId,
+    detail: `Xem/t\u1EA3i minh ch\u1EE9ng ${fileName} c\u1EE7a h\u1ED3 s\u01A1 ${evidence.findingId}.`
+  });
+  await persistLocalState();
   return reply.send(result.stream);
 });
 app.get("/api/v1/dashboards/summary", async (req) => {
@@ -5705,9 +6244,10 @@ app.post("/api/v1/reports/runs", async (req) => {
   return executeReportRun(scoped, query);
 });
 app.post("/api/v1/reports/exports", async (req, reply) => {
+  const exportingUser = getCurrentUser(req);
   const request = ReportExportRequestSchema.parse(req.body);
   assertReportConfigurationAvailable(request.query, request.columns);
-  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  const scoped = filterFindingsByScope(findings, exportingUser);
   const rows = applyCanonicalReportRules(scoped, request.query.rules, request.query.match);
   if (rows.length > REPORT_EXPORT_MAX_ROWS) {
     throw new HttpProblem(
@@ -5717,6 +6257,12 @@ app.post("/api/v1/reports/exports", async (req, reply) => {
       `B\u1ED9 l\u1ECDc \u0111ang kh\u1EDBp ${rows.length.toLocaleString("vi-VN")} d\xF2ng, v\u01B0\u1EE3t m\u1EE9c ${REPORT_EXPORT_MAX_ROWS.toLocaleString("vi-VN")} d\xF2ng cho m\u1ED9t l\u1EA7n xu\u1EA5t. H\xE3y thu h\u1EB9p \u0111i\u1EC1u ki\u1EC7n l\u1ECDc (theo chi nh\xE1nh, \u0111o\xE0n ki\u1EC3m tra ho\u1EB7c kho\u1EA3ng th\u1EDDi gian) r\u1ED3i xu\u1EA5t l\u1EA1i.`
     );
   }
+  recordUserSecurityEvent(req, exportingUser, {
+    type: "DATA_REPORT_EXPORTED",
+    outcome: "SUCCESS",
+    detail: `Xu\u1EA5t b\xE1o c\xE1o ${request.format.toUpperCase()} g\u1ED3m ${rows.length} d\xF2ng trong ph\u1EA1m vi d\u1EEF li\u1EC7u \u0111\u01B0\u1EE3c c\u1EA5p.`
+  });
+  await persistLocalState();
   const configuration = normalizedReportCatalogConfiguration();
   const configuredFields = configuration.fields;
   const configuredMetrics = configuration.metrics;
@@ -5806,8 +6352,15 @@ app.get("/api/v1/reports/summary", async (req) => {
   return summary;
 });
 app.get("/api/v1/reports/findings.csv", async (req, reply) => {
+  const exportingUser = getCurrentUser(req);
   const filters = ReportFilterSchema.parse(req.query);
-  const scoped = applyReportFilters(filterFindingsByScope(findings, getCurrentUser(req)), filters);
+  const scoped = applyReportFilters(filterFindingsByScope(findings, exportingUser), filters);
+  recordUserSecurityEvent(req, exportingUser, {
+    type: "DATA_REPORT_EXPORTED",
+    outcome: "SUCCESS",
+    detail: `Xu\u1EA5t CSV danh s\xE1ch h\u1ED3 s\u01A1 g\u1ED3m ${scoped.length} d\xF2ng trong ph\u1EA1m vi d\u1EEF li\u1EC7u \u0111\u01B0\u1EE3c c\u1EA5p.`
+  });
+  await persistLocalState();
   const header = "CIF,T\xEAn kh\xE1ch h\xE0ng,C\u1EE5m,Chi nh\xE1nh,Ph\xF2ng,M\xE3 chi nh\xE1nh,C\xE1n b\u1ED9,M\xE3 l\u1ED7i,Ti\xEAu \u0111\u1EC1 l\u1ED7i,Chi ti\u1EBFt l\u1ED7i,Tr\u1EA1ng th\xE1i,D\u01B0 n\u1EE3,Gi\xE1 tr\u1ECB \u1EA3nh h\u01B0\u1EDFng";
   const rows = scoped.map((item) => [item.cif, item.customerName, item.clusterName, item.branchName, item.department, item.branchCode, item.officerName, item.errorCode, item.errorTitle, item.description, item.workflowStatus, item.creditBalance, item.exposureAmount]);
   const csv = `\uFEFF${header}\r
@@ -5881,12 +6434,14 @@ function appInitializationFailure(response, error) {
   }
   response.statusCode = 500;
   response.setHeader("content-type", "application/problem+json; charset=utf-8");
+  response.setHeader("x-content-type-options", "nosniff");
+  response.setHeader("cache-control", "no-store");
   response.end(JSON.stringify({
     type: "about:blank",
     title: "Kh\xF4ng th\u1EC3 kh\u1EDFi t\u1EA1o API",
     status: 500,
     code: "API_INITIALIZATION_FAILED",
-    detail: error instanceof Error ? error.message : String(error)
+    detail: "M\xE1y ch\u1EE7 ch\u01B0a kh\u1EDFi t\u1EA1o \u0111\u01B0\u1EE3c. Qu\u1EA3n tr\u1ECB vi\xEAn h\xE3y ki\u1EC3m tra log tri\u1EC3n khai \u0111\u1EC3 bi\u1EBFt chi ti\u1EBFt."
   }));
 }
 export {

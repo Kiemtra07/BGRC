@@ -1,8 +1,8 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
-import { AlertCircle, Database, History, RefreshCw, Search } from 'lucide-react';
+import { AlertCircle, Database, Download, History, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { AuditLogEntry, UserRole, WorkflowCommand } from '../../../shared/contracts';
 import { api } from '../../services/api';
-import { userRoleLabels, workflowEventLabels } from '../../content/ui-copy';
+import { securityEventLabels, userRoleLabels, workflowEventLabels } from '../../content/ui-copy';
 
 const formatTimestamp = (value: string): string => {
   const date = new Date(value);
@@ -12,14 +12,20 @@ const formatTimestamp = (value: string): string => {
 };
 
 const isWorkflowCommand = (eventType: string): eventType is WorkflowCommand => eventType in workflowEventLabels;
-const eventLabel = (eventType: string): string => isWorkflowCommand(eventType) ? workflowEventLabels[eventType] : 'Cập nhật hồ sơ';
-const roleLabel = (role: string): string => userRoleLabels[role as UserRole] || 'Người dùng';
+const eventLabel = (eventType: string): string => {
+  if (isWorkflowCommand(eventType)) return workflowEventLabels[eventType];
+  return securityEventLabels[eventType] ?? 'Cập nhật hồ sơ';
+};
+const roleLabel = (role: string): string => userRoleLabels[role as UserRole] || 'Hệ thống';
 
 export const AuditTrailViewer: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
   const [isLoading, setIsLoading] = useState(true);
+  const [isDownloading, setIsDownloading] = useState(false);
+  const [isClearing, setIsClearing] = useState(false);
   const [error, setError] = useState('');
+  const [message, setMessage] = useState('');
 
   const loadAuditEvents = useCallback(async () => {
     setIsLoading(true);
@@ -36,6 +42,40 @@ export const AuditTrailViewer: React.FC = () => {
   useEffect(() => {
     void loadAuditEvents();
   }, [loadAuditEvents]);
+
+  const downloadAuditEvents = async (): Promise<void> => {
+    setIsDownloading(true);
+    setError('');
+    setMessage('');
+    try {
+      await api.downloadAuditEventsCsv(searchTerm);
+      setMessage('Đã bắt đầu tải tệp CSV theo dữ liệu đang lọc.');
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Không thể tải nhật ký CSV.');
+    } finally {
+      setIsDownloading(false);
+    }
+  };
+
+  const clearTestAuditEvents = async (): Promise<void> => {
+    const confirmed = window.confirm(
+      'Xóa toàn bộ nhật ký thử nghiệm của môi trường local/test? Thao tác này không thể hoàn tác.',
+    );
+    if (!confirmed) return;
+
+    setIsClearing(true);
+    setError('');
+    setMessage('');
+    try {
+      const { cleared } = await api.clearTestAuditEvents();
+      await loadAuditEvents();
+      setMessage(`Đã xóa ${cleared} bản ghi nhật ký thử nghiệm.`);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Không thể xóa nhật ký.');
+    } finally {
+      setIsClearing(false);
+    }
+  };
 
   const filteredLogs = useMemo(() => {
     const keyword = searchTerm.trim().toLocaleLowerCase('vi');
@@ -59,12 +99,12 @@ export const AuditTrailViewer: React.FC = () => {
           <div>
             <h3 className="text-base font-bold text-slate-900">Nhật ký xử lý</h3>
             <p className="mt-1 max-w-3xl text-xs leading-5 text-slate-500">
-              Dữ liệu thử nghiệm, chưa dùng cho vận hành chính thức.
+              Tải CSV theo dữ liệu đang lọc. Chỉ dữ liệu thử nghiệm ở local/test mới được xóa; production giữ nhật ký để kiểm toán.
             </p>
           </div>
           <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-[#006b68]/20 bg-[#006b68]/10 px-3 py-1 text-xs font-bold text-[#006b68]">
             <Database className="h-3.5 w-3.5" />
-            Dữ liệu thử nghiệm
+            Có thể xuất CSV
           </span>
         </div>
       </section>
@@ -81,24 +121,51 @@ export const AuditTrailViewer: React.FC = () => {
             className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-xs font-medium outline-none transition focus:border-[#006b68] focus:ring-2 focus:ring-[#006b68]/20"
           />
         </label>
-        <button
-          type="button"
-          onClick={() => void loadAuditEvents()}
-          disabled={isLoading}
-          className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#005a58] disabled:cursor-wait disabled:opacity-60"
-        >
-          <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
-          Làm mới
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void downloadAuditEvents()}
+            disabled={isDownloading || isClearing}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-[#006b68]/30 bg-white px-4 py-2 text-xs font-bold text-[#006b68] transition hover:bg-[#006b68]/5 disabled:cursor-wait disabled:opacity-60"
+          >
+            <Download className={`h-4 w-4 ${isDownloading ? 'animate-pulse' : ''}`} />
+            Tải CSV
+          </button>
+          <button
+            type="button"
+            onClick={() => void clearTestAuditEvents()}
+            disabled={isClearing || isDownloading}
+            title="Chỉ dùng cho dữ liệu thử nghiệm local/test"
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2 text-xs font-bold text-red-700 transition hover:bg-red-50 disabled:cursor-wait disabled:opacity-60"
+          >
+            <Trash2 className={`h-4 w-4 ${isClearing ? 'animate-pulse' : ''}`} />
+            Xóa nhật ký thử nghiệm
+          </button>
+          <button
+            type="button"
+            onClick={() => void loadAuditEvents()}
+            disabled={isLoading || isClearing || isDownloading}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#005a58] disabled:cursor-wait disabled:opacity-60"
+          >
+            <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
+            Làm mới
+          </button>
+        </div>
       </div>
 
       {error && (
         <div role="alert" className="flex gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-xs text-red-800">
           <AlertCircle className="h-4 w-4 shrink-0" />
           <div>
-            <p className="font-bold">Không tải được nhật ký</p>
+            <p className="font-bold">Không thể hoàn tất thao tác</p>
             <p className="mt-1">{error}</p>
           </div>
+        </div>
+      )}
+
+      {message && (
+        <div role="status" className="rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-xs font-medium text-emerald-800">
+          {message}
         </div>
       )}
 

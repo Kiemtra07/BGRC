@@ -12,6 +12,20 @@ const asciiFallback = (fileName: string): string => {
   return normalized || 'evidence';
 };
 
-export const buildInlineContentDisposition = (fileName: string): string => (
-  `inline; filename="${asciiFallback(fileName)}"; filename*=UTF-8''${encodeRfc5987Value(fileName.normalize('NFC'))}`
+const buildContentDisposition = (mode: 'inline' | 'attachment', fileName: string): string => (
+  `${mode}; filename="${asciiFallback(fileName)}"; filename*=UTF-8''${encodeRfc5987Value(fileName.normalize('NFC'))}`
+);
+
+export const buildInlineContentDisposition = (fileName: string): string => buildContentDisposition('inline', fileName);
+
+export const buildAttachmentContentDisposition = (fileName: string): string => buildContentDisposition('attachment', fileName);
+
+/**
+ * Chỉ những định dạng trình duyệt hiển thị được trong trình xem có sandbox mới được mở inline.
+ * DOCX/XLSX không nằm ở đây: chúng luôn phải tải xuống rồi mở bằng ứng dụng ngoài.
+ */
+const INLINE_SAFE_MIME_TYPES = new Set(['application/pdf', 'image/jpeg', 'image/png']);
+
+export const isInlineSafeMimeType = (mimeType: string): boolean => (
+  INLINE_SAFE_MIME_TYPES.has(mimeType.toLowerCase())
 );

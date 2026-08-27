@@ -26,6 +26,35 @@ describe('Google OIDC security helpers', () => {
       .toThrow(/return/i);
   });
 
+  /**
+   * Trình duyệt coi dấu gạch ngược tương đương "/" và loại bỏ ký tự điều khiển khi phân giải URL,
+   * nên các chuỗi dưới đây tuy bắt đầu bằng đúng một dấu "/" vẫn rời khỏi site nếu chỉ kiểm tra
+   * tiền tố. Mỗi mục là một kiểu vượt rào đã được xác minh bằng bộ phân giải URL của Node.
+   */
+  it('rejects every off-site login return path that survives a prefix check', () => {
+    const backslash = String.fromCharCode(92);
+    const escapes = [
+      `/${backslash}evil.example`,
+      `/${backslash}${backslash}evil.example`,
+      `/${String.fromCharCode(9)}/evil.example`,
+      `/${String.fromCharCode(10)}/evil.example`,
+      `/${String.fromCharCode(13)}${String.fromCharCode(10)}Location: https://evil.example`,
+      '//evil.example',
+    ];
+
+    for (const returnTo of escapes) {
+      expect(() => createGoogleOidcState({ secret: stateSecret, returnTo, now: 1_000 }), returnTo)
+        .toThrow(/return/i);
+    }
+  });
+
+  it('keeps ordinary in-app paths, including query and fragment, usable after login', () => {
+    for (const returnTo of ['/', '/reports', '/findings/find-1?tab=evidence#top']) {
+      const state = createGoogleOidcState({ secret: stateSecret, returnTo, now: 1_000 });
+      expect(verifyGoogleOidcState({ state, secret: stateSecret, now: 1_000 })).toEqual({ returnTo });
+    }
+  });
+
   it('accepts only a verified Google identity for the configured audience', () => {
     expect(validateGoogleOidcIdentity({
       payload: {

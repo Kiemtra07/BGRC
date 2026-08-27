@@ -23,6 +23,7 @@ import {
   BranchLeaderRejectCommandSchema,
   BulkFindingImportSchema,
   CreateOrgUnitSchema,
+  UpdateOrgUnitSchema,
   CreateUserSchema,
   CreatedUserResponse,
   ResetUserPasswordSchema,
@@ -83,7 +84,11 @@ import { RuntimeRequestLock, shouldHydrateRuntimeStatePerRequest } from './state
 import { addCalendarDays, runSlaEvaluation, slaWorker, toCalendarDateString } from './worker/sla-worker';
 import { shouldStartEmbeddedSlaRuntime, startDailySlaRuntime } from './worker/sla-scheduler';
 import { HttpProblem, normalizeProblem, sendProblem, workflowErrorToProblem } from './http/problem';
-import { buildInlineContentDisposition } from './http/content-disposition';
+import {
+  buildAttachmentContentDisposition,
+  buildInlineContentDisposition,
+  isInlineSafeMimeType,
+} from './http/content-disposition';
 import { FullReportExport, renderReportHtml, renderReportXlsx } from './report-export';
 import {
   hasFindingAccess,
@@ -102,9 +107,14 @@ import {
 import { createAuthorizationUrl, exchangeCode } from './security/google-oidc-client';
 import { sortWatchTargets } from './modules/workspace/workspace-priority';
 import { canAccessCampaign, validateCampaignTransition } from './modules/campaigns/campaign-service';
+import { CampaignDocumentImportError, extractCampaignImportDraft } from './modules/campaigns/campaign-document-import';
 
 export const app: FastifyInstance = fastify({
   logger: process.env.NODE_ENV !== 'test',
+  // Trên Vercel mọi yêu cầu đi qua edge proxy, nên nếu không tin x-forwarded-for thì req.ip luôn
+  // là IP của proxy và nhật ký an ninh sẽ ghi cùng một địa chỉ cho tất cả mọi người. Bật ở đây
+  // chỉ ảnh hưởng tới việc ghi nhật ký — không có quyết định phân quyền nào dựa trên IP.
+  trustProxy: process.env.TRUST_PROXY === 'true' || process.env.VERCEL === '1',
 });
 
 // Register plugins
@@ -113,6 +123,39 @@ const allowedOrigins = (process.env.CORS_ALLOWED_ORIGINS ?? 'http://localhost:30
   .map(origin => origin.trim())
   .filter(Boolean);
 app.register(cors, { origin: allowedOrigins, credentials: true });
+
+/**
+ * Header bảo mật cho mọi phản hồi của API.
+ *
+ * Lưu ý về phạm vi: trên Vercel, tài liệu SPA được phục vụ tĩnh qua rewrite `/(.*) -> /index.html`
+ * và KHÔNG đi qua Fastify, nên bộ header tương ứng cho trang web nằm ở `vercel.json`. Hook này lo
+ * phần API — đáng kể nhất là luồng minh chứng và tệp HTML báo cáo, hai nơi nội dung do người dùng
+ * cấp được trả về từ chính origin của ứng dụng.
+ */
+const API_CONTENT_SECURITY_POLICY = [
+  "default-src 'none'",
+  "frame-ancestors 'none'",
+  "base-uri 'none'",
+  "form-action 'none'",
+  // Tệp HTML báo cáo tự chứa toàn bộ CSS trong thẻ <style> nội tuyến và không nạp gì từ bên ngoài.
+  "img-src 'self' data:",
+  "style-src 'unsafe-inline'",
+].join('; ');
+
+app.addHook('onSend', async (_request, reply) => {
+  reply.header('Content-Security-Policy', API_CONTENT_SECURITY_POLICY);
+  reply.header('X-Content-Type-Options', 'nosniff');
+  reply.header('X-Frame-Options', 'DENY');
+  reply.header('Referrer-Policy', 'no-referrer');
+  reply.header('Cross-Origin-Opener-Policy', 'same-origin');
+  reply.header('Cross-Origin-Resource-Policy', 'same-origin');
+  reply.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=(), payment=()');
+  // Dữ liệu hồ sơ và minh chứng không được nằm lại trong cache dùng chung.
+  reply.header('Cache-Control', 'no-store');
+  if (process.env.NODE_ENV === 'production') {
+    reply.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  }
+});
 app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB max
 
 const internalSlaPath = '/api/v1/internal/sla/run';
@@ -815,6 +858,58 @@ interface GoogleDriveOAuthCredential {
 
 let googleDriveOAuthCredential: GoogleDriveOAuthCredential | undefined;
 
+/**
+ * Nhật ký an ninh, tách khỏi workflowEvents.
+ *
+ * workflowEvents chỉ ghi việc hồ sơ đi qua các bước duyệt. Những hành vi có sức phá hoại lớn nhất
+ * lại nằm ngoài đó: đăng nhập, cấp tài khoản, đặt lại mật khẩu, đấu nối Google Drive, và đặc biệt
+ * là **xuất dữ liệu** — một tài khoản phạm vi ALL có thể tải toàn bộ hồ sơ mà trước đây không để
+ * lại dấu vết nào. Với hệ thống kiểm toán nội bộ ngân hàng đó là khoảng trống tuân thủ.
+ */
+type SecurityEventType =
+  | 'AUTH_LOGIN_SUCCEEDED'
+  | 'AUTH_LOGIN_FAILED'
+  | 'AUTH_LOGIN_THROTTLED'
+  | 'AUTH_LOGOUT'
+  | 'AUTH_OIDC_LOGIN_SUCCEEDED'
+  | 'AUTH_OIDC_LOGIN_REJECTED'
+  | 'ADMIN_USER_CREATED'
+  | 'ADMIN_USER_PASSWORD_RESET'
+  | 'ADMIN_GOOGLE_DRIVE_CONNECTED'
+  | 'DATA_REPORT_EXPORTED'
+  | 'DATA_EVIDENCE_DOWNLOADED';
+
+interface SecurityEvent {
+  id: string;
+  type: SecurityEventType;
+  occurredAt: string;
+  outcome: 'SUCCESS' | 'FAILURE';
+  detail: string;
+  actorUserId?: string;
+  actorName?: string;
+  actorRole?: string;
+  subject?: string;
+  ipAddress?: string;
+}
+
+let securityEvents: SecurityEvent[] = [];
+
+/**
+ * Đếm số lần đăng nhập sai theo **tên đăng nhập đã chuẩn hoá, bất kể tài khoản có tồn tại hay
+ * không** — nếu chỉ đếm cho tài khoản có thật thì phản hồi 429 sẽ trở thành máy dò xem username
+ * nào tồn tại. Bộ đếm nằm trong state bền vững nên khoá vẫn có hiệu lực khi Vercel dựng instance
+ * mới; đây là lý do không dùng bộ đếm trong RAM cho lớp bảo vệ này.
+ */
+interface LoginAttemptRecord {
+  key: string;
+  failedCount: number;
+  firstFailedAt: string;
+  lastFailedAt: string;
+  lockedUntil?: string;
+}
+
+let loginAttempts: LoginAttemptRecord[] = [];
+
 interface LocalAppState {
   orgUnits: OrgUnit[];
   appUsers: UserProfile[];
@@ -835,6 +930,8 @@ interface LocalAppState {
   auditCampaigns?: AuditCampaign[];
   credentials?: CredentialEntry[];
   googleDriveOAuthCredential?: GoogleDriveOAuthCredential;
+  securityEvents?: SecurityEvent[];
+  loginAttempts?: LoginAttemptRecord[];
 }
 
 /**
@@ -904,7 +1001,7 @@ const hydratedState = await stateRepository.load({
   importBatches, slaExtensions, reportDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
   workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
   credentials: credentialDirectory,
-  googleDriveOAuthCredential,
+  googleDriveOAuthCredential, securityEvents, loginAttempts,
 });
 orgUnits = hydratedState.orgUnits;
 appUsers = hydratedState.appUsers;
@@ -946,6 +1043,8 @@ findingFollows = hydratedState.findingFollows ?? [];
 workspaceAccepted = hydratedState.workspaceAccepted ?? [];
 workspaceWatchTargets = hydratedState.workspaceWatchTargets ?? [];
 authSessions = hydratedState.authSessions ?? [];
+securityEvents = hydratedState.securityEvents ?? [];
+loginAttempts = hydratedState.loginAttempts ?? [];
 authSessionStore = new AuthSessionStore({ records: authSessions });
 auditCampaigns = hydratedState.auditCampaigns?.length ? hydratedState.auditCampaigns : auditCampaigns;
 googleDriveOAuthCredential = hydratedState.googleDriveOAuthCredential;
@@ -1112,7 +1211,7 @@ function currentLocalState(): LocalAppState {
     importBatches, slaExtensions, reportDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
     workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
     credentials: credentialDirectory,
-    googleDriveOAuthCredential,
+    googleDriveOAuthCredential, securityEvents, loginAttempts,
   };
 }
 
@@ -1135,6 +1234,8 @@ function restoreDurableLocalState(restored: LocalAppState): void {
   workspaceAccepted = restored.workspaceAccepted ?? [];
   workspaceWatchTargets = restored.workspaceWatchTargets ?? [];
   authSessions = restored.authSessions ?? [];
+  securityEvents = restored.securityEvents ?? [];
+  loginAttempts = restored.loginAttempts ?? [];
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
   if (restored.credentials?.length) credentialDirectory = restored.credentials;
@@ -1356,6 +1457,113 @@ function getCurrentUser(req: FastifyRequest): UserProfile {
     throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Không tìm thấy ngữ cảnh người dùng cho yêu cầu.');
   }
   return user;
+}
+
+/**
+ * Giữ lại bao nhiêu bản ghi an ninh gần nhất. Nhật ký nằm chung blob state với dữ liệu nghiệp vụ,
+ * nên nó phải có trần — một nhật ký không giới hạn sẽ làm phình snapshot cho tới lúc mọi thao tác
+ * ghi đều chậm. Ở nhịp dùng nội bộ, 5.000 bản ghi phủ nhiều tháng.
+ */
+const SECURITY_EVENT_RETENTION = 5_000;
+
+function recordSecurityEvent(event: Omit<SecurityEvent, 'id' | 'occurredAt'>): void {
+  securityEvents.push({ ...event, id: `sec-${crypto.randomUUID()}`, occurredAt: new Date().toISOString() });
+  if (securityEvents.length > SECURITY_EVENT_RETENTION) {
+    securityEvents = securityEvents.slice(-SECURITY_EVENT_RETENTION);
+  }
+}
+
+/** Ghi lại nhật ký an ninh cho một người dùng đã xác thực, kèm IP để lần vết được. */
+function recordUserSecurityEvent(
+  req: FastifyRequest,
+  user: UserProfile,
+  event: Omit<SecurityEvent, 'id' | 'occurredAt' | 'actorUserId' | 'actorName' | 'actorRole' | 'ipAddress'>,
+): void {
+  recordSecurityEvent({
+    ...event,
+    actorUserId: user.id,
+    actorName: user.fullName,
+    actorRole: user.primaryRole,
+    ipAddress: req.ip,
+  });
+}
+
+// ----------------------------------------------------
+// CHỐNG DÒ MẬT KHẨU
+// ----------------------------------------------------
+
+const LOGIN_FAILURE_LIMIT = 8;
+const LOGIN_FAILURE_WINDOW_MS = 15 * 60_000;
+const LOGIN_LOCKOUT_MS = 15 * 60_000;
+
+/**
+ * Trần thô theo tiến trình cho riêng route đăng nhập. Mỗi lần thử tốn một phép scrypt (~50–100ms
+ * CPU), nên ngoài việc dò mật khẩu thì đây còn là đường làm cạn CPU của một function có hạn mức
+ * 60 giây. Bộ đếm này cố tình nằm trong RAM và không theo IP: sau proxy của Vercel mọi yêu cầu
+ * mang cùng một IP, đếm theo IP sẽ khoá nhầm toàn bộ người dùng thật.
+ */
+// Đặt rộng có chủ đích: lớp chặn dò mật khẩu chính xác là khoá theo tên đăng nhập ở trên, còn
+// trần này chỉ để chặn kịch bản bắn hàng nghìn lượt/phút. Đặt sát quá sẽ khoá nhầm đợt đăng nhập
+// đầu giờ của cả mạng lưới chi nhánh khi họ rơi vào cùng một instance.
+const LOGIN_BURST_LIMIT = 300;
+const LOGIN_BURST_WINDOW_MS = 60_000;
+let loginBurstWindowStartedAt = 0;
+let loginBurstCount = 0;
+
+function assertLoginBurstAllowed(now: number): void {
+  if (now - loginBurstWindowStartedAt > LOGIN_BURST_WINDOW_MS) {
+    loginBurstWindowStartedAt = now;
+    loginBurstCount = 0;
+  }
+  loginBurstCount += 1;
+  if (loginBurstCount > LOGIN_BURST_LIMIT) {
+    throw new HttpProblem(429, 'LOGIN_RATE_LIMITED', 'Quá nhiều yêu cầu đăng nhập', 'Máy chủ đang nhận quá nhiều lượt đăng nhập. Hãy thử lại sau một phút.');
+  }
+}
+
+function pruneLoginAttempts(nowMs: number): boolean {
+  const before = loginAttempts.length;
+  loginAttempts = loginAttempts.filter(item => (
+    (item.lockedUntil ? Date.parse(item.lockedUntil) > nowMs : false)
+    || nowMs - Date.parse(item.lastFailedAt) <= LOGIN_FAILURE_WINDOW_MS
+  ));
+  return loginAttempts.length !== before;
+}
+
+/** Ném 429 khi tên đăng nhập đang bị khoá tạm thời. Trả về phút còn lại để thông báo cho người dùng. */
+function assertLoginNotLocked(usernameKey: string, nowMs: number): void {
+  const record = loginAttempts.find(item => item.key === usernameKey);
+  if (!record?.lockedUntil) return;
+  const remainingMs = Date.parse(record.lockedUntil) - nowMs;
+  if (remainingMs <= 0) return;
+  const minutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+  throw new HttpProblem(
+    429,
+    'LOGIN_TEMPORARILY_LOCKED',
+    'Tài khoản tạm khoá',
+    `Đã nhập sai mật khẩu quá ${LOGIN_FAILURE_LIMIT} lần. Hãy thử lại sau khoảng ${minutes} phút hoặc liên hệ quản trị viên để đặt lại mật khẩu.`,
+  );
+}
+
+function recordLoginFailure(usernameKey: string, nowMs: number): { locked: boolean } {
+  const now = new Date(nowMs).toISOString();
+  let record = loginAttempts.find(item => item.key === usernameKey);
+  if (!record || nowMs - Date.parse(record.firstFailedAt) > LOGIN_FAILURE_WINDOW_MS) {
+    record = { key: usernameKey, failedCount: 0, firstFailedAt: now, lastFailedAt: now };
+    loginAttempts = [...loginAttempts.filter(item => item.key !== usernameKey), record];
+  }
+  record.failedCount += 1;
+  record.lastFailedAt = now;
+  if (record.failedCount >= LOGIN_FAILURE_LIMIT) {
+    record.lockedUntil = new Date(nowMs + LOGIN_LOCKOUT_MS).toISOString();
+  }
+  return { locked: Boolean(record.lockedUntil) };
+}
+
+function clearLoginFailures(usernameKey: string): boolean {
+  const before = loginAttempts.length;
+  loginAttempts = loginAttempts.filter(item => item.key !== usernameKey);
+  return loginAttempts.length !== before;
 }
 
 function filterFindingsByScope(items: Finding[], user: UserProfile): Finding[] {
@@ -1944,14 +2152,28 @@ function rememberIdempotentResponse(
 
 // Healthcheck
 app.get('/api/v1/health', async () => ({ status: 'UP', timestamp: new Date().toISOString() }));
+/**
+ * `warning` của hai kiểm tra dưới đây mang nguyên văn thông điệp lỗi của driver: chuỗi lỗi `pg`
+ * thường lộ host, cổng, tên database và cả lý do xác thực thất bại, còn lỗi Drive lộ chi tiết
+ * cấu hình credential. Vì `/api/v1/ready` là endpoint công khai (probe hạ tầng cần gọi được),
+ * mặc định phải cắt phần chi tiết đó; chỉ quản trị viên đã đăng nhập mới nhận bản đầy đủ.
+ */
+const REDACTED_DIAGNOSTIC = 'Chi tiết lỗi chỉ hiển thị cho quản trị viên đã đăng nhập.';
+
 export function buildReadinessPayload(
   dataStore: StateRepositoryStatus,
   evidenceStorage: EvidenceStorageStatus,
+  options: { includeDiagnostics?: boolean } = {},
 ) {
+  const includeDiagnostics = options.includeDiagnostics ?? false;
+  const diagnostic = (warning: string | undefined, fallback: string): string => (
+    includeDiagnostics ? warning ?? fallback : REDACTED_DIAGNOSTIC
+  );
+
   const postgresUnavailable = dataStore.mode === 'postgres' && !dataStore.ready;
   const dataStoreMessage = dataStore.mode === 'postgres'
     ? postgresUnavailable
-      ? `Postgres không sẵn sàng. ${dataStore.warning ?? 'Không thể xác nhận kết nối database.'}`
+      ? `Postgres không sẵn sàng. ${diagnostic(dataStore.warning, 'Không thể xác nhận kết nối database.')}`
       : 'Postgres đã kết nối; state đang lưu bền vững ngoài filesystem serverless.'
     : dataStore.durable
       ? 'Local mode đang lưu trạng thái bền vững bằng JSON nguyên tử.'
@@ -1959,25 +2181,42 @@ export function buildReadinessPayload(
   const evidenceMessage = evidenceStorage.ready
     ? ''
     : evidenceStorage.mode === 'google-drive'
-      ? ` Google Drive chưa sẵn sàng. ${evidenceStorage.warning ?? 'Adapter API v3 chưa được cài đặt.'} Hệ thống không fallback local.`
-      : ` Chế độ lưu minh chứng không hợp lệ. ${evidenceStorage.warning ?? 'Cần cấu hình EVIDENCE_STORAGE_MODE hợp lệ.'} Hệ thống không fallback local.`;
+      ? ` Google Drive chưa sẵn sàng. ${diagnostic(evidenceStorage.warning, 'Adapter API v3 chưa được cài đặt.')} Hệ thống không fallback local.`
+      : ` Chế độ lưu minh chứng không hợp lệ. ${diagnostic(evidenceStorage.warning, 'Cần cấu hình EVIDENCE_STORAGE_MODE hợp lệ.')} Hệ thống không fallback local.`;
   const ready = !postgresUnavailable && evidenceStorage.ready;
   const message = `${dataStoreMessage}${evidenceMessage} Chưa phải trạng thái production-ready.`;
+  // Chỉ nhánh Postgres của StateRepositoryStatus mới có trường warning, nên phải hỏi trước khi đọc.
+  const redactedDataStore: StateRepositoryStatus = includeDiagnostics
+    || !('warning' in dataStore) || dataStore.warning === undefined
+    ? dataStore
+    : { ...dataStore, warning: REDACTED_DIAGNOSTIC };
+  const redactedEvidenceStorage: EvidenceStorageStatus = includeDiagnostics || evidenceStorage.warning === undefined
+    ? evidenceStorage
+    : { ...evidenceStorage, warning: REDACTED_DIAGNOSTIC };
   return {
     status: 'DEGRADED' as const,
     ready,
     checks: {
-      dataStore,
-      evidenceStorage,
+      dataStore: redactedDataStore,
+      evidenceStorage: redactedEvidenceStorage,
       auth: { mode: 'local-credential-session', productionSafe: false },
     },
     message,
   };
 }
 
-app.get('/api/v1/ready', async () => buildReadinessPayload(
+/** Xác định người gọi có phải quản trị viên đã đăng nhập không, mà không ném lỗi khi chưa đăng nhập. */
+function optionalAdminViewer(request: FastifyRequest): UserProfile | undefined {
+  const session = authSessionStore.resolve(cookieValue(request, 'audit_bgs_session') ?? '');
+  if (!session) return undefined;
+  const user = appUsers.find(item => item.id === session.userId && item.isActive);
+  return user?.roles.includes('ADMIN') ? user : undefined;
+}
+
+app.get('/api/v1/ready', async (req) => buildReadinessPayload(
   await stateRepository.getStatus(),
   await googleDriveService.getStorageStatus(),
+  { includeDiagnostics: Boolean(optionalAdminViewer(req)) },
 ));
 
 function requireCronAuthorization(request: FastifyRequest): void {
@@ -2044,6 +2283,11 @@ app.get('/api/v1/integrations/google-drive/callback', async (req: FastifyRequest
     googleDriveService.setOAuthRefreshToken(undefined);
     throw new HttpProblem(503, 'GOOGLE_OAUTH_TOKEN_STORAGE_FAILED', 'Không thể lưu kết nối Google Drive', 'Kiểm tra GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY rồi kết nối lại.');
   }
+  recordUserSecurityEvent(req, user, {
+    type: 'ADMIN_GOOGLE_DRIVE_CONNECTED',
+    outcome: 'SUCCESS',
+    detail: 'Đấu nối Google Drive cá nhân làm kho minh chứng.',
+  });
   await persistLocalState();
   return reply.type('text/html; charset=utf-8').send('<!doctype html><html lang="vi"><head><meta charset="utf-8"><title>Google Drive đã kết nối</title></head><body><p>Đã kết nối Google Drive cá nhân. Bạn có thể đóng cửa sổ này và quay lại AuditBGS.</p></body></html>');
 });
@@ -2076,8 +2320,22 @@ app.get('/api/v1/auth/google/callback', async (req: FastifyRequest<{
   const user = appUsers.find(candidate => candidate.isActive && [candidate.email, candidate.googleWorkspaceEmail]
     .some(candidateEmail => candidateEmail?.toLocaleLowerCase('en-US') === email));
   if (!user) {
+    recordSecurityEvent({
+      type: 'AUTH_OIDC_LOGIN_REJECTED',
+      outcome: 'FAILURE',
+      subject: email,
+      detail: 'Email Google đã xác thực nhưng chưa được cấp tài khoản trong hệ thống.',
+      ipAddress: req.ip,
+    });
+    await persistLocalState();
     throw new HttpProblem(403, 'GOOGLE_OIDC_USER_NOT_PROVISIONED', 'Tài khoản Google chưa được cấp quyền', 'Quản trị viên cần tạo user và gán role cho email Google này trước.');
   }
+  recordUserSecurityEvent(req, user, {
+    type: 'AUTH_OIDC_LOGIN_SUCCEEDED',
+    outcome: 'SUCCESS',
+    subject: email,
+    detail: 'Đăng nhập bằng Google OIDC.',
+  });
   await createAuthenticatedSession(user, reply);
   return reply.redirect(oidc.returnTo);
 });
@@ -2087,15 +2345,59 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   if (process.env.AUTH_MODE === 'oidc') {
     throw new HttpProblem(405, 'OIDC_LOGIN_REQUIRED', 'Hãy đăng nhập bằng Google', 'Môi trường này chỉ chấp nhận Google OIDC.');
   }
+  const nowMs = Date.now();
+  assertLoginBurstAllowed(nowMs);
   const credentials = LoginSchema.parse(req.body);
   const normalizedUsername = credentials.username.toLocaleLowerCase('vi-VN');
+
+  // Khoá được tra cứu trước khi chạm tới credentialDirectory, và đếm cho mọi tên đăng nhập kể cả
+  // tên không tồn tại — nếu chỉ khoá tài khoản có thật thì 429 sẽ tố cáo tài khoản nào tồn tại.
+  pruneLoginAttempts(nowMs);
+  try {
+    assertLoginNotLocked(normalizedUsername, nowMs);
+  } catch (error) {
+    recordSecurityEvent({
+      type: 'AUTH_LOGIN_THROTTLED',
+      outcome: 'FAILURE',
+      subject: normalizedUsername,
+      detail: 'Từ chối đăng nhập vì tên đăng nhập đang bị khoá tạm thời.',
+      ipAddress: req.ip,
+    });
+    await persistLocalState();
+    throw error;
+  }
+
   const directoryEntry = credentialDirectory.find(item => item.username === normalizedUsername);
   // Always verify a hash, even for an unknown username, so timing does not disclose existence.
   const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? unknownUserPasswordHash);
   const user = directoryEntry ? appUsers.find(item => item.id === directoryEntry.userId && item.isActive) : undefined;
   if (!passwordValid || !user) {
+    const { locked } = recordLoginFailure(normalizedUsername, nowMs);
+    recordSecurityEvent({
+      type: 'AUTH_LOGIN_FAILED',
+      outcome: 'FAILURE',
+      subject: normalizedUsername,
+      detail: locked
+        ? `Sai mật khẩu; đã khoá tạm thời ${LOGIN_LOCKOUT_MS / 60_000} phút sau ${LOGIN_FAILURE_LIMIT} lần sai.`
+        : 'Tài khoản hoặc mật khẩu không đúng.',
+      ipAddress: req.ip,
+    });
+    await persistLocalState();
     throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
   }
+
+  // Đăng nhập đúng xoá bộ đếm sai; createAuthenticatedSession bên dưới ghi state ngay sau đó.
+  clearLoginFailures(normalizedUsername);
+  recordSecurityEvent({
+    type: 'AUTH_LOGIN_SUCCEEDED',
+    outcome: 'SUCCESS',
+    actorUserId: user.id,
+    actorName: user.fullName,
+    actorRole: user.primaryRole,
+    subject: normalizedUsername,
+    detail: 'Đăng nhập bằng tên đăng nhập và mật khẩu.',
+    ipAddress: req.ip,
+  });
 
   const expiresAt = await createAuthenticatedSession(user, reply);
   return { user, expiresAt };
@@ -2103,7 +2405,20 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
 
 app.post('/api/v1/auth/logout', async (req, reply) => {
   const token = cookieValue(req, 'audit_bgs_session');
+  const endingSession = token ? authSessionStore.resolve(token) : undefined;
   if (token) authSessionStore.revoke(token);
+  if (endingSession) {
+    const owner = appUsers.find(item => item.id === endingSession.userId);
+    recordSecurityEvent({
+      type: 'AUTH_LOGOUT',
+      outcome: 'SUCCESS',
+      actorUserId: endingSession.userId,
+      actorName: owner?.fullName,
+      actorRole: owner?.primaryRole,
+      detail: 'Kết thúc phiên đăng nhập.',
+      ipAddress: req.ip,
+    });
+  }
   authSessions = authSessionStore.records();
   await persistLocalState();
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
@@ -2157,6 +2472,37 @@ app.patch('/api/v1/admin/campaigns/:id', async (req: FastifyRequest<{ Params: { 
   auditCampaigns[index] = { ...current, ...changes, version: current.version + 1, updatedAt: new Date().toISOString() };
   await persistLocalState();
   return auditCampaigns[index];
+});
+
+app.delete('/api/v1/admin/campaigns/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  requireAdmin(getCurrentUser(req));
+  const index = auditCampaigns.findIndex(item => item.id === req.params.id);
+  if (index < 0) throw new HttpProblem(404, 'CAMPAIGN_NOT_FOUND', 'Không tìm thấy chuyên đề', 'Chuyên đề không tồn tại.');
+  const campaign = auditCampaigns[index];
+  if (campaign.status !== 'DRAFT') {
+    throw new HttpProblem(409, 'CAMPAIGN_DELETE_REQUIRES_DRAFT', 'Chưa thể xóa chuyên đề', 'Chỉ có thể xóa chuyên đề ở trạng thái nháp. Hãy đóng và lưu trữ chuyên đề đã vận hành.');
+  }
+  if (findings.some(finding => finding.campaignId === campaign.id)) {
+    throw new HttpProblem(409, 'CAMPAIGN_HAS_FINDINGS', 'Chưa thể xóa chuyên đề', 'Chuyên đề đã có hồ sơ liên quan nên không được xóa để bảo toàn lịch sử.');
+  }
+  auditCampaigns.splice(index, 1);
+  await persistLocalState();
+  return reply.code(204).send();
+});
+
+app.post('/api/v1/admin/campaigns/import-draft', async (req, reply) => {
+  requireAdmin(getCurrentUser(req));
+  const data = await req.file();
+  if (!data) throw new HttpProblem(422, 'CAMPAIGN_IMPORT_FILE_REQUIRED', 'Thiếu tệp chuyên đề', 'Hãy tải lên một tệp DOCX, PDF hoặc Excel.');
+  const buffer = await data.toBuffer();
+  try {
+    return reply.send(await extractCampaignImportDraft(data.filename, buffer));
+  } catch (error) {
+    if (error instanceof CampaignDocumentImportError) {
+      throw new HttpProblem(422, 'CAMPAIGN_IMPORT_UNREADABLE', 'Không thể bóc tách tệp chuyên đề', error.message);
+    }
+    throw error;
+  }
 });
 
 app.post('/api/v1/admin/campaigns/:id/provision-drive', async (req: FastifyRequest<{ Params: { id: string } }>) => {
@@ -2254,35 +2600,56 @@ app.get('/api/v1/org-units/branches', async (req) => {
 // Admin: Org Units
 app.get('/api/v1/admin/org-units', async (req) => {
   requireAdmin(getCurrentUser(req));
-  return orgUnits.map(unit => {
-    const parent = orgUnits.find(candidate => candidate.id === unit.parentId);
-    const leader = appUsers.find(candidate => candidate.id === unit.leaderUserId);
-    return {
-      ...unit,
-      parentName: parent?.name,
-      leaderName: leader?.fullName ?? unit.leaderName,
-    };
-  });
+  return orgUnits.map(projectOrgUnit);
 });
-app.post('/api/v1/admin/org-units', async (req: FastifyRequest<{ Body: any }>) => {
-  requireAdmin(getCurrentUser(req));
-  const body = CreateOrgUnitSchema.parse(req.body);
-  if (orgUnits.some(unit => unit.code.toLowerCase() === body.code.toLowerCase())) {
-    throw new HttpProblem(409, 'ORG_UNIT_CODE_EXISTS', 'Mã đơn vị đã tồn tại', 'Vui lòng sử dụng một mã đơn vị khác.');
-  }
+
+function projectOrgUnit(unit: OrgUnit): OrgUnit {
+  const parent = orgUnits.find(candidate => candidate.id === unit.parentId);
+  const leader = appUsers.find(candidate => candidate.id === unit.leaderUserId);
+  return { ...unit, parentName: parent?.name, leaderName: leader?.fullName ?? unit.leaderName };
+}
+
+function assertOrgUnitParent(type: OrgUnit['type'], parentId: string | undefined, ownId?: string): void {
   const expectedParentType = {
     INTERNAL_TEAM: 'HEAD_OFFICE',
     CLUSTER: 'HEAD_OFFICE',
     BRANCH: 'CLUSTER',
     DEPARTMENT: 'BRANCH',
   } as const;
-  if (body.type !== 'HEAD_OFFICE') {
-    const parent = orgUnits.find(unit => unit.id === body.parentId);
-    const requiredType = expectedParentType[body.type];
-    if (!parent || parent.type !== requiredType) {
-      throw new HttpProblem(422, 'ORG_PARENT_INVALID', 'Đơn vị cha không hợp lệ', `${body.type} phải trực thuộc ${requiredType}.`);
-    }
+  if (type === 'HEAD_OFFICE') {
+    if (parentId) throw new HttpProblem(422, 'ORG_PARENT_INVALID', 'Đơn vị cha không hợp lệ', 'Hội sở không được trực thuộc đơn vị khác.');
+    return;
   }
+  const parent = orgUnits.find(unit => unit.id === parentId);
+  const requiredType = expectedParentType[type];
+  if (!parent || parent.id === ownId || parent.type !== requiredType) {
+    throw new HttpProblem(422, 'ORG_PARENT_INVALID', 'Đơn vị cha không hợp lệ', `${type} phải trực thuộc ${requiredType}.`);
+  }
+}
+
+function assertOrgUnitLeader(leaderUserId: string | undefined): void {
+  if (leaderUserId && !appUsers.some(user => user.id === leaderUserId && user.isActive)) {
+    throw new HttpProblem(422, 'ORG_LEADER_INVALID', 'Người phụ trách không hợp lệ', 'Người phụ trách phải là tài khoản đang hoạt động.');
+  }
+}
+
+function dependentOrgUnitReferences(unit: OrgUnit): string[] {
+  const references: string[] = [];
+  if (orgUnits.some(candidate => candidate.parentId === unit.id)) references.push('đơn vị con');
+  if (appUsers.some(user => user.orgUnitId === unit.id || user.internalTeamId === unit.id || user.branchCode === unit.code)) references.push('người dùng đang phân công');
+  if (findings.some(finding => finding.branchCode === unit.code)) references.push('hồ sơ lịch sử');
+  if (auditCampaigns.some(campaign => campaign.branchCodes.includes(unit.code))) references.push('chuyên đề đang tham chiếu');
+  return references;
+}
+
+app.post('/api/v1/admin/org-units', async (req: FastifyRequest<{ Body: any }>) => {
+  requireAdmin(getCurrentUser(req));
+  const body = CreateOrgUnitSchema.parse(req.body);
+  if (orgUnits.some(unit => unit.code.toLowerCase() === body.code.toLowerCase())) {
+    throw new HttpProblem(409, 'ORG_UNIT_CODE_EXISTS', 'Mã đơn vị đã tồn tại', 'Vui lòng sử dụng một mã đơn vị khác.');
+  }
+  assertOrgUnitParent(body.type, body.parentId);
+  assertOrgUnitLeader(body.leaderUserId);
   const newUnit: OrgUnit = {
     id: `org-${crypto.randomUUID()}`,
     code: body.code,
@@ -2297,7 +2664,58 @@ app.post('/api/v1/admin/org-units', async (req: FastifyRequest<{ Body: any }>) =
   };
   orgUnits.push(newUnit);
   await persistLocalState();
-  return newUnit;
+  return projectOrgUnit(newUnit);
+});
+
+app.patch('/api/v1/admin/org-units/:id', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  requireAdmin(getCurrentUser(req));
+  const body = UpdateOrgUnitSchema.parse(req.body);
+  const index = orgUnits.findIndex(unit => unit.id === req.params.id);
+  if (index < 0) throw new HttpProblem(404, 'ORG_UNIT_NOT_FOUND', 'Không tìm thấy đơn vị', 'Đơn vị không tồn tại.');
+  const current = orgUnits[index];
+  if (current.updatedAt !== body.expectedUpdatedAt) {
+    throw new HttpProblem(409, 'ORG_UNIT_VERSION_CONFLICT', 'Đơn vị đã thay đổi', 'Hãy tải lại dữ liệu mới nhất trước khi lưu.');
+  }
+  const requestedCode = body.code;
+  if (requestedCode !== undefined && orgUnits.some(unit => unit.id !== current.id && unit.code.toLocaleLowerCase('vi-VN') === requestedCode.toLocaleLowerCase('vi-VN'))) {
+    throw new HttpProblem(409, 'ORG_UNIT_CODE_EXISTS', 'Mã đơn vị đã tồn tại', 'Vui lòng sử dụng một mã đơn vị khác.');
+  }
+  const nextParentId = body.parentId === null ? undefined : body.parentId ?? current.parentId;
+  assertOrgUnitParent(current.type, nextParentId, current.id);
+  const nextLeaderUserId = body.leaderUserId === null ? undefined : body.leaderUserId ?? current.leaderUserId;
+  assertOrgUnitLeader(nextLeaderUserId);
+  if (body.isActive === false) {
+    const references = dependentOrgUnitReferences(current);
+    if (references.length) throw new HttpProblem(409, 'ORG_UNIT_HAS_DEPENDENCIES', 'Chưa thể ngừng hoạt động đơn vị', `Hãy xử lý ${references.join(', ')} trước khi ngừng hoạt động đơn vị.`);
+  }
+  const { expectedUpdatedAt: _expectedUpdatedAt, ...changes } = body;
+  orgUnits[index] = {
+    ...current,
+    ...changes,
+    parentId: nextParentId,
+    leaderUserId: nextLeaderUserId,
+    metadata: body.metadata === null ? undefined : body.metadata ?? current.metadata,
+    updatedAt: new Date().toISOString(),
+  };
+  await persistLocalState();
+  return projectOrgUnit(orgUnits[index]);
+});
+
+app.delete('/api/v1/admin/org-units/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  requireAdmin(getCurrentUser(req));
+  const index = orgUnits.findIndex(unit => unit.id === req.params.id);
+  if (index < 0) throw new HttpProblem(404, 'ORG_UNIT_NOT_FOUND', 'Không tìm thấy đơn vị', 'Đơn vị không tồn tại.');
+  const current = orgUnits[index];
+  if (current.type === 'HEAD_OFFICE') {
+    throw new HttpProblem(409, 'ORG_UNIT_ROOT_PROTECTED', 'Không thể xóa Hội sở', 'Hội sở là đơn vị gốc của cơ cấu tổ chức.');
+  }
+  const references = dependentOrgUnitReferences(current);
+  if (references.length) {
+    throw new HttpProblem(409, 'ORG_UNIT_HAS_DEPENDENCIES', 'Chưa thể xóa đơn vị', `Hãy xử lý ${references.join(', ')} trước khi xóa đơn vị.`);
+  }
+  orgUnits.splice(index, 1);
+  await persistLocalState();
+  return reply.code(204).send();
 });
 
 // Admin: Users
@@ -2403,6 +2821,12 @@ app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: any }>) => {
   });
 
   appUsers.push(newUser);
+  recordUserSecurityEvent(req, getCurrentUser(req), {
+    type: 'ADMIN_USER_CREATED',
+    outcome: 'SUCCESS',
+    subject: newUser.username,
+    detail: `Cấp tài khoản ${newUser.fullName} với vai trò ${newUser.roles.join(', ')} (${newUser.portal}).`,
+  });
   if (internalTeam && body.teamRole === 'LEAD') {
     internalTeam.leaderUserId = newUser.id;
     internalTeam.leaderName = newUser.fullName;
@@ -2427,7 +2851,14 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
   else credentialDirectory.push({ userId: user.id, username: user.username.toLocaleLowerCase('vi-VN'), passwordHash });
 
   // Đổi mật khẩu phải đá mọi phiên đang mở, nếu không người bị thu hồi vẫn dùng tiếp được.
-  authSessionStore.revokeAllForUser(user.id);
+  const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+  clearLoginFailures(user.username.toLocaleLowerCase('vi-VN'));
+  recordUserSecurityEvent(req, getCurrentUser(req), {
+    type: 'ADMIN_USER_PASSWORD_RESET',
+    outcome: 'SUCCESS',
+    subject: user.username,
+    detail: `Đặt lại mật khẩu cho ${user.fullName}; thu hồi ${revokedSessions} phiên đang mở.`,
+  });
   authSessions = authSessionStore.records();
   await persistLocalState();
   return { user, temporaryPassword } satisfies CreatedUserResponse;
@@ -2572,9 +3003,7 @@ app.delete('/api/v1/admin/channels/:id', async (req: FastifyRequest<{ Params: { 
 
 // Admin: authoritative workflow audit trail from durable local state.
 // Production still needs an append-only database sink before this can be called immutable.
-app.get('/api/v1/admin/audit-events', async (req) => {
-  requireAdmin(getCurrentUser(req));
-
+function getAuditLogEntries(): AuditLogEntry[] {
   return workflowEvents
     .map<AuditLogEntry>((event) => {
       const finding = findings.find(item => item.id === event.findingId);
@@ -2592,7 +3021,95 @@ app.get('/api/v1/admin/audit-events', async (req) => {
         branchCode: finding?.branchCode ?? '',
       };
     })
+    // Nhật ký an ninh trộn chung vào đúng luồng này thay vì đứng ở endpoint riêng: quản trị viên
+    // điều tra một sự việc cần thấy "ai đăng nhập, ai xuất dữ liệu" nằm cùng dòng thời gian với
+    // "hồ sơ đi qua bước nào", và màn hình Nhật ký xử lý sẵn có hiển thị được ngay.
+    .concat(securityEvents.map<AuditLogEntry>(event => ({
+      id: event.id,
+      timestamp: event.occurredAt,
+      eventType: event.type,
+      actorName: event.actorName ?? event.subject ?? 'Không xác định',
+      actorRole: event.actorRole ?? '',
+      targetEntity: event.subject ?? 'Hệ thống',
+      details: event.ipAddress ? `${event.detail} (IP ${event.ipAddress})` : event.detail,
+      findingId: '',
+      cif: '',
+      errorCode: '',
+      branchCode: '',
+    })))
     .sort((left, right) => right.timestamp.localeCompare(left.timestamp));
+}
+
+function filterAuditLogEntries(entries: AuditLogEntry[], query?: string): AuditLogEntry[] {
+  const keyword = query?.trim().toLocaleLowerCase('vi');
+  if (!keyword) return entries;
+  return entries.filter(entry => [
+    entry.eventType,
+    entry.actorName,
+    entry.actorRole,
+    entry.targetEntity,
+    entry.details,
+    entry.cif,
+    entry.errorCode,
+    entry.branchCode,
+  ].some(value => value.toLocaleLowerCase('vi').includes(keyword)));
+}
+
+function auditCsvCell(value: string): string {
+  return `"${value.replaceAll('"', '""')}"`;
+}
+
+function canClearTestAuditEvents(): boolean {
+  return DEMO_SEED_ENABLED && process.env.NODE_ENV !== 'production' && process.env.DATA_STORE_MODE !== 'postgres';
+}
+
+app.get('/api/v1/admin/audit-events', async (req) => {
+  requireAdmin(getCurrentUser(req));
+  return getAuditLogEntries();
+});
+
+app.get('/api/v1/admin/audit-events/export', async (
+  req: FastifyRequest<{ Querystring: { query?: string } }>,
+  reply,
+) => {
+  requireAdmin(getCurrentUser(req));
+  const rows = filterAuditLogEntries(getAuditLogEntries(), req.query.query).map(entry => [
+    entry.timestamp,
+    entry.eventType,
+    entry.actorName,
+    entry.actorRole,
+    entry.targetEntity,
+    entry.details,
+    entry.cif,
+    entry.errorCode,
+    entry.branchCode,
+  ].map(auditCsvCell).join(','));
+  const csv = [
+    'Thời gian,Sự kiện,Người thao tác,Vai trò,Đối tượng,Chi tiết,CIF,Mã lỗi,Mã chi nhánh',
+    ...rows,
+  ].join('\n');
+  const date = new Date().toISOString().slice(0, 10);
+  return reply
+    .type('text/csv; charset=utf-8')
+    .header('Content-Disposition', `attachment; filename="nhat-ky-xu-ly-${date}.csv"`)
+    .send(`\uFEFF${csv}`);
+});
+
+app.delete('/api/v1/admin/audit-events', async (req) => {
+  requireAdmin(getCurrentUser(req));
+  if (!canClearTestAuditEvents()) {
+    throw new HttpProblem(
+      409,
+      'AUDIT_LOG_CLEAR_FORBIDDEN',
+      'Không thể xóa nhật ký vận hành',
+      'Chỉ môi trường local/test có dữ liệu thử nghiệm mới cho phép xóa nhật ký.',
+    );
+  }
+  const cleared = workflowEvents.length + securityEvents.length;
+  workflowEvents = [];
+  securityEvents = [];
+  await persistLocalState();
+  return { cleared };
 });
 
 app.get('/api/v1/workspace/my-work', async (req) => {
@@ -3339,8 +3856,29 @@ app.get('/api/v1/evidence/:driveFileId/content', async (req: FastifyRequest<{ Pa
     throw new HttpProblem(404, 'EVIDENCE_CONTENT_NOT_FOUND', 'Không tìm thấy nội dung minh chứng', 'Metadata tồn tại nhưng nội dung tệp hiện không khả dụng.');
   }
 
-  reply.header('Content-Disposition', buildInlineContentDisposition(result.fileName));
-  reply.header('Content-Type', result.mimeType);
+  /**
+   * Kiểu nội dung lấy từ bản ghi minh chứng đã qua validateUploadMetadata, KHÔNG lấy từ metadata
+   * mà kho trả về. Thư mục Drive được chia sẻ cho người thật qua SYNC_CAMPAIGN_ACL, nên ai có
+   * quyền ghi trên Drive đều có thể thay tệp bằng HTML; phục vụ nguyên kiểu do kho khai báo sẽ
+   * biến một tệp minh chứng thành script chạy trên chính origin của ứng dụng. nosniff chặn nốt
+   * đường trình duyệt tự đoán kiểu, và chỉ PDF/ảnh mới được mở inline.
+   */
+  const mimeType = evidence.mimeType;
+  const fileName = evidence.fileName || result.fileName;
+  reply.header('Content-Disposition', isInlineSafeMimeType(mimeType)
+    ? buildInlineContentDisposition(fileName)
+    : buildAttachmentContentDisposition(fileName));
+  reply.header('Content-Type', mimeType);
+  reply.header('X-Content-Type-Options', 'nosniff');
+
+  recordUserSecurityEvent(req, user, {
+    type: 'DATA_EVIDENCE_DOWNLOADED',
+    outcome: 'SUCCESS',
+    subject: evidence.findingId,
+    detail: `Xem/tải minh chứng ${fileName} của hồ sơ ${evidence.findingId}.`,
+  });
+  await persistLocalState();
+
   return reply.send(result.stream);
 });
 
@@ -3445,9 +3983,10 @@ app.post('/api/v1/reports/runs', async (req: FastifyRequest<{ Body: any }>) => {
 });
 
 app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, reply) => {
+  const exportingUser = getCurrentUser(req);
   const request = ReportExportRequestSchema.parse(req.body);
   assertReportConfigurationAvailable(request.query, request.columns);
-  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  const scoped = filterFindingsByScope(findings, exportingUser);
   const rows = applyCanonicalReportRules(scoped, request.query.rules, request.query.match);
   // A serverless response body is capped (~4.5MB on Vercel) and the function has a wall clock, so
   // an unbounded export fails opaquely in production. Refuse with a count the user can act on
@@ -3460,6 +3999,15 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
       `Bộ lọc đang khớp ${rows.length.toLocaleString('vi-VN')} dòng, vượt mức ${REPORT_EXPORT_MAX_ROWS.toLocaleString('vi-VN')} dòng cho một lần xuất. Hãy thu hẹp điều kiện lọc (theo chi nhánh, đoàn kiểm tra hoặc khoảng thời gian) rồi xuất lại.`,
     );
   }
+  // Xuất dữ liệu là đường mang hồ sơ ra khỏi hệ thống nhiều nhất trong một thao tác, nên nó phải
+  // để lại dấu vết với đúng số dòng và định dạng đã lấy.
+  recordUserSecurityEvent(req, exportingUser, {
+    type: 'DATA_REPORT_EXPORTED',
+    outcome: 'SUCCESS',
+    detail: `Xuất báo cáo ${request.format.toUpperCase()} gồm ${rows.length} dòng trong phạm vi dữ liệu được cấp.`,
+  });
+  await persistLocalState();
+
   const configuration = normalizedReportCatalogConfiguration();
   const configuredFields = configuration.fields;
   const configuredMetrics = configuration.metrics;
@@ -3568,8 +4116,15 @@ app.get('/api/v1/reports/summary', async (req: FastifyRequest<{ Querystring: any
 });
 
 app.get('/api/v1/reports/findings.csv', async (req: FastifyRequest<{ Querystring: any }>, reply) => {
+  const exportingUser = getCurrentUser(req);
   const filters = ReportFilterSchema.parse(req.query);
-  const scoped = applyReportFilters(filterFindingsByScope(findings, getCurrentUser(req)), filters);
+  const scoped = applyReportFilters(filterFindingsByScope(findings, exportingUser), filters);
+  recordUserSecurityEvent(req, exportingUser, {
+    type: 'DATA_REPORT_EXPORTED',
+    outcome: 'SUCCESS',
+    detail: `Xuất CSV danh sách hồ sơ gồm ${scoped.length} dòng trong phạm vi dữ liệu được cấp.`,
+  });
+  await persistLocalState();
   const header = 'CIF,Tên khách hàng,Cụm,Chi nhánh,Phòng,Mã chi nhánh,Cán bộ,Mã lỗi,Tiêu đề lỗi,Chi tiết lỗi,Trạng thái,Dư nợ,Giá trị ảnh hưởng';
   const rows = scoped.map(item => [item.cif, item.customerName, item.clusterName, item.branchName, item.department, item.branchCode, item.officerName, item.errorCode, item.errorTitle, item.description, item.workflowStatus, item.creditBalance, item.exposureAmount]);
   const csv = `\uFEFF${header}\r\n${rows.map(row => row.map(csvCell).join(',')).join('\r\n')}`;

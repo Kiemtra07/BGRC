@@ -32,6 +32,21 @@ export interface AuditCampaign {
   updatedAt: string;
 }
 
+export type CampaignDocumentKind = 'DOCX' | 'PDF' | 'EXCEL';
+
+/**
+ * A non-persistent result returned after parsing a source document. The admin reviews and
+ * completes access assignments before sending the normal create-campaign command.
+ */
+export interface CampaignImportDraft {
+  source: {
+    fileName: string;
+    kind: CampaignDocumentKind;
+  };
+  draft: Partial<Pick<CreateAuditCampaignDTO, 'code' | 'name' | 'description' | 'decisionNo' | 'startDate' | 'endDate'>>;
+  warnings: string[];
+}
+
 const CampaignMemberSchema = z.object({
   userId: z.string().trim().min(1),
   memberRole: z.enum(['LEAD', 'MEMBER']),

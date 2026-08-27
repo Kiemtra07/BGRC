@@ -17,4 +17,14 @@ describe('campaign administration UI', () => {
     expect(source).toContain('CAMPAIGN_CONTEXT');
     expect(source).toContain('Thông tin chuyên đề');
   });
+
+  it('offers edit, safe delete and document-draft import controls for administrators', () => {
+    const campaignSource = fs.readFileSync('src/components/admin/campaigns/CampaignManager.tsx', 'utf8');
+    const organizationSource = fs.readFileSync('src/components/admin/OrganizationManager.tsx', 'utf8');
+    expect(campaignSource).toContain('Nhập DOCX, PDF hoặc Excel');
+    expect(campaignSource).toContain('Sửa chuyên đề');
+    expect(campaignSource).toContain('Xóa chuyên đề');
+    expect(organizationSource).toContain('Sửa đơn vị');
+    expect(organizationSource).toContain('Xóa đơn vị');
+  });
 });

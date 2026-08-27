@@ -34,9 +34,28 @@ function safeEqual(left: Buffer, right: Buffer): boolean {
   return left.length === right.length && crypto.timingSafeEqual(left, right);
 }
 
+/**
+ * Chỉ chấp nhận đường dẫn tuyệt đối nằm trong chính site này.
+ *
+ * Kiểm tra "bắt đầu bằng / và không bắt đầu bằng //" là chưa đủ: khi phân giải URL cho scheme
+ * đặc biệt (http/https), trình duyệt coi dấu gạch ngược tương đương "/" và loại bỏ ký tự điều
+ * khiển khỏi URL. Vì vậy "/\evil.com" hay "/<TAB>/evil.com" tuy vượt qua kiểm tra tiền tố vẫn
+ * được phân giải thành "https://evil.com/" — đủ để biến luồng đăng nhập Google thành bàn đạp
+ * phishing. Ở đây chặn thẳng các ký tự đó rồi đối chiếu lại bằng chính bộ phân giải URL.
+ */
+const INTERNAL_ORIGIN = 'https://audit-bgs.invalid';
+
 function requireSafeReturnTo(value: string): string {
-  if (!value.startsWith('/') || value.startsWith('//')) throw new Error('Google OIDC return path is invalid.');
-  return value;
+  const invalid = () => new Error('Google OIDC return path is invalid.');
+  if (!value.startsWith('/')) throw invalid();
+  if (/[\\\u0000-\u001f\u007f]/.test(value)) throw invalid();
+  if (/^\/[/\\]/.test(value)) throw invalid();
+
+  let resolved: URL;
+  try { resolved = new URL(value, INTERNAL_ORIGIN); }
+  catch { throw invalid(); }
+  if (resolved.origin !== INTERNAL_ORIGIN) throw invalid();
+  return `${resolved.pathname}${resolved.search}${resolved.hash}`;
 }
 
 export function createGoogleOidcState({ secret, returnTo, now = Date.now() }: { secret: string; returnTo: string; now?: number }): string {

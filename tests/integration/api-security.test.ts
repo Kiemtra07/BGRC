@@ -56,6 +56,21 @@ describe('API security boundaries', () => {
     expect(branchResponse.json()).toMatchObject({ code: 'ADMIN_REQUIRED' });
   });
 
+  it('exports the audit trail as UTF-8 CSV only to administrators', async () => {
+    const [adminResponse, branchResponse] = await Promise.all([
+      app.inject({ method: 'GET', url: '/api/v1/admin/audit-events/export?query=10849201', headers: adminHeaders }),
+      app.inject({ method: 'GET', url: '/api/v1/admin/audit-events/export', headers: { 'x-user-id': 'user-branch-635' } }),
+    ]);
+
+    expect(adminResponse.statusCode).toBe(200);
+    expect(adminResponse.headers['content-type']).toContain('text/csv');
+    expect(adminResponse.headers['content-disposition']).toContain('attachment');
+    expect(adminResponse.body).toContain('Thời gian,Sự kiện,Người thao tác');
+    expect(adminResponse.body).toContain('10849201');
+    expect(branchResponse.statusCode).toBe(403);
+    expect(branchResponse.json()).toMatchObject({ code: 'ADMIN_REQUIRED' });
+  });
+
   it('validates admin user provisioning payloads', async () => {
     const response = await app.inject({
       method: 'POST',
@@ -266,5 +281,17 @@ describe('API security boundaries', () => {
     expect(replay.statusCode).toBe(200);
     expect(replay.json()).toEqual(first.json());
     expect(detail.json().history).toHaveLength(before.json().history.length + 1);
+  });
+
+  it('allows an administrator to clear only the local test audit trail', async () => {
+    const before = await app.inject({ method: 'GET', url: '/api/v1/admin/audit-events', headers: adminHeaders });
+    expect(before.json().length).toBeGreaterThan(0);
+
+    const cleared = await app.inject({ method: 'DELETE', url: '/api/v1/admin/audit-events', headers: adminHeaders });
+    const after = await app.inject({ method: 'GET', url: '/api/v1/admin/audit-events', headers: adminHeaders });
+
+    expect(cleared.statusCode).toBe(200);
+    expect(cleared.json()).toMatchObject({ cleared: before.json().length });
+    expect(after.json()).toEqual([]);
   });
 });

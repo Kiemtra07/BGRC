@@ -10,7 +10,7 @@ import {
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness,
   ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO, CreatedUserResponse, ResetUserPasswordDTO,
   LoginDTO, LoginResponse,
-  AuditCampaign, CreateAuditCampaignDTO, UpdateAuditCampaignDTO,
+  AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, UpdateAuditCampaignDTO, UpdateOrgUnitDTO,
 } from '../../shared/contracts';
 
 export interface FindingApprovalCandidates {
@@ -80,6 +80,17 @@ class ApiService {
   public getCampaigns = (): Promise<AuditCampaign[]> => this.request('/campaigns');
   public createCampaign = (data: CreateAuditCampaignDTO): Promise<AuditCampaign> => this.request('/admin/campaigns', { method: 'POST', body: JSON.stringify(data) });
   public updateCampaign = (id: string, data: UpdateAuditCampaignDTO): Promise<AuditCampaign> => this.request(`/admin/campaigns/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+  public deleteCampaign = (id: string): Promise<void> => this.request(`/admin/campaigns/${id}`, { method: 'DELETE' });
+  public async importCampaignDraft(file: File): Promise<CampaignImportDraft> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${API_BASE}/admin/campaigns/import-draft`, { method: 'POST', credentials: 'same-origin', body: formData });
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(problem.detail || problem.title || `HTTP ${response.status}`, response.status, problem.code);
+    }
+    return response.json();
+  }
   public provisionCampaignDrive = (id: string): Promise<AuditCampaign> => this.request(`/admin/campaigns/${id}/provision-drive`, { method: 'POST' });
   public getOrgUnits = (): Promise<OrgUnit[]> => this.request('/admin/org-units');
   /** Branches inside the caller's data scope; available to every role that can create a hồ sơ. */
@@ -88,6 +99,19 @@ class ApiService {
   public getChannels = (): Promise<ReportChannel[]> => this.request('/admin/channels');
   public getActiveChannels = (): Promise<ReportChannel[]> => this.request('/channels/active');
   public getAuditEvents = (): Promise<AuditLogEntry[]> => this.request('/admin/audit-events');
+  public async downloadAuditEventsCsv(query = ''): Promise<void> {
+    const params = new URLSearchParams();
+    if (query.trim()) params.set('query', query.trim());
+    const response = await fetch(`${API_BASE}/admin/audit-events/export${params.size ? `?${params}` : ''}`, {
+      credentials: 'same-origin',
+    });
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(problem.detail || problem.title || 'Không thể tải nhật ký CSV.', response.status, problem.code);
+    }
+    saveBlob(await response.blob(), `nhat-ky-xu-ly-${new Date().toISOString().slice(0, 10)}.csv`);
+  }
+  public clearTestAuditEvents = (): Promise<{ cleared: number }> => this.request('/admin/audit-events', { method: 'DELETE' });
   public getDashboardSummary = (): Promise<DashboardSummary> => this.request('/dashboards/summary');
   private reportQuery(filters: ReportFilterQuery = {}): string {
     return new URLSearchParams(
@@ -114,6 +138,12 @@ class ApiService {
 
   public createOrgUnit(data: Partial<OrgUnit>): Promise<OrgUnit> {
     return this.request('/admin/org-units', { method: 'POST', body: JSON.stringify(data) });
+  }
+  public updateOrgUnit(id: string, data: UpdateOrgUnitDTO): Promise<OrgUnit> {
+    return this.request(`/admin/org-units/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+  }
+  public deleteOrgUnit(id: string): Promise<void> {
+    return this.request(`/admin/org-units/${id}`, { method: 'DELETE' });
   }
   public createUser(data: CreateUserDTO): Promise<CreatedUserResponse> {
     return this.request('/admin/users', { method: 'POST', body: JSON.stringify(data) });

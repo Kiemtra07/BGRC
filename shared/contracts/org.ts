@@ -30,3 +30,17 @@ export const CreateOrgUnitSchema = z.object({
 });
 
 export type CreateOrgUnitDTO = z.infer<typeof CreateOrgUnitSchema>;
+
+export const UpdateOrgUnitSchema = z.object({
+  code: z.string().trim().min(1).max(50).optional(),
+  name: z.string().trim().min(1).max(200).optional(),
+  parentId: z.string().trim().min(1).nullable().optional(),
+  leaderUserId: z.string().trim().min(1).nullable().optional(),
+  isActive: z.boolean().optional(),
+  metadata: z.record(z.any()).nullable().optional(),
+  expectedUpdatedAt: z.string().datetime(),
+}).refine(value => Object.keys(value).some(key => key !== 'expectedUpdatedAt'), {
+  message: 'Cần có ít nhất một thay đổi cho đơn vị.',
+});
+
+export type UpdateOrgUnitDTO = z.infer<typeof UpdateOrgUnitSchema>;

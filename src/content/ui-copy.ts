@@ -46,3 +46,22 @@ export const workflowEventLabels: Record<WorkflowCommand, string> = {
   INTERNAL_REJECT: workflowActionLabels.returnToBranch,
   REVIEW_SUB_ITEMS: workflowActionLabels.saveSubItemReview,
 };
+
+/**
+ * Sự kiện an ninh nằm chung dòng thời gian với sự kiện workflow trong màn hình Nhật ký xử lý.
+ * Đây là những hành vi không chạm vào máy trạng thái hồ sơ nhưng lại quyết định ai vào được hệ
+ * thống và dữ liệu đi ra ngoài bằng đường nào.
+ */
+export const securityEventLabels: Record<string, string> = {
+  AUTH_LOGIN_SUCCEEDED: 'Đăng nhập thành công',
+  AUTH_LOGIN_FAILED: 'Đăng nhập thất bại',
+  AUTH_LOGIN_THROTTLED: 'Chặn đăng nhập (khoá tạm)',
+  AUTH_LOGOUT: 'Đăng xuất',
+  AUTH_OIDC_LOGIN_SUCCEEDED: 'Đăng nhập Google',
+  AUTH_OIDC_LOGIN_REJECTED: 'Từ chối đăng nhập Google',
+  ADMIN_USER_CREATED: 'Cấp tài khoản',
+  ADMIN_USER_PASSWORD_RESET: 'Đặt lại mật khẩu',
+  ADMIN_GOOGLE_DRIVE_CONNECTED: 'Đấu nối Google Drive',
+  DATA_REPORT_EXPORTED: 'Xuất báo cáo',
+  DATA_EVIDENCE_DOWNLOADED: 'Tải minh chứng',
+};

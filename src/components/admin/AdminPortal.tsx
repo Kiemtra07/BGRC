@@ -9,7 +9,7 @@ import {
   Database,
   ClipboardCheck,
 } from 'lucide-react';
-import { AuditCampaign, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UserProfile, ReportChannel, UpdateReportChannelDTO } from '../../../shared/contracts';
+import { AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO } from '../../../shared/contracts';
 import { DynamicChannelManager } from './DynamicChannelManager';
 import { OrganizationManager } from './OrganizationManager';
 import { UserManager } from './UserManager';
@@ -24,11 +24,16 @@ interface Props {
   channels: ReportChannel[];
   campaigns: AuditCampaign[];
   onOrgUnitCreated: (unit: Partial<OrgUnit>) => Promise<void>;
+  onOrgUnitUpdated: (id: string, unit: UpdateOrgUnitDTO) => Promise<void>;
+  onOrgUnitDeleted: (id: string) => Promise<void>;
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
   onChannelCreated: (channel: Partial<CreateReportChannelDTO>) => Promise<void>;
   onChannelUpdated: (id: string, channel: UpdateReportChannelDTO) => Promise<void>;
   onChannelDeleted: (id: string) => Promise<void>;
   onCampaignCreated: (campaign: CreateAuditCampaignDTO) => Promise<void>;
+  onCampaignUpdated: (id: string, campaign: UpdateAuditCampaignDTO) => Promise<void>;
+  onCampaignDeleted: (id: string) => Promise<void>;
+  onCampaignImportDraft: (file: File) => Promise<CampaignImportDraft>;
   onCampaignProvisionDrive: (id: string) => Promise<void>;
   onBackToPortal?: () => void;
 }
@@ -41,11 +46,16 @@ export const AdminPortal: React.FC<Props> = ({
   channels,
   campaigns,
   onOrgUnitCreated,
+  onOrgUnitUpdated,
+  onOrgUnitDeleted,
   onUserCreated,
   onChannelCreated,
   onChannelUpdated,
   onChannelDeleted,
   onCampaignCreated,
+  onCampaignUpdated,
+  onCampaignDeleted,
+  onCampaignImportDraft,
   onCampaignProvisionDrive,
   onBackToPortal
 }) => {
@@ -106,13 +116,13 @@ export const AdminPortal: React.FC<Props> = ({
 
       {/* Active Tab Content */}
       <div className="animate-fade-in">
-        {activeTab === 'CAMPAIGNS' && <CampaignManager campaigns={campaigns} users={users} orgUnits={orgUnits} channels={channels} onCreate={onCampaignCreated} onProvisionDrive={onCampaignProvisionDrive} />}
+        {activeTab === 'CAMPAIGNS' && <CampaignManager campaigns={campaigns} users={users} orgUnits={orgUnits} channels={channels} onCreate={onCampaignCreated} onUpdate={onCampaignUpdated} onDelete={onCampaignDeleted} onImportDraft={onCampaignImportDraft} onProvisionDrive={onCampaignProvisionDrive} />}
         {activeTab === 'CHANNELS' && (
           <DynamicChannelManager channels={channels} onChannelCreated={onChannelCreated} onChannelUpdated={onChannelUpdated} onChannelDeleted={onChannelDeleted} />
         )}
 
         {activeTab === 'ORGANIZATION' && (
-          <OrganizationManager orgUnits={orgUnits} onOrgUnitCreated={onOrgUnitCreated} />
+          <OrganizationManager orgUnits={orgUnits} users={users} onOrgUnitCreated={onOrgUnitCreated} onOrgUnitUpdated={onOrgUnitUpdated} onOrgUnitDeleted={onOrgUnitDeleted} />
         )}
 
         {activeTab === 'REPORT_CATALOG' && (
