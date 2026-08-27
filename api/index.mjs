@@ -444,6 +444,14 @@ var ReportChannelIntegrationConfigSchema = z5.object({
     subjectTemplate: z5.string().trim().min(3).max(250)
   })
 });
+var CreateReportSpreadsheetSchema = z5.object({
+  reportName: z5.string().trim().min(3).max(255),
+  sheetName: z5.string().trim().min(1).max(100),
+  columns: z5.array(z5.object({
+    key: z5.string().trim().min(1).max(150),
+    label: z5.string().trim().min(1).max(255)
+  })).min(1).max(200)
+});
 var ReportChannelWritableFieldsSchema = z5.object({
   code: z5.string().trim().min(2).max(100).regex(/^[A-Z0-9_]+$/, "M\xE3 lo\u1EA1i b\xE1o c\xE1o ch\u1EC9 g\u1ED3m ch\u1EEF in hoa, s\u1ED1 v\xE0 d\u1EA5u g\u1EA1ch d\u01B0\u1EDBi."),
   name: z5.string().trim().min(3).max(255),
@@ -1377,7 +1385,9 @@ if (process.env.NODE_ENV !== "test") dotenv.config();
 var DRIVE_SCOPE = "https://www.googleapis.com/auth/drive";
 var DRIVE_API = "https://www.googleapis.com/drive/v3";
 var DRIVE_UPLOAD_API = "https://www.googleapis.com/upload/drive/v3";
+var SHEETS_API = "https://sheets.googleapis.com/v4";
 var FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
+var SPREADSHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
 function createLocalPreviewPdf() {
   const pageStream = (page) => {
     const content = `BT /F1 18 Tf 72 720 Td (AUDIT BGS - Local evidence preview - Page ${page} of 3) Tj ET`;
@@ -1500,6 +1510,63 @@ var GoogleDriveAdapter = class {
   setOAuthRefreshToken(refreshToken) {
     this.googleOAuthRefreshToken = refreshToken?.trim() || void 0;
   }
+  async getReportSpreadsheetStatus() {
+    try {
+      await this.requireGoogleRootFolderAccess();
+      return { ready: true, message: "Google Drive \u0111\xE3 s\u1EB5n s\xE0ng \u0111\u1EC3 t\u1EA1o b\u1EA3ng." };
+    } catch (error) {
+      return { ready: false, message: error instanceof Error ? error.message : "Google Drive ch\u01B0a s\u1EB5n s\xE0ng." };
+    }
+  }
+  async createReportSpreadsheet(params) {
+    await this.requireGoogleRootFolderAccess();
+    const reportName = params.reportName.normalize("NFC").trim().slice(0, 255);
+    const sheetName = params.sheetName.normalize("NFC").trim().slice(0, 100);
+    const headers = params.columns.map((column) => column.label.normalize("NFC").trim()).filter(Boolean);
+    if (!reportName || !sheetName || !headers.length || headers.length > 200) {
+      throw new HttpProblem(422, "REPORT_SPREADSHEET_INVALID", "C\u1EA5u h\xECnh Google Sheet ch\u01B0a h\u1EE3p l\u1EC7", "C\u1EA7n t\xEAn b\xE1o c\xE1o, t\xEAn sheet v\xE0 t\u1EEB 1 \u0111\u1EBFn 200 c\u1ED9t d\u1EEF li\u1EC7u.");
+    }
+    const created = await this.driveFetchJson(
+      `${DRIVE_API}/files?${new URLSearchParams({ supportsAllDrives: "true", fields: "id,name,webViewLink" })}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json; charset=UTF-8" },
+        body: JSON.stringify({ name: reportName, mimeType: SPREADSHEET_MIME_TYPE, parents: [this.googleDriveRootFolderId] })
+      }
+    );
+    try {
+      const metadata = await this.googleFetchJson(
+        `${SHEETS_API}/spreadsheets/${encodeURIComponent(created.id)}?fields=sheets(properties(sheetId,title))`,
+        void 0,
+        "Google Sheets"
+      );
+      const firstSheet = metadata.sheets?.[0]?.properties;
+      if (firstSheet?.sheetId === void 0) {
+        throw new HttpProblem(503, "GOOGLE_SHEETS_INVALID_RESPONSE", "Kh\xF4ng th\u1EC3 chu\u1EA9n b\u1ECB Google Sheet", "Google Sheets kh\xF4ng tr\u1EA3 v\u1EC1 trang t\xEDnh m\u1EB7c \u0111\u1ECBnh.");
+      }
+      if (firstSheet.title !== sheetName) {
+        await this.googleFetch(`${SHEETS_API}/spreadsheets/${encodeURIComponent(created.id)}:batchUpdate`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json; charset=UTF-8" },
+          body: JSON.stringify({ requests: [{ updateSheetProperties: { properties: { sheetId: firstSheet.sheetId, title: sheetName }, fields: "title" } }] })
+        }, "Google Sheets");
+      }
+      const range = `'${sheetName.replaceAll("'", "''")}'!A1:${spreadsheetColumnName(headers.length)}1`;
+      await this.googleFetch(`${SHEETS_API}/spreadsheets/${encodeURIComponent(created.id)}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json; charset=UTF-8" },
+        body: JSON.stringify({ majorDimension: "ROWS", values: [headers] })
+      }, "Google Sheets");
+      return {
+        spreadsheetId: created.id,
+        spreadsheetUrl: created.webViewLink ?? `https://docs.google.com/spreadsheets/d/${created.id}/edit`,
+        sheetName
+      };
+    } catch (error) {
+      await this.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(created.id)}?supportsAllDrives=true`, { method: "DELETE" }).catch(() => void 0);
+      throw error;
+    }
+  }
   generateFolderPath(params) {
     const sanitize = (value) => value.normalize("NFC").replace(/[^a-zA-Z0-9_\u00C0-\u1EF9-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
     const campaign = sanitize(params.campaignCode ?? "KHONG_CHUYEN_DE");
@@ -1603,21 +1670,31 @@ var GoogleDriveAdapter = class {
     if (!token.token) throw new HttpProblem(503, "GOOGLE_DRIVE_AUTH_FAILED", "Kh\xF4ng x\xE1c th\u1EF1c \u0111\u01B0\u1EE3c Google Drive", "Google kh\xF4ng tr\u1EA3 access token cho service account.");
     return token.token;
   }
-  async driveFetch(url, init = {}) {
+  async googleFetch(url, init = {}, service = "Google Drive") {
     let response;
     try {
       response = await this.fetchImpl(url, { ...init, headers: { Authorization: `Bearer ${await this.getAccessToken()}`, ...init.headers } });
     } catch {
-      throw new HttpProblem(503, "GOOGLE_DRIVE_UNAVAILABLE", "Google Drive kh\xF4ng kh\u1EA3 d\u1EE5ng", "Kh\xF4ng k\u1EBFt n\u1ED1i \u0111\u01B0\u1EE3c Google Drive API v3.");
+      throw new HttpProblem(503, "GOOGLE_API_UNAVAILABLE", `${service} kh\xF4ng kh\u1EA3 d\u1EE5ng`, `Kh\xF4ng k\u1EBFt n\u1ED1i \u0111\u01B0\u1EE3c ${service}.`);
     }
-    if (!response.ok) throw new HttpProblem(503, "GOOGLE_DRIVE_UNAVAILABLE", "Google Drive kh\xF4ng kh\u1EA3 d\u1EE5ng", `Google Drive API v3 tr\u1EA3 HTTP ${response.status}.`);
+    if (!response.ok) throw new HttpProblem(503, "GOOGLE_API_UNAVAILABLE", `${service} kh\xF4ng kh\u1EA3 d\u1EE5ng`, `${service} tr\u1EA3 HTTP ${response.status}.`);
     return response;
+  }
+  async googleFetchJson(url, init, service) {
+    return (await this.googleFetch(url, init, service)).json();
+  }
+  async driveFetch(url, init = {}) {
+    return this.googleFetch(url, init, "Google Drive");
   }
   async driveFetchJson(url, init) {
     return (await this.driveFetch(url, init)).json();
   }
   async requireGoogleRootFolder() {
     this.requireGoogleMode();
+    await this.requireGoogleRootFolderAccess();
+  }
+  async requireGoogleRootFolderAccess() {
+    if (!this.googleDriveRootFolderId || !this.hasCredential()) throw new HttpProblem(503, "GOOGLE_DRIVE_ADAPTER_NOT_READY", "Google Drive ch\u01B0a s\u1EB5n s\xE0ng", `${this.credentialWarning()} GOOGLE_DRIVE_ROOT_FOLDER_ID l\xE0 b\u1EAFt bu\u1ED9c.`);
     const folder = await this.driveFetchJson(`${DRIVE_API}/files/${encodeURIComponent(this.googleDriveRootFolderId)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`);
     if (folder.id !== this.googleDriveRootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, "GOOGLE_DRIVE_ROOT_UNAVAILABLE", "Th\u01B0 m\u1EE5c Google Drive ch\u01B0a s\u1EB5n s\xE0ng", "Credential hi\u1EC7n t\u1EA1i kh\xF4ng c\xF3 quy\u1EC1n th\xEAm t\u1EC7p v\xE0o th\u01B0 m\u1EE5c g\u1ED1c \u0111\xE3 c\u1EA5u h\xECnh.");
     if (this.googleDriveAuthMode === "service-account" && !folder.driveId) throw new HttpProblem(503, "GOOGLE_DRIVE_SHARED_DRIVE_REQUIRED", "C\u1EA7n d\xF9ng Shared Drive cho Google Drive", "Service account kh\xF4ng c\xF3 storage quota trong My Drive; h\xE3y \u0111\u1EB7t th\u01B0 m\u1EE5c g\u1ED1c trong Shared Drive v\xE0 c\u1EA5p quy\u1EC1n Contributor ho\u1EB7c Content manager.");
@@ -1644,6 +1721,16 @@ var GoogleDriveAdapter = class {
     return id;
   }
 };
+function spreadsheetColumnName(columnCount) {
+  let value = columnCount;
+  let result = "";
+  while (value > 0) {
+    value -= 1;
+    result = String.fromCharCode(65 + value % 26) + result;
+    value = Math.floor(value / 26);
+  }
+  return result;
+}
 var googleDriveService = new GoogleDriveAdapter();
 
 // server/src/adapters/apps-script-drive.ts
@@ -5110,9 +5197,13 @@ app.get("/api/v1/campaigns", async (req) => {
   const user = getCurrentUser(req);
   return auditCampaigns.filter((campaign) => canAccessCampaign(user, campaign));
 });
+var catalogManagerRoles = ["ADMIN", "SUPERVISOR", "INTERNAL_APPROVER", "INTERNAL_OFFICER"];
+function requireCatalogManager(user) {
+  requireRoles(user, [...catalogManagerRoles]);
+}
 app.post("/api/v1/admin/campaigns", async (req, reply) => {
   const user = getCurrentUser(req);
-  requireAdmin(user);
+  requireCatalogManager(user);
   const body = CreateAuditCampaignSchema.parse(req.body);
   if (auditCampaigns.some((item) => item.code.toLocaleLowerCase("vi-VN") === body.code.toLocaleLowerCase("vi-VN"))) {
     throw new HttpProblem(409, "CAMPAIGN_CODE_EXISTS", "M\xE3 chuy\xEAn \u0111\u1EC1 \u0111\xE3 t\u1ED3n t\u1EA1i", "H\xE3y s\u1EED d\u1EE5ng m\xE3 chuy\xEAn \u0111\u1EC1 kh\xE1c.");
@@ -5137,7 +5228,7 @@ app.post("/api/v1/admin/campaigns", async (req, reply) => {
 });
 app.patch("/api/v1/admin/campaigns/:id", async (req) => {
   const user = getCurrentUser(req);
-  requireAdmin(user);
+  requireCatalogManager(user);
   const body = UpdateAuditCampaignSchema.parse(req.body);
   const index = auditCampaigns.findIndex((item) => item.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, "CAMPAIGN_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y chuy\xEAn \u0111\u1EC1", "Chuy\xEAn \u0111\u1EC1 kh\xF4ng t\u1ED3n t\u1EA1i.");
@@ -5156,7 +5247,7 @@ app.patch("/api/v1/admin/campaigns/:id", async (req) => {
   return auditCampaigns[index];
 });
 app.delete("/api/v1/admin/campaigns/:id", async (req, reply) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   const index = auditCampaigns.findIndex((item) => item.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, "CAMPAIGN_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y chuy\xEAn \u0111\u1EC1", "Chuy\xEAn \u0111\u1EC1 kh\xF4ng t\u1ED3n t\u1EA1i.");
   const campaign = auditCampaigns[index];
@@ -5171,7 +5262,7 @@ app.delete("/api/v1/admin/campaigns/:id", async (req, reply) => {
   return reply.code(204).send();
 });
 app.post("/api/v1/admin/campaigns/import-draft", async (req, reply) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   const data = await req.file();
   if (!data) throw new HttpProblem(422, "CAMPAIGN_IMPORT_FILE_REQUIRED", "Thi\u1EBFu t\u1EC7p chuy\xEAn \u0111\u1EC1", "H\xE3y t\u1EA3i l\xEAn m\u1ED9t t\u1EC7p DOCX, PDF ho\u1EB7c Excel.");
   const buffer = await data.toBuffer();
@@ -5262,7 +5353,7 @@ app.get("/api/v1/org-units/branches", async (req) => {
   return orgUnits.filter((unit) => unit.type === "BRANCH" && unit.isActive).map((unit) => ({ ...unit, parentName: orgUnits.find((candidate) => candidate.id === unit.parentId)?.name })).filter((unit) => seesEverything || scopedBranchCodes.has(unit.code) || (unit.parentName ? scopedClusters.has(unit.parentName) : false) || unit.code === user.branchCode);
 });
 app.get("/api/v1/admin/org-units", async (req) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   return orgUnits.map(projectOrgUnit);
 });
 function projectOrgUnit(unit) {
@@ -5374,7 +5465,7 @@ app.delete("/api/v1/admin/org-units/:id", async (req, reply) => {
   return reply.code(204).send();
 });
 app.get("/api/v1/admin/users", async (req) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   return appUsers.map((user) => {
     const team = user.internalTeamId ? orgUnits.find((unit) => unit.id === user.internalTeamId && unit.type === "INTERNAL_TEAM") : void 0;
     const branch = user.branchCode ? orgUnits.find((unit) => unit.code === user.branchCode && unit.type === "BRANCH") : void 0;
@@ -5519,13 +5610,13 @@ app.post("/api/v1/admin/users/:id/password", async (req) => {
   return { user, temporaryPassword };
 });
 app.get("/api/v1/admin/channels", async (req) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   return reportChannels;
 });
 app.get("/api/v1/channels/active", async () => reportChannels.filter((c) => c.isActive));
 app.post("/api/v1/admin/channels", async (req) => {
   const user = getCurrentUser(req);
-  requireAdmin(user);
+  requireCatalogManager(user);
   const id = `chan-${crypto5.randomUUID()}`;
   const payload = req.body ?? {};
   const body = CreateReportChannelSchema.parse({
@@ -5571,7 +5662,7 @@ app.post("/api/v1/admin/channels", async (req) => {
 });
 app.patch("/api/v1/admin/channels/:id", async (req) => {
   const user = getCurrentUser(req);
-  requireAdmin(user);
+  requireCatalogManager(user);
   const index = reportChannels.findIndex((channel) => channel.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, "REPORT_TYPE_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y lo\u1EA1i b\xE1o c\xE1o", "Lo\u1EA1i b\xE1o c\xE1o kh\xF4ng t\u1ED3n t\u1EA1i.");
   const body = UpdateReportChannelSchema.parse(req.body);
@@ -5603,22 +5694,22 @@ app.patch("/api/v1/admin/channels/:id", async (req) => {
   return updated;
 });
 app.get("/api/v1/admin/channels/:id/versions", async (req) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   if (!reportChannels.some((channel) => channel.id === req.params.id)) {
     throw new HttpProblem(404, "REPORT_TYPE_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y lo\u1EA1i b\xE1o c\xE1o", "Lo\u1EA1i b\xE1o c\xE1o kh\xF4ng t\u1ED3n t\u1EA1i.");
   }
   return reportChannelVersions.filter((version) => version.channelId === req.params.id).sort((left, right) => right.versionNumber - left.versionNumber);
 });
 app.get("/api/v1/admin/channels/:id/integration-readiness", async (req) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   const channel = reportChannels.find((item) => item.id === req.params.id);
   if (!channel) throw new HttpProblem(404, "REPORT_TYPE_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y lo\u1EA1i b\xE1o c\xE1o", "Lo\u1EA1i b\xE1o c\xE1o kh\xF4ng t\u1ED3n t\u1EA1i.");
-  const googleCredentialReady = process.env.GOOGLE_DRIVE_AUTH_MODE === "oauth-user" ? Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET && process.env.GOOGLE_OAUTH_REDIRECT_URI) : Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  const googleStatus = channel.integrationConfig?.googleSheets.enabled ? await googleDriveService.getReportSpreadsheetStatus() : { ready: true, message: "\u0110ang t\u1EAFt." };
   const smtpReady = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD && process.env.EMAIL_FROM);
   return {
     googleSheets: {
-      configured: !channel.integrationConfig?.googleSheets.enabled || googleCredentialReady,
-      message: channel.integrationConfig?.googleSheets.enabled && !googleCredentialReady ? "Thi\u1EBFu c\u1EA5u h\xECnh credential Google ph\xF9 h\u1EE3p tr\xEAn m\xE1y ch\u1EE7." : channel.integrationConfig?.googleSheets.enabled ? "M\xE1y ch\u1EE7 \u0111\xE3 c\xF3 th\xF4ng tin x\xE1c th\u1EF1c Google." : "\u0110ang t\u1EAFt."
+      configured: googleStatus.ready,
+      message: googleStatus.message
     },
     email: {
       configured: !channel.integrationConfig?.email.enabled || smtpReady,
@@ -5626,8 +5717,13 @@ app.get("/api/v1/admin/channels/:id/integration-readiness", async (req) => {
     }
   };
 });
+app.post("/api/v1/admin/report-spreadsheets", async (req) => {
+  requireCatalogManager(getCurrentUser(req));
+  const body = CreateReportSpreadsheetSchema.parse(req.body);
+  return googleDriveService.createReportSpreadsheet(body);
+});
 app.delete("/api/v1/admin/channels/:id", async (req, reply) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   const index = reportChannels.findIndex((channel) => channel.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, "REPORT_TYPE_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y lo\u1EA1i b\xE1o c\xE1o", "Lo\u1EA1i b\xE1o c\xE1o kh\xF4ng t\u1ED3n t\u1EA1i.");
   if (findings.some((finding) => finding.channelId === req.params.id)) {
@@ -6051,26 +6147,36 @@ app.put("/api/v1/findings/:id/special-case", async (req) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   requireRoles(user, ["ADMIN", "SUPERVISOR", "INTERNAL_OFFICER", "INTERNAL_APPROVER", "BRANCH_INPUT"]);
-  if (finding.workflowStatus !== "PENDING" && finding.workflowStatus !== "REJECTED") {
+  const customerFindings = filterFindingsByScope(findings, user).filter((item) => item.branchCode === finding.branchCode && item.cif === finding.cif);
+  if (customerFindings.some((item) => item.workflowStatus !== "PENDING" && item.workflowStatus !== "REJECTED")) {
     throw new HttpProblem(409, "SPECIAL_CASE_LOCKED_AFTER_SUBMISSION", "D\u1EA5u sao \u0111\xE3 kh\xF3a", "Ch\u1EC9 \u0111\xE1nh d\u1EA5u tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t khi h\u1ED3 s\u01A1 \u0111ang ch\u1EDD kh\u1EAFc ph\u1EE5c ho\u1EB7c \u0111\xE3 b\u1ECB tr\u1EA3 v\u1EC1.");
   }
   const dto = SetFindingSpecialCaseSchema.parse(req.body);
   const now = (/* @__PURE__ */ new Date()).toISOString();
-  finding.isSpecialCase = dto.isSpecialCase;
-  finding.version += 1;
-  finding.updatedAt = now;
-  workflowEvents.push({
-    id: `evt-${crypto5.randomUUID()}`,
-    findingId: finding.id,
-    command: "SET_SPECIAL_CASE",
-    fromStatus: finding.workflowStatus,
-    toStatus: finding.workflowStatus,
-    actorUserId: user.id,
-    actorName: user.fullName,
-    actorRole: user.primaryRole,
-    notes: dto.isSpecialCase ? "\u0110\xE1nh d\u1EA5u tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t: b\u1ED5 sung b\u01B0\u1EDBc L\xE3nh \u0111\u1EA1o chi nh\xE1nh ph\xEA duy\u1EC7t b\u1EAFt bu\u1ED9c tr\u01B0\u1EDBc khi l\xEAn H\u1ED9i s\u1EDF." : "B\u1ECF \u0111\xE1nh d\u1EA5u tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t: Ki\u1EC3m so\xE1t chi nh\xE1nh chuy\u1EC3n th\u1EB3ng l\xEAn H\u1ED9i s\u1EDF.",
-    createdAt: now
-  });
+  for (const customerFinding of customerFindings) {
+    customerFinding.isSpecialCase = dto.isSpecialCase;
+    customerFinding.version += 1;
+    customerFinding.updatedAt = now;
+    workflowEvents.push({
+      id: `evt-${crypto5.randomUUID()}`,
+      findingId: customerFinding.id,
+      command: "SET_SPECIAL_CASE",
+      fromStatus: customerFinding.workflowStatus,
+      toStatus: customerFinding.workflowStatus,
+      actorUserId: user.id,
+      actorName: user.fullName,
+      actorRole: user.primaryRole,
+      notes: dto.isSpecialCase ? "\u0110\xE1nh d\u1EA5u kh\xE1ch h\xE0ng l\xE0 tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t: b\u1ED5 sung b\u01B0\u1EDBc L\xE3nh \u0111\u1EA1o chi nh\xE1nh ph\xEA duy\u1EC7t b\u1EAFt bu\u1ED9c tr\u01B0\u1EDBc khi l\xEAn H\u1ED9i s\u1EDF." : "B\u1ECF \u0111\xE1nh d\u1EA5u kh\xE1ch h\xE0ng l\xE0 tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t: Ki\u1EC3m so\xE1t chi nh\xE1nh chuy\u1EC3n th\u1EB3ng l\xEAn H\u1ED9i s\u1EDF.",
+      createdAt: now
+    });
+  }
+  if (dto.isSpecialCase) {
+    await addWorkspaceTarget(workspaceWatchTargets, {
+      targetType: "CUSTOMER",
+      branchCode: finding.branchCode,
+      cif: finding.cif
+    }, user);
+  }
   await persistLocalState();
   return {
     ...finding,

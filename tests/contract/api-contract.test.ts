@@ -51,10 +51,10 @@ describe('P0 HTTP contracts', () => {
 
     expect(response.headers['content-type']).toContain('application/problem+json');
     expect(response.json()).toMatchObject({
-      type: 'https://audit-bgs.local/problems/admin-required',
-      title: 'Không đủ quyền quản trị',
+      type: 'https://audit-bgs.local/problems/forbidden',
+      title: 'Không đủ quyền thực hiện',
       status: 403,
-      code: 'ADMIN_REQUIRED',
+      code: 'FORBIDDEN',
     });
   });
 });

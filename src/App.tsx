@@ -1,20 +1,21 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   BarChart3, Building2, ChevronRight, FileUp, LayoutDashboard, Plus, Search, Settings,
   LogOut, Menu, ShieldCheck, Users,
 } from 'lucide-react';
 import { AuditCampaign, DashboardSummary, Finding, LoginDTO, MyWorkQueue, OrgUnit, ReportChannel, UserProfile, WebFormFindingDTO, WorkspaceTarget, coplusRoleLabel } from '../shared/contracts';
 import { ApiError, api } from './services/api';
-import { AdminPortal } from './components/admin/AdminPortal';
 import { FindingDetailPage } from './components/portal/FindingDetailPage';
 import { WorkspaceSidebar } from './components/portal/WorkspaceSidebar';
 import { WebFormFindingModal } from './components/ingestion/WebFormFindingModal';
-import { FastDataIngestion } from './components/internal/FastDataIngestion';
-import { ReportsWorkspace } from './components/reports/ReportsWorkspace';
 import { FindingGridWorkspace } from './components/reports/FindingGridWorkspace';
 import { UserProfile as LegacyUserProfile } from './types';
 import { slaStatusLabels, userRoleLabels, workflowStatusLabels } from './content/ui-copy';
 import { LoginPage } from './components/auth/LoginPage';
+
+const AdminPortal = lazy(() => import('./components/admin/AdminPortal').then(module => ({ default: module.AdminPortal })));
+const FastDataIngestion = lazy(() => import('./components/internal/FastDataIngestion').then(module => ({ default: module.FastDataIngestion })));
+const ReportsWorkspace = lazy(() => import('./components/reports/ReportsWorkspace').then(module => ({ default: module.ReportsWorkspace })));
 
 type Surface = 'CASES' | 'IMPORT' | 'REPORTS' | 'ADMIN';
 type Filter = 'ALL' | Finding['workflowStatus'];
@@ -41,9 +42,11 @@ export const App: React.FC = () => {
   const [createOpen, setCreateOpen] = useState(false);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [adminCatalogLoaded, setAdminCatalogLoaded] = useState(false);
 
   const isAdmin = currentUser?.roles.includes('ADMIN') || false;
-  const canImport = currentUser?.roles.some(role => ['ADMIN', 'INTERNAL_OFFICER', 'SUPERVISOR'].includes(role)) || false;
+  const canConfigureCatalog = currentUser?.roles.some(role => ['ADMIN', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'SUPERVISOR'].includes(role)) || false;
+  const canImport = currentUser?.roles.some(role => ['ADMIN', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'SUPERVISOR'].includes(role)) || false;
 
   const refreshScopedData = async () => {
     const [findingsResult, dashboardResult, workResult] = await Promise.all([
@@ -71,12 +74,6 @@ export const App: React.FC = () => {
       setOrgUnits(branches);
       if (!campaignId && accessibleCampaigns.length) setCampaignId(accessibleCampaigns[0].id);
       // Findings/dashboard/work-queue are loaded by the filter effect once currentUser is set.
-      if (me.user.roles.includes('ADMIN')) {
-        const [userList, units, allChannels] = await Promise.all([api.getUsers(), api.getOrgUnits(), api.getChannels()]);
-        setUsers(userList);
-        setOrgUnits(units);
-        setChannels(allChannels);
-      }
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) setCurrentUser(null);
       setLoadError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu.');
@@ -90,6 +87,22 @@ export const App: React.FC = () => {
   // they are fetched once. Re-running the whole bootstrap on every filter change cost a redundant
   // getMe + channels + campaigns round trip each time — wasteful anywhere, billed on serverless.
   useEffect(() => { void load(); }, []);
+  useEffect(() => {
+    if (surface !== 'ADMIN' || !canConfigureCatalog || adminCatalogLoaded) return;
+    let active = true;
+    setLoading(true);
+    Promise.all([api.getUsers(), api.getOrgUnits(), api.getChannels()])
+      .then(([userList, units, allChannels]) => {
+        if (!active) return;
+        setUsers(userList);
+        setOrgUnits(units);
+        setChannels(allChannels);
+        setAdminCatalogLoaded(true);
+      })
+      .catch(reason => active && setLoadError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu cấu hình.'))
+      .finally(() => { if (active) setLoading(false); });
+    return () => { active = false; };
+  }, [surface, canConfigureCatalog, adminCatalogLoaded]);
   useEffect(() => {
     if (!currentUser) return;
     let active = true;
@@ -111,6 +124,7 @@ export const App: React.FC = () => {
       setLoading(true);
       await api.logout();
       setCurrentUser(null);
+      setAdminCatalogLoaded(false);
       setUsers([]);
       setFindings([]);
       setDashboard(null);
@@ -217,9 +231,9 @@ export const App: React.FC = () => {
           </div>
           <nav className="order-3 flex min-w-0 w-full max-w-full gap-1 overflow-x-auto border-t border-white/10 pt-2 lg:order-none lg:w-auto lg:flex-1 lg:border-t-0 lg:pt-0" aria-label="Điều hướng chính">
             <NavButton active={surface === 'CASES'} onClick={() => navigateTo('CASES')} icon={<LayoutDashboard />} label="Hồ sơ khách hàng" />
-            {canImport && <NavButton active={surface === 'IMPORT'} onClick={() => navigateTo('IMPORT')} icon={<FileUp />} label="Nạp dữ liệu" />}
+            {canImport && <NavButton active={surface === 'IMPORT'} onClick={() => navigateTo('IMPORT')} icon={<FileUp />} label="Nhập dữ liệu" />}
             <NavButton active={surface === 'REPORTS'} onClick={() => navigateTo('REPORTS')} icon={<BarChart3 />} label="Báo cáo" />
-            {isAdmin && <NavButton active={surface === 'ADMIN'} onClick={() => navigateTo('ADMIN')} icon={<Settings />} label="Quản trị" />}
+            {canConfigureCatalog && <NavButton active={surface === 'ADMIN'} onClick={() => navigateTo('ADMIN')} icon={<Settings />} label="Cấu hình" />}
           </nav>
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <div className="hidden text-right md:block"><div className="text-xs font-bold">{currentUser?.fullName}</div><div className="text-[10px] text-teal-100">{currentUser?.department || currentUser?.branchName || 'Hội sở'}</div></div>
@@ -235,9 +249,11 @@ export const App: React.FC = () => {
 
         {surface === 'CASES' && selectedCase && currentUser && <FindingDetailPage findings={selectedCase} currentUser={currentUser} initialFindingId={selectedFindingId} workQueue={workQueue} onBack={() => { setSelectedCase(null); setSelectedFindingId(undefined); }} onFindingUpdated={updateFinding} onWorkspaceChanged={async () => setWorkQueue(await api.getMyWork())} />}
 
-        {surface === 'ADMIN' && isAdmin && <AdminPortal orgUnits={orgUnits} users={users} channels={channels} campaigns={campaigns} onOrgUnitCreated={async unit => { const created = await api.createOrgUnit(unit); setOrgUnits(previous => [...previous, created]); }} onOrgUnitUpdated={async (id, unit) => { const updated = await api.updateOrgUnit(id, unit); setOrgUnits(previous => previous.map(item => item.id === id ? updated : item)); }} onOrgUnitDeleted={async id => { await api.deleteOrgUnit(id); setOrgUnits(previous => previous.filter(item => item.id !== id)); }} onUserCreated={async user => { const created = await api.createUser(user); setUsers(previous => [...previous, created.user]); return created; }} onUsersImported={async batch => { const result = await api.importUsers(batch); setUsers(previous => [...previous, ...result.created.map(row => row.user)]); return result; }} onChannelCreated={async channel => { const created = await api.createChannel(channel); setChannels(previous => [...previous, created]); }} onChannelUpdated={async (id, channel) => { const updated = await api.updateChannel(id, channel); setChannels(previous => previous.map(item => item.id === id ? updated : item)); }} onChannelDeleted={async id => { await api.deleteChannel(id); setChannels(previous => previous.filter(item => item.id !== id)); }} onCampaignCreated={async campaign => { const created = await api.createCampaign(campaign); setCampaigns(previous => [...previous, created]); }} onCampaignUpdated={async (id, campaign) => { const updated = await api.updateCampaign(id, campaign); setCampaigns(previous => previous.map(item => item.id === id ? updated : item)); }} onCampaignDeleted={async id => { await api.deleteCampaign(id); setCampaigns(previous => previous.filter(item => item.id !== id)); }} onCampaignImportDraft={file => api.importCampaignDraft(file)} onCampaignProvisionDrive={async id => { const updated = await api.provisionCampaignDrive(id); setCampaigns(previous => previous.map(item => item.id === id ? updated : item)); }} onBackToPortal={() => setSurface('CASES')} />}
-        {surface === 'IMPORT' && canImport && legacyUser && <FastDataIngestion currentUser={legacyUser} channels={channels} campaigns={campaigns} onCommitNewCustomers={refreshScopedData} />}
-        {surface === 'REPORTS' && <ReportsWorkspace />}
+        <Suspense fallback={<WorkspaceLoading />}>
+          {surface === 'ADMIN' && canConfigureCatalog && adminCatalogLoaded && <AdminPortal isSystemAdmin={isAdmin} orgUnits={orgUnits} users={users} channels={channels} campaigns={campaigns} onOrgUnitCreated={async unit => { const created = await api.createOrgUnit(unit); setOrgUnits(previous => [...previous, created]); }} onOrgUnitUpdated={async (id, unit) => { const updated = await api.updateOrgUnit(id, unit); setOrgUnits(previous => previous.map(item => item.id === id ? updated : item)); }} onOrgUnitDeleted={async id => { await api.deleteOrgUnit(id); setOrgUnits(previous => previous.filter(item => item.id !== id)); }} onUserCreated={async user => { const created = await api.createUser(user); setUsers(previous => [...previous, created.user]); return created; }} onUsersImported={async batch => { const result = await api.importUsers(batch); setUsers(previous => [...previous, ...result.created.map(row => row.user)]); return result; }} onChannelCreated={async channel => { const created = await api.createChannel(channel); setChannels(previous => [...previous, created]); }} onChannelUpdated={async (id, channel) => { const updated = await api.updateChannel(id, channel); setChannels(previous => previous.map(item => item.id === id ? updated : item)); }} onChannelDeleted={async id => { await api.deleteChannel(id); setChannels(previous => previous.filter(item => item.id !== id)); }} onCampaignCreated={async campaign => { const created = await api.createCampaign(campaign); setCampaigns(previous => [...previous, created]); }} onCampaignUpdated={async (id, campaign) => { const updated = await api.updateCampaign(id, campaign); setCampaigns(previous => previous.map(item => item.id === id ? updated : item)); }} onCampaignDeleted={async id => { await api.deleteCampaign(id); setCampaigns(previous => previous.filter(item => item.id !== id)); }} onCampaignImportDraft={file => api.importCampaignDraft(file)} onCampaignProvisionDrive={async id => { const updated = await api.provisionCampaignDrive(id); setCampaigns(previous => previous.map(item => item.id === id ? updated : item)); }} onBackToPortal={() => setSurface('CASES')} />}
+          {surface === 'IMPORT' && canImport && legacyUser && <FastDataIngestion currentUser={legacyUser} channels={channels} campaigns={campaigns} onCampaignCreated={async campaign => { const created = await api.createCampaign(campaign); const active = await api.updateCampaign(created.id, { expectedVersion: created.version, status: 'ACTIVE' }); setCampaigns(previous => [...previous, active]); return active; }} onCommitNewCustomers={refreshScopedData} />}
+          {surface === 'REPORTS' && <ReportsWorkspace />}
+        </Suspense>
 
         {surface === 'CASES' && !selectedCase && <>
           <div className={`grid min-h-[calc(100dvh-116px)] items-start transition-[grid-template-columns] duration-200 lg:min-h-[calc(100dvh-64px)] ${sidebarCollapsed ? 'lg:grid-cols-[76px_minmax(0,1fr)]' : 'lg:grid-cols-[300px_minmax(0,1fr)]'}`}>
@@ -310,6 +326,7 @@ export const App: React.FC = () => {
 };
 
 const NavButton: React.FC<{ active: boolean; onClick: () => void; icon: React.ReactElement; label: string }> = ({ active, onClick, icon, label }) => <button onClick={onClick} className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${active ? 'bg-white text-[#006b68]' : 'text-teal-50 hover:bg-white/10'}`}>{React.cloneElement(icon, { className: 'h-4 w-4' } as React.HTMLAttributes<HTMLElement>)}{label}</button>;
+const WorkspaceLoading: React.FC = () => <div role="status" className="rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-xs font-bold text-[#006b68]">Đang mở chức năng...</div>;
 const Kpi: React.FC<{ icon: React.ReactElement; label: string; value: number }> = ({ icon, label, value }) => <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm"><div className="flex items-center justify-between"><div className="flex h-9 w-9 items-center justify-center rounded-xl bg-teal-50 text-[#006b68]">{React.cloneElement(icon, { className: 'h-4 w-4' } as React.HTMLAttributes<HTMLElement>)}</div><div className="text-xl font-black text-slate-900 sm:text-2xl">{value}</div></div><div className="mt-3 text-[11px] font-bold text-slate-500">{label}</div></div>;
 export const OverdueKpi: React.FC<{ overdueCount: number }> = ({ overdueCount }) => <Kpi icon={<BarChart3 />} label="Quá hạn" value={overdueCount} />;
 

@@ -7,7 +7,7 @@ import {
   AuditLogEntry, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest,
-  CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness,
+  CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness, CreateReportSpreadsheetDTO, ReportSpreadsheetResult,
   ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO, CreatedUserResponse, ResetUserPasswordDTO,
   BulkUserImportDTO, BulkUserImportResult,
   LoginDTO, LoginResponse,
@@ -177,6 +177,9 @@ class ApiService {
   }
   public getChannelIntegrationReadiness(id: string): Promise<ReportChannelIntegrationReadiness> {
     return this.request(`/admin/channels/${id}/integration-readiness`);
+  }
+  public createReportSpreadsheet(data: CreateReportSpreadsheetDTO): Promise<ReportSpreadsheetResult> {
+    return this.request('/admin/report-spreadsheets', { method: 'POST', body: JSON.stringify(data) });
   }
   public getFindings(params: Record<string, string> = {}): Promise<{ items: Finding[]; total: number; page: number; limit: number; hasMore: boolean }> {
     return this.request(`/findings?${new URLSearchParams(params).toString()}`);

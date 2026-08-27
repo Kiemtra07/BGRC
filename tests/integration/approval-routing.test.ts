@@ -57,6 +57,32 @@ describe('automatic approval routing + special-case flag', () => {
     expect(response.json()).toMatchObject({ code: 'SPECIAL_CASE_LOCKED_AFTER_SUBMISSION' });
   });
 
+  it('applies the star to the whole customer and automatically follows that customer', async () => {
+    const base = {
+      channelId: 'chan-audit-bgs', campaignId: 'campaign-regular-2026',
+      cif: 'STAR-CUSTOMER-001', customerName: 'Khách hàng đánh dấu toàn hồ sơ',
+      clusterName: 'Cụm Tây Nguyên', branchCode: '635', branchName: 'Chi nhánh Nam Buôn Hồ',
+      department: 'Phòng QLKH 1', errorGroup: 'TD01', exposureAmount: 0,
+    };
+    const first = await app.inject({ method: 'POST', url: '/api/v1/findings', headers: { 'x-user-id': 'user-internal-officer' }, payload: { ...base, errorCode: 'STAR.01', errorTitle: 'Mã lỗi thứ nhất', description: 'Nội dung sai sót thứ nhất đủ độ dài.' } });
+    const second = await app.inject({ method: 'POST', url: '/api/v1/findings', headers: { 'x-user-id': 'user-internal-officer' }, payload: { ...base, errorCode: 'STAR.02', errorTitle: 'Mã lỗi thứ hai', description: 'Nội dung sai sót thứ hai đủ độ dài.' } });
+    expect(first.statusCode, first.body).toBe(200);
+    expect(second.statusCode, second.body).toBe(200);
+
+    const flagged = await app.inject({ method: 'PUT', url: `/api/v1/findings/${first.json().id}/special-case`, headers: { 'x-user-id': 'user-internal-officer' }, payload: { isSpecialCase: true } });
+    expect(flagged.statusCode, flagged.body).toBe(200);
+
+    const customer = await app.inject({ method: 'GET', url: `/api/v1/customers/${base.cif}/case?branchCode=635`, headers: { 'x-user-id': 'user-internal-officer' } });
+    expect(customer.statusCode, customer.body).toBe(200);
+    expect(customer.json().findings).toHaveLength(2);
+    expect(customer.json().findings.every((item: { isSpecialCase?: boolean }) => item.isSpecialCase)).toBe(true);
+
+    const work = await app.inject({ method: 'GET', url: '/api/v1/workspace/my-work', headers: { 'x-user-id': 'user-internal-officer' } });
+    expect(work.json().watchTargets).toEqual(expect.arrayContaining([
+      expect.objectContaining({ targetType: 'CUSTOMER', branchCode: '635', cif: base.cif }),
+    ]));
+  });
+
   it('star ON inserts a mandatory Lãnh đạo chi nhánh approval step before Hội sở; star OFF skips it', async () => {
     const branchInput = await createBranchUser('BRANCH_INPUT', '428', 'route.input.428@bank.com.vn');
     const branchController = await createBranchUser('BRANCH_CONTROLLER', '428', 'route.controller.428@bank.com.vn');

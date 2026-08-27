@@ -56,6 +56,13 @@ describe('report type configuration API', () => {
     expect(readiness.statusCode).toBe(200);
     expect(readiness.json()).toMatchObject({ googleSheets: { configured: expect.any(Boolean) }, email: { configured: expect.any(Boolean) } });
 
+    const spreadsheet = await app.inject({
+      method: 'POST', url: '/api/v1/admin/report-spreadsheets', headers,
+      payload: { reportName: payload.name, sheetName: 'AuditBGS', columns: [{ key: 'noi_dung_rieng', label: 'Nội dung riêng' }] },
+    });
+    expect(spreadsheet.statusCode).toBe(503);
+    expect(spreadsheet.json()).toMatchObject({ code: 'GOOGLE_DRIVE_ADAPTER_NOT_READY' });
+
     const invalidForm = await app.inject({ method: 'POST', url: '/api/v1/findings', headers, payload: {
       channelId: createdId,
       cif: 'CFG-001', customerName: 'Khách hàng cấu hình', clusterName: 'Cụm Tây Nguyên',
@@ -77,6 +84,17 @@ describe('report type configuration API', () => {
     const protectedDelete = await app.inject({ method: 'DELETE', url: '/api/v1/admin/channels/chan-audit-bgs', headers });
     expect(protectedDelete.statusCode).toBe(409);
     expect(protectedDelete.json()).toMatchObject({ code: 'REPORT_TYPE_IN_USE' });
+  });
+
+  it('allows a Hội sở officer to create and remove an unused report type', async () => {
+    const officerHeaders = { 'x-user-id': 'user-internal-officer' };
+    const created = await app.inject({
+      method: 'POST', url: '/api/v1/admin/channels', headers: officerHeaders,
+      payload: { ...payload, code: 'REPORT_HO_PERMISSION_TEST', name: 'Loại báo cáo do Hội sở cấu hình' },
+    });
+    expect(created.statusCode, created.body).toBe(200);
+    const removed = await app.inject({ method: 'DELETE', url: `/api/v1/admin/channels/${created.json().id}`, headers: officerHeaders });
+    expect(removed.statusCode, removed.body).toBe(204);
   });
 
   it('uses the pinned report version to allow a form-only workflow without evidence', async () => {

@@ -141,6 +141,12 @@ export interface ReportChannelIntegrationReadiness {
   email: IntegrationReadinessItem;
 }
 
+export interface ReportSpreadsheetResult {
+  spreadsheetId: string;
+  spreadsheetUrl: string;
+  sheetName: string;
+}
+
 export interface ReportChannel {
   id: string;
   code: string;
@@ -313,6 +319,17 @@ export const ReportChannelIntegrationConfigSchema = z.object({
     subjectTemplate: z.string().trim().min(3).max(250),
   }),
 });
+
+export const CreateReportSpreadsheetSchema = z.object({
+  reportName: z.string().trim().min(3).max(255),
+  sheetName: z.string().trim().min(1).max(100),
+  columns: z.array(z.object({
+    key: z.string().trim().min(1).max(150),
+    label: z.string().trim().min(1).max(255),
+  })).min(1).max(200),
+});
+
+export type CreateReportSpreadsheetDTO = z.infer<typeof CreateReportSpreadsheetSchema>;
 
 const ReportChannelWritableFieldsSchema = z.object({
   code: z.string().trim().min(2).max(100).regex(/^[A-Z0-9_]+$/, 'Mã loại báo cáo chỉ gồm chữ in hoa, số và dấu gạch dưới.'),

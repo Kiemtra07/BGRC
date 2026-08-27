@@ -136,7 +136,7 @@ export const ReportTypeEditor: React.FC<Props> = ({ channel, onClose, onSave }) 
           {activeTab === 'GENERAL' && <GeneralEditor value={draft} onChange={setDraft} isNew={!channel} />}
           {activeTab === 'FORM' && <FormSchemaEditor value={draft.schemaConfig} onChange={schemaConfig => setDraft({ ...draft, schemaConfig })} />}
           {activeTab === 'WORKFLOW' && <WorkflowConfigEditor channelId={channel?.id ?? ''} value={draft.workflowConfig} onChange={workflowConfig => setDraft({ ...draft, workflowConfig })} />}
-          {activeTab === 'SLA_INTEGRATION' && <SlaIntegrationEditor sla={draft.slaConfig} integration={draft.integrationConfig} readiness={readiness} onSlaChange={slaConfig => setDraft({ ...draft, slaConfig })} onIntegrationChange={integrationConfig => setDraft({ ...draft, integrationConfig })} />}
+          {activeTab === 'SLA_INTEGRATION' && <SlaIntegrationEditor sla={draft.slaConfig} integration={draft.integrationConfig} readiness={readiness} reportName={draft.name} fields={draft.schemaConfig.fields} onSlaChange={slaConfig => setDraft({ ...draft, slaConfig })} onIntegrationChange={integrationConfig => setDraft({ ...draft, integrationConfig })} />}
         </div>
 
         <footer className="border-t border-slate-200 bg-slate-50 px-4 py-3 sm:px-6">

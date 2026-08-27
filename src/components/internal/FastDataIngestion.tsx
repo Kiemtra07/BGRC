@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { CustomerRecord, BatchUploadResult, UserProfile } from '../../types';
 import { ExcelFastIngestionService } from '../../lib/excel-parser';
 import { api } from '../../services/api';
-import type { AuditCampaign, ReportChannel } from '../../../shared/contracts';
+import type { AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, ReportChannel } from '../../../shared/contracts';
 import {
   Upload,
   Archive,
@@ -24,6 +24,7 @@ interface FastDataIngestionProps {
   currentUser: UserProfile;
   channels: ReportChannel[];
   campaigns: AuditCampaign[];
+  onCampaignCreated: (campaign: CreateAuditCampaignDTO) => Promise<AuditCampaign>;
   onCommitNewCustomers: (newCustomers: CustomerRecord[]) => void | Promise<void>;
   onClose?: () => void;
 }
@@ -38,10 +39,19 @@ const normalizeImportedDate = (value?: string) => {
   return `${year}-${month.padStart(2, '0')}-${day.padStart(2, '0')}`;
 };
 
+type ImportedCampaignForm = Required<Pick<CreateAuditCampaignDTO, 'code' | 'name' | 'decisionNo' | 'startDate' | 'endDate'>>;
+
+const isoDateOffset = (days: number) => {
+  const date = new Date();
+  date.setDate(date.getDate() + days);
+  return date.toISOString().slice(0, 10);
+};
+
 export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
   currentUser,
   channels,
   campaigns,
+  onCampaignCreated,
   onCommitNewCustomers,
   onClose
 }) => {
@@ -53,6 +63,8 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
   const [selectedFileCount, setSelectedFileCount] = useState(0);
   const [channelId, setChannelId] = useState('');
   const [campaignId, setCampaignId] = useState('');
+  const [campaignDraftSource, setCampaignDraftSource] = useState<CampaignImportDraft | null>(null);
+  const [campaignDraft, setCampaignDraft] = useState<ImportedCampaignForm | null>(null);
   const availableCampaigns = campaigns.filter(campaign => campaign.status === 'ACTIVE' && campaign.reportChannelIds.includes(channelId));
   const targetSelected = Boolean(channelId && campaignId);
 
@@ -109,10 +121,13 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
 
   const handleDocxUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
-    if (!file || !targetSelected) return;
+    if (!file) return;
     setIsProcessing(true);
     try {
-      const preview = await api.previewFindingDocx(file);
+      const [preview, importedCampaign] = await Promise.all([
+        api.previewFindingDocx(file),
+        campaignId ? Promise.resolve(null) : api.importCampaignDraft(file),
+      ]);
       const customers = new Map<string, CustomerRecord>();
       preview.rows.forEach(row => {
         const key = `${row.branchCode}:${row.cif}`;
@@ -137,8 +152,48 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
       const staged = [...customers.values()];
       setStagedCustomers(staged);
       setUploadResults([{ fileName: preview.fileName, totalCustomersFound: staged.length, totalErrorsExtracted: preview.rows.length, branchDetected: staged[0]?.branchName || 'Nhiều chi nhánh', decisionNoDetected: staged[0]?.decisionNo || 'Không xác định', status: 'SUCCESS', message: `Đã bóc tách ${preview.rows.length} mã lỗi để xem trước.`, customers: staged }]);
+      if (importedCampaign) {
+        setCampaignDraftSource(importedCampaign);
+        setCampaignDraft({
+          code: importedCampaign.draft.code || `CD-${Date.now().toString().slice(-8)}`,
+          name: importedCampaign.draft.name || file.name.replace(/\.docx$/i, ''),
+          decisionNo: importedCampaign.draft.decisionNo || staged[0]?.decisionNo || 'Chưa xác định',
+          startDate: importedCampaign.draft.startDate || isoDateOffset(0),
+          endDate: importedCampaign.draft.endDate || isoDateOffset(30),
+        });
+      }
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Không thể đọc DOCX.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const createCampaignFromDocument = async () => {
+    if (!campaignDraft || !channelId) {
+      alert('Hãy chọn Loại báo cáo trước khi tạo chuyên đề.');
+      return;
+    }
+    const branchCodes = [...new Set(stagedCustomers.map(customer => customer.branchCode).filter(Boolean))];
+    if (!branchCodes.length) {
+      alert('Tiểu biên bản chưa có mã chi nhánh hợp lệ.');
+      return;
+    }
+    try {
+      setIsProcessing(true);
+      const created = await onCampaignCreated({
+        ...campaignDraft,
+        description: campaignDraftSource?.draft.description || `Tạo từ ${campaignDraftSource?.source.fileName || 'tiểu biên bản tải lên'}.`,
+        leadUserId: currentUser.id,
+        members: [{ userId: currentUser.id, memberRole: 'LEAD', assignedBranchCodes: branchCodes }],
+        branchCodes,
+        reportChannelIds: [channelId],
+      });
+      setCampaignId(created.id);
+      setCampaignDraft(null);
+      setCampaignDraftSource(null);
+    } catch (reason) {
+      alert(reason instanceof Error ? reason.message : 'Không thể tạo chuyên đề.');
     } finally {
       setIsProcessing(false);
     }
@@ -301,7 +356,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
       return;
     }
     if (!targetSelected) {
-      alert('Hãy chọn Loại báo cáo và Chuyên đề trước khi nhập dữ liệu.');
+      alert('Cần chọn Chuyên đề trước khi lưu dữ liệu.');
       return;
     }
     try {
@@ -401,7 +456,20 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
             {availableCampaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
           </select>
         </label>
+        <p className="text-[11px] text-slate-500 md:col-span-2">Có thể chọn tệp trước; chỉ cần chọn Chuyên đề trước khi lưu dữ liệu vào hệ thống.</p>
       </div>
+
+      {campaignDraft && <section className="border-b border-amber-200 bg-amber-50 p-4" aria-label="Tạo chuyên đề từ tiểu biên bản">
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-black text-amber-950">Tạo chuyên đề từ tiểu biên bản</h3><p className="mt-1 text-[11px] text-amber-800">Chưa chọn chuyên đề. Hệ thống đã điền trước thông tin đọc được; kiểm tra rồi tạo để tiếp tục nhập.</p></div>{campaignDraftSource?.warnings.length ? <span className="text-[10px] font-bold text-amber-700">{campaignDraftSource.warnings.length} mục cần kiểm tra</span> : null}</div>
+        <div className="grid gap-2 md:grid-cols-5">
+          <input aria-label="Mã chuyên đề" value={campaignDraft.code} onChange={event => setCampaignDraft({ ...campaignDraft, code: event.target.value })} placeholder="Mã chuyên đề" className="input" />
+          <input aria-label="Tên chuyên đề" value={campaignDraft.name} onChange={event => setCampaignDraft({ ...campaignDraft, name: event.target.value })} placeholder="Tên chuyên đề" className="input md:col-span-2" />
+          <input aria-label="Ngày bắt đầu" type="date" value={campaignDraft.startDate} onChange={event => setCampaignDraft({ ...campaignDraft, startDate: event.target.value })} className="input" />
+          <input aria-label="Ngày kết thúc" type="date" value={campaignDraft.endDate} onChange={event => setCampaignDraft({ ...campaignDraft, endDate: event.target.value })} className="input" />
+          <input aria-label="Số quyết định" value={campaignDraft.decisionNo} onChange={event => setCampaignDraft({ ...campaignDraft, decisionNo: event.target.value })} placeholder="Số quyết định" className="input md:col-span-3" />
+          <button type="button" onClick={createCampaignFromDocument} disabled={isProcessing || !channelId} className="min-h-10 rounded-xl bg-amber-600 px-4 text-xs font-black text-white disabled:opacity-40 md:col-span-2">{isProcessing ? 'Đang tạo...' : 'Tạo và chọn chuyên đề'}</button>
+        </div>
+      </section>}
 
       {/* Mode Selector Tabs */}
       <div className="grid grid-cols-2 md:grid-cols-5 border-b border-slate-200 bg-slate-50/70 p-2 gap-2 text-xs">
@@ -474,7 +542,6 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
               id="multi-excel-input"
               className="hidden"
                onChange={handleMultiExcelUpload}
-               disabled={!targetSelected}
             />
             <label htmlFor="multi-excel-input" className="cursor-pointer flex flex-col items-center">
               <div className="w-16 h-16 rounded-2xl bg-brand-50 group-hover:bg-brand-100 text-brand-500 flex items-center justify-center mb-3 transition shadow-sm">
@@ -502,7 +569,6 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
               id="zip-batch-input"
               className="hidden"
                onChange={handleZipUpload}
-               disabled={!targetSelected}
             />
             <label htmlFor="zip-batch-input" className="cursor-pointer flex flex-col items-center">
               <div className="w-16 h-16 rounded-2xl bg-amber-100 text-amber-700 flex items-center justify-center mb-3 transition shadow-sm">
@@ -541,7 +607,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
             <div className="flex justify-end">
               <button
                 onClick={handlePasteProcess}
-                 disabled={!pastedText.trim() || !targetSelected}
+                 disabled={!pastedText.trim()}
                 className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 disabled:bg-slate-300 rounded-xl shadow-sm transition"
               >
                 Đọc dữ liệu
@@ -552,7 +618,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
 
         {activeMode === 'DOCX' && (
           <div className="border-2 border-dashed border-violet-300 rounded-2xl p-8 text-center bg-violet-50/30">
-            <input type="file" accept=".docx" id="docx-finding-input" className="hidden" onChange={handleDocxUpload} disabled={!targetSelected} />
+            <input type="file" accept=".docx" id="docx-finding-input" className="hidden" onChange={handleDocxUpload} />
             <label htmlFor="docx-finding-input" className="cursor-pointer flex flex-col items-center">
               <Upload className="mb-3 h-10 w-10 text-violet-600" />
               <h3 className="text-base font-bold text-slate-800">Chọn tệp DOCX có bảng sai sót</h3>
@@ -579,7 +645,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
             </div>
             <button
               onClick={handleLoadDesktopSample}
-                 disabled={isProcessing || !targetSelected}
+                 disabled={isProcessing}
               className="px-5 py-2.5 text-xs font-bold text-white bg-indigo-600 hover:bg-indigo-700 rounded-xl shadow-md transition flex-shrink-0"
             >
               {isProcessing ? 'Đang nạp...' : 'Nạp dữ liệu mẫu'}

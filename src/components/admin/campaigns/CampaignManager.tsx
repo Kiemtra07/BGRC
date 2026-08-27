@@ -3,6 +3,7 @@ import { CalendarRange, Check, FileUp, FolderCog, Pencil, Plus, Trash2, UsersRou
 import { AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, OrgUnit, ReportChannel, UpdateAuditCampaignDTO, UserProfile } from '../../../../shared/contracts';
 
 interface Props {
+  canProvisionDrive: boolean;
   campaigns: AuditCampaign[];
   users: UserProfile[];
   orgUnits: OrgUnit[];
@@ -21,7 +22,7 @@ type CampaignForm = {
 
 const emptyForm = (): CampaignForm => ({ code: '', name: '', description: '', decisionNo: '', startDate: '', endDate: '', leadUserId: '', memberIds: [], branchCodes: [], reportChannelIds: [] });
 
-export const CampaignManager: React.FC<Props> = ({ campaigns, users, orgUnits, channels, onCreate, onUpdate, onDelete, onImportDraft, onProvisionDrive }) => {
+export const CampaignManager: React.FC<Props> = ({ canProvisionDrive, campaigns, users, orgUnits, channels, onCreate, onUpdate, onDelete, onImportDraft, onProvisionDrive }) => {
   const [open, setOpen] = useState(false);
   const [editing, setEditing] = useState<AuditCampaign | null>(null);
   const [busy, setBusy] = useState(false);
@@ -122,7 +123,7 @@ export const CampaignManager: React.FC<Props> = ({ campaigns, users, orgUnits, c
         {campaign.description && <p className="mt-3 text-xs text-slate-600">{campaign.description}</p>}
         {campaign.driveLastError && <p className="mt-3 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] font-semibold text-red-700">{campaign.driveLastError}</p>}
         {campaign.driveRootUrl && <a href={campaign.driveRootUrl} target="_blank" rel="noreferrer" className="mt-3 block text-xs font-bold text-[#006b68] underline">Mở thư mục chuyên đề</a>}
-        <div className="mt-4 grid gap-2 sm:grid-cols-3"><button type="button" onClick={() => beginEdit(campaign)} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700"><Pencil className="h-3.5 w-3.5" />Sửa chuyên đề</button><button type="button" onClick={() => remove(campaign)} disabled={busy || campaign.status !== 'DRAFT'} title={campaign.status !== 'DRAFT' ? 'Chỉ xóa được chuyên đề nháp.' : undefined} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-red-200 px-3 text-xs font-bold text-red-700 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" />Xóa chuyên đề</button><button type="button" onClick={() => onProvisionDrive(campaign.id)} disabled={campaign.driveProvisionStatus === 'PROVISIONING'} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-[#006b68] px-3 text-xs font-bold text-[#006b68] disabled:opacity-50"><FolderCog className="h-3.5 w-3.5" />{campaign.driveProvisionStatus === 'PROVISIONING' ? 'Đang tạo...' : campaign.driveProvisionStatus === 'READY' ? <><Check className="h-3.5 w-3.5" />Đồng bộ Drive</> : 'Tạo kho dữ liệu Drive'}</button></div>
+        <div className={`mt-4 grid gap-2 ${canProvisionDrive ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}><button type="button" onClick={() => beginEdit(campaign)} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-700"><Pencil className="h-3.5 w-3.5" />Sửa chuyên đề</button><button type="button" onClick={() => remove(campaign)} disabled={busy || campaign.status !== 'DRAFT'} title={campaign.status !== 'DRAFT' ? 'Chỉ xóa được chuyên đề nháp.' : undefined} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-red-200 px-3 text-xs font-bold text-red-700 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" />Xóa chuyên đề</button>{canProvisionDrive && <button type="button" onClick={() => onProvisionDrive(campaign.id)} disabled={campaign.driveProvisionStatus === 'PROVISIONING'} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-[#006b68] px-3 text-xs font-bold text-[#006b68] disabled:opacity-50"><FolderCog className="h-3.5 w-3.5" />{campaign.driveProvisionStatus === 'PROVISIONING' ? 'Đang tạo...' : campaign.driveProvisionStatus === 'READY' ? <><Check className="h-3.5 w-3.5" />Đồng bộ Drive</> : 'Tạo kho dữ liệu Drive'}</button>}</div>
       </article>)}
     </div>
   </section>;

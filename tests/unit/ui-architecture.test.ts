@@ -60,6 +60,41 @@ describe('UI and business terminology architecture', () => {
     expect(read('src/components/reports/ReportsWorkspace.tsx')).toContain('data-testid="reports-workspace"');
   });
 
+  it('keeps file selection usable before the import target is complete', () => {
+    const ingestion = read('src/components/internal/FastDataIngestion.tsx');
+    expect(ingestion).not.toContain('disabled={!targetSelected}');
+    expect(ingestion).toContain('Có thể chọn tệp trước');
+    expect(ingestion).toContain('Cần chọn Chuyên đề trước khi lưu');
+    expect(ingestion).toContain('Tạo chuyên đề từ tiểu biên bản');
+    expect(ingestion).toContain('importCampaignDraft');
+    expect(ingestion).toContain('onCampaignCreated');
+  });
+
+  it('loads expensive workspaces and admin catalog only when requested', () => {
+    const appSource = read('src/App.tsx');
+    expect(appSource).toContain("lazy(() => import('./components/internal/FastDataIngestion')");
+    expect(appSource).not.toContain("import { FastDataIngestion } from './components/internal/FastDataIngestion'");
+    expect(appSource).toContain("surface !== 'ADMIN'");
+    expect(appSource).toContain('adminCatalogLoaded');
+    expect(appSource).not.toContain('label="Nạp dữ liệu"');
+  });
+
+  it('lets authorized head-office roles configure campaigns and report types', () => {
+    const appSource = read('src/App.tsx');
+    const portal = read('src/components/admin/AdminPortal.tsx');
+    const permissions = read('src/components/admin/ButtonPermissionMatrix.tsx');
+    const serverSource = read('server/src/app.ts');
+
+    expect(appSource).toContain('canConfigureCatalog');
+    expect(appSource).toContain('label="Cấu hình"');
+    expect(portal).toContain('isSystemAdmin');
+    expect(portal).toContain("id: 'CAMPAIGNS'");
+    expect(portal).toContain("id: 'CHANNELS'");
+    expect(permissions).toContain("id: 'campaign-config'");
+    expect(permissions).toContain("id: 'report-type-config'");
+    expect(serverSource).toContain('requireCatalogManager');
+  });
+
   it('keeps the case queue compact while reserving cluster for filtering context', () => {
     const appSource = read('src/App.tsx');
 
@@ -80,6 +115,12 @@ describe('UI and business terminology architecture', () => {
     expect(reports).toContain('Lưu mẫu');
     expect(reports).toContain('Mẫu báo cáo');
     expect(reports).toContain('Xem theo');
+    expect(reports).toContain('data-testid="cognos-authoring-workspace"');
+    expect(reports).toContain('data-testid="report-data-panel"');
+    expect(reports).toContain('data-testid="report-canvas"');
+    expect(reports).toContain('Hàng');
+    expect(reports).toContain('Cột');
+    expect(reports).toContain('Giá trị');
     expect(reports).not.toContain('Trường dữ liệu');
     expect(reports).not.toContain('Thiết lập báo cáo');
     expect(reports).toContain('Xuất HTML');
@@ -106,7 +147,11 @@ describe('UI and business terminology architecture', () => {
     const reportCatalog = read('src/components/admin/ReportCatalogManager.tsx');
     const auditTrail = read('src/components/admin/AuditTrailViewer.tsx');
 
-    expect(detail).toContain('finding.isSpecialCase &&');
+    expect(detail).toContain('customerIsSpecialCase');
+    expect(detail).toContain('items.some(item => item.isSpecialCase)');
+    expect(detail).toContain('Đánh dấu khách hàng là trường hợp đặc biệt');
+    expect(detail).not.toContain('<ActionPanel title="Dấu sao">');
+    expect(detail).toContain("api.watchTarget(targetCommand('CUSTOMER'))");
     expect(detail).not.toContain('Tuyến duyệt lấy tự động theo cấu hình');
     expect(reports).toContain('filterable');
     expect(reports).toContain('Lọc dữ liệu');
@@ -198,6 +243,9 @@ describe('UI and business terminology architecture', () => {
     expect(workflow).toContain('Lãnh đạo chi nhánh');
     expect(workflow).toContain('Phê duyệt HT');
     expect(integration).toContain('Google Sheets');
+    expect(integration).toContain('Tạo Google Sheet');
+    expect(integration).toContain('Mở Google Sheet');
+    expect(integration).toContain('readOnly');
     expect(integration).toContain('Email tự động');
     expect(adminPortal).not.toContain('<WorkflowBuilder');
     expect(adminPortal).not.toContain('<SlaEscalationConfig');

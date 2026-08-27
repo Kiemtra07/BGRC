@@ -24,6 +24,8 @@ const roles: Array<{ key: RoleKey; label: string }> = [
 
 const allRoles = [...roleKeys];
 const matrix: PermissionRow[] = [
+  { id: 'campaign-config', label: 'Cấu hình chuyên đề', description: 'Tạo, sửa và quản lý chuyên đề kiểm tra', allowed: ['admin', 'officer', 'supervisor', 'approver'] },
+  { id: 'report-type-config', label: 'Cấu hình loại báo cáo', description: 'Tạo, sửa và quản lý mẫu, luồng, SLA của loại báo cáo', allowed: ['admin', 'officer', 'supervisor', 'approver'] },
   { id: 'import', label: 'Nhập danh sách sai sót', description: 'Khởi tạo đợt kiểm tra từ dữ liệu chuẩn hóa', allowed: ['admin', 'officer', 'supervisor'] },
   { id: 'create', label: 'Tạo sai sót trực tiếp', description: 'Tạo một mã lỗi mới bằng biểu mẫu', allowed: ['admin', 'officer'] },
   { id: 'upload', label: 'Tải bằng chứng', description: 'Đính kèm hồ sơ PDF hoặc hình ảnh', allowed: ['branchInput'] },

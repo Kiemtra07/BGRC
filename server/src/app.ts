@@ -70,6 +70,7 @@ import {
   WorkspaceTargetCommandSchema,
   CreateReportChannelSchema,
   UpdateReportChannelSchema,
+  CreateReportSpreadsheetSchema,
   ReportChannelVersion,
   LoginSchema,
   AuthSessionRecord,
@@ -2545,9 +2546,15 @@ app.get('/api/v1/campaigns', async (req) => {
   return auditCampaigns.filter(campaign => canAccessCampaign(user, campaign));
 });
 
+const catalogManagerRoles = ['ADMIN', 'SUPERVISOR', 'INTERNAL_APPROVER', 'INTERNAL_OFFICER'] as const;
+
+function requireCatalogManager(user: UserProfile): void {
+  requireRoles(user, [...catalogManagerRoles]);
+}
+
 app.post('/api/v1/admin/campaigns', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
   const user = getCurrentUser(req);
-  requireAdmin(user);
+  requireCatalogManager(user);
   const body = CreateAuditCampaignSchema.parse(req.body);
   if (auditCampaigns.some(item => item.code.toLocaleLowerCase('vi-VN') === body.code.toLocaleLowerCase('vi-VN'))) {
     throw new HttpProblem(409, 'CAMPAIGN_CODE_EXISTS', 'Mã chuyên đề đã tồn tại', 'Hãy sử dụng mã chuyên đề khác.');
@@ -2567,7 +2574,7 @@ app.post('/api/v1/admin/campaigns', async (req: FastifyRequest<{ Body: unknown }
 
 app.patch('/api/v1/admin/campaigns/:id', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const user = getCurrentUser(req);
-  requireAdmin(user);
+  requireCatalogManager(user);
   const body = UpdateAuditCampaignSchema.parse(req.body);
   const index = auditCampaigns.findIndex(item => item.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, 'CAMPAIGN_NOT_FOUND', 'Không tìm thấy chuyên đề', 'Chuyên đề không tồn tại.');
@@ -2584,7 +2591,7 @@ app.patch('/api/v1/admin/campaigns/:id', async (req: FastifyRequest<{ Params: { 
 });
 
 app.delete('/api/v1/admin/campaigns/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   const index = auditCampaigns.findIndex(item => item.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, 'CAMPAIGN_NOT_FOUND', 'Không tìm thấy chuyên đề', 'Chuyên đề không tồn tại.');
   const campaign = auditCampaigns[index];
@@ -2600,7 +2607,7 @@ app.delete('/api/v1/admin/campaigns/:id', async (req: FastifyRequest<{ Params: {
 });
 
 app.post('/api/v1/admin/campaigns/import-draft', async (req, reply) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   const data = await req.file();
   if (!data) throw new HttpProblem(422, 'CAMPAIGN_IMPORT_FILE_REQUIRED', 'Thiếu tệp chuyên đề', 'Hãy tải lên một tệp DOCX, PDF hoặc Excel.');
   const buffer = await data.toBuffer();
@@ -2708,7 +2715,7 @@ app.get('/api/v1/org-units/branches', async (req) => {
 
 // Admin: Org Units
 app.get('/api/v1/admin/org-units', async (req) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   return orgUnits.map(projectOrgUnit);
 });
 
@@ -2829,7 +2836,7 @@ app.delete('/api/v1/admin/org-units/:id', async (req: FastifyRequest<{ Params: {
 
 // Admin: Users
 app.get('/api/v1/admin/users', async (req) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   return appUsers.map(user => {
     const team = user.internalTeamId
       ? orgUnits.find(unit => unit.id === user.internalTeamId && unit.type === 'INTERNAL_TEAM')
@@ -3010,13 +3017,13 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
 
 // Admin: Channels
 app.get('/api/v1/admin/channels', async (req) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   return reportChannels;
 });
 app.get('/api/v1/channels/active', async () => reportChannels.filter(c => c.isActive));
 app.post('/api/v1/admin/channels', async (req: FastifyRequest<{ Body: any }>) => {
   const user = getCurrentUser(req);
-  requireAdmin(user);
+  requireCatalogManager(user);
   const id = `chan-${crypto.randomUUID()}`;
   // Untrusted request body: defaults are applied to a plain record, then zod validates the result.
   const payload = (req.body ?? {}) as Record<string, unknown>;
@@ -3064,7 +3071,7 @@ app.post('/api/v1/admin/channels', async (req: FastifyRequest<{ Body: any }>) =>
 
 app.patch('/api/v1/admin/channels/:id', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>) => {
   const user = getCurrentUser(req);
-  requireAdmin(user);
+  requireCatalogManager(user);
   const index = reportChannels.findIndex(channel => channel.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, 'REPORT_TYPE_NOT_FOUND', 'Không tìm thấy loại báo cáo', 'Loại báo cáo không tồn tại.');
   const body = UpdateReportChannelSchema.parse(req.body);
@@ -3099,7 +3106,7 @@ app.patch('/api/v1/admin/channels/:id', async (req: FastifyRequest<{ Params: { i
 });
 
 app.get('/api/v1/admin/channels/:id/versions', async (req: FastifyRequest<{ Params: { id: string } }>) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   if (!reportChannels.some(channel => channel.id === req.params.id)) {
     throw new HttpProblem(404, 'REPORT_TYPE_NOT_FOUND', 'Không tìm thấy loại báo cáo', 'Loại báo cáo không tồn tại.');
   }
@@ -3109,19 +3116,17 @@ app.get('/api/v1/admin/channels/:id/versions', async (req: FastifyRequest<{ Para
 });
 
 app.get('/api/v1/admin/channels/:id/integration-readiness', async (req: FastifyRequest<{ Params: { id: string } }>) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   const channel = reportChannels.find(item => item.id === req.params.id);
   if (!channel) throw new HttpProblem(404, 'REPORT_TYPE_NOT_FOUND', 'Không tìm thấy loại báo cáo', 'Loại báo cáo không tồn tại.');
-  const googleCredentialReady = process.env.GOOGLE_DRIVE_AUTH_MODE === 'oauth-user'
-    ? Boolean(process.env.GOOGLE_OAUTH_CLIENT_ID && process.env.GOOGLE_OAUTH_CLIENT_SECRET && process.env.GOOGLE_OAUTH_REDIRECT_URI)
-    : Boolean(process.env.GOOGLE_SERVICE_ACCOUNT_JSON || process.env.GOOGLE_APPLICATION_CREDENTIALS);
+  const googleStatus = channel.integrationConfig?.googleSheets.enabled
+    ? await googleDriveService.getReportSpreadsheetStatus()
+    : { ready: true, message: 'Đang tắt.' };
   const smtpReady = Boolean(process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASSWORD && process.env.EMAIL_FROM);
   return {
     googleSheets: {
-      configured: !channel.integrationConfig?.googleSheets.enabled || googleCredentialReady,
-      message: channel.integrationConfig?.googleSheets.enabled && !googleCredentialReady
-        ? 'Thiếu cấu hình credential Google phù hợp trên máy chủ.'
-        : channel.integrationConfig?.googleSheets.enabled ? 'Máy chủ đã có thông tin xác thực Google.' : 'Đang tắt.',
+      configured: googleStatus.ready,
+      message: googleStatus.message,
     },
     email: {
       configured: !channel.integrationConfig?.email.enabled || smtpReady,
@@ -3132,8 +3137,14 @@ app.get('/api/v1/admin/channels/:id/integration-readiness', async (req: FastifyR
   };
 });
 
+app.post('/api/v1/admin/report-spreadsheets', async (req: FastifyRequest<{ Body: unknown }>) => {
+  requireCatalogManager(getCurrentUser(req));
+  const body = CreateReportSpreadsheetSchema.parse(req.body);
+  return googleDriveService.createReportSpreadsheet(body);
+});
+
 app.delete('/api/v1/admin/channels/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
-  requireAdmin(getCurrentUser(req));
+  requireCatalogManager(getCurrentUser(req));
   const index = reportChannels.findIndex(channel => channel.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, 'REPORT_TYPE_NOT_FOUND', 'Không tìm thấy loại báo cáo', 'Loại báo cáo không tồn tại.');
   if (findings.some(finding => finding.channelId === req.params.id)) {
@@ -3632,34 +3643,46 @@ app.get('/api/v1/findings/:id/approval-candidates', async (req: FastifyRequest<{
   return approvalCandidatesForFinding(finding);
 });
 
-// Dấu sao — đánh dấu hồ sơ thuộc trường hợp đặc biệt. Chỉ đổi được trước bước Kiểm soát chi nhánh
-// (khi hồ sơ đang chờ khắc phục hoặc đã bị trả về); sau đó khóa cùng tuyến duyệt.
+// Dấu sao thuộc về khách hàng trong một chi nhánh, không thuộc riêng từng mã lỗi.
+// Chỉ đổi được khi toàn bộ mã lỗi của khách hàng vẫn ở bước chi nhánh; bật dấu sao cũng
+// tự đưa khách hàng vào danh sách Theo dõi của chính người thao tác.
 app.put('/api/v1/findings/:id/special-case', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   requireRoles(user, ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'BRANCH_INPUT']);
-  if (finding.workflowStatus !== 'PENDING' && finding.workflowStatus !== 'REJECTED') {
+  const customerFindings = filterFindingsByScope(findings, user)
+    .filter(item => item.branchCode === finding.branchCode && item.cif === finding.cif);
+  if (customerFindings.some(item => item.workflowStatus !== 'PENDING' && item.workflowStatus !== 'REJECTED')) {
     throw new HttpProblem(409, 'SPECIAL_CASE_LOCKED_AFTER_SUBMISSION', 'Dấu sao đã khóa', 'Chỉ đánh dấu trường hợp đặc biệt khi hồ sơ đang chờ khắc phục hoặc đã bị trả về.');
   }
   const dto = SetFindingSpecialCaseSchema.parse(req.body);
   const now = new Date().toISOString();
-  finding.isSpecialCase = dto.isSpecialCase;
-  finding.version += 1;
-  finding.updatedAt = now;
-  workflowEvents.push({
-    id: `evt-${crypto.randomUUID()}`,
-    findingId: finding.id,
-    command: 'SET_SPECIAL_CASE',
-    fromStatus: finding.workflowStatus,
-    toStatus: finding.workflowStatus,
-    actorUserId: user.id,
-    actorName: user.fullName,
-    actorRole: user.primaryRole,
-    notes: dto.isSpecialCase
-      ? 'Đánh dấu trường hợp đặc biệt: bổ sung bước Lãnh đạo chi nhánh phê duyệt bắt buộc trước khi lên Hội sở.'
-      : 'Bỏ đánh dấu trường hợp đặc biệt: Kiểm soát chi nhánh chuyển thẳng lên Hội sở.',
-    createdAt: now,
-  });
+  for (const customerFinding of customerFindings) {
+    customerFinding.isSpecialCase = dto.isSpecialCase;
+    customerFinding.version += 1;
+    customerFinding.updatedAt = now;
+    workflowEvents.push({
+      id: `evt-${crypto.randomUUID()}`,
+      findingId: customerFinding.id,
+      command: 'SET_SPECIAL_CASE',
+      fromStatus: customerFinding.workflowStatus,
+      toStatus: customerFinding.workflowStatus,
+      actorUserId: user.id,
+      actorName: user.fullName,
+      actorRole: user.primaryRole,
+      notes: dto.isSpecialCase
+        ? 'Đánh dấu khách hàng là trường hợp đặc biệt: bổ sung bước Lãnh đạo chi nhánh phê duyệt bắt buộc trước khi lên Hội sở.'
+        : 'Bỏ đánh dấu khách hàng là trường hợp đặc biệt: Kiểm soát chi nhánh chuyển thẳng lên Hội sở.',
+      createdAt: now,
+    });
+  }
+  if (dto.isSpecialCase) {
+    await addWorkspaceTarget(workspaceWatchTargets, {
+      targetType: 'CUSTOMER',
+      branchCode: finding.branchCode,
+      cif: finding.cif,
+    }, user);
+  }
   await persistLocalState();
   return {
     ...finding,

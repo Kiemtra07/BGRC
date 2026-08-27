@@ -32,14 +32,16 @@ describe('audit campaign APIs', () => {
     expect(filtered.json().items).toHaveLength(0);
   });
 
-  it('rejects invalid membership and non-admin mutation', async () => {
+  it('rejects invalid membership, allows Hội sở configuration roles and blocks branch mutation', async () => {
     const payload = {
       code: 'BAD-CD', name: 'Chuyên đề sai', decisionNo: '01/QĐ', startDate: '2026-09-01', endDate: '2026-08-01',
       leadUserId: 'user-internal-supervisor', members: [], branchCodes: ['635'], reportChannelIds: ['chan-audit-bgs'],
     };
     const invalid = await app.inject({ method: 'POST', url: '/api/v1/admin/campaigns', headers: adminHeaders, payload });
     expect(invalid.statusCode).toBe(422);
-    const forbidden = await app.inject({ method: 'POST', url: '/api/v1/admin/campaigns', headers: { 'x-user-id': 'user-internal-officer' }, payload: { ...payload, endDate: '2026-10-01' } });
+    const authorized = await app.inject({ method: 'POST', url: '/api/v1/admin/campaigns', headers: { 'x-user-id': 'user-internal-officer' }, payload: { ...payload, code: 'CD-HO-PHAN-QUYEN', endDate: '2026-10-01', members: [{ userId: 'user-internal-supervisor', memberRole: 'LEAD', assignedBranchCodes: ['635'] }] } });
+    expect(authorized.statusCode, authorized.body).toBe(201);
+    const forbidden = await app.inject({ method: 'POST', url: '/api/v1/admin/campaigns', headers: { 'x-user-id': 'user-branch-635' }, payload: { ...payload, code: 'CD-CN-KHONG-DUOC', endDate: '2026-10-01' } });
     expect(forbidden.statusCode).toBe(403);
   });
 

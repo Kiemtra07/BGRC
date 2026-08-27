@@ -1,5 +1,5 @@
 import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, Bookmark, FileBarChart, FileDown, FileSpreadsheet, FileText, Filter, Plus, RefreshCw, Save, Trash2 } from 'lucide-react';
+import { BarChart3, Bookmark, Columns3, FileBarChart, FileDown, FileSpreadsheet, FileText, Filter, Plus, RefreshCw, Rows3, Save, Search, Sigma, Trash2 } from 'lucide-react';
 import {
   ReportCatalog, ReportDefinition, ReportFieldDefinition, ReportFieldKey, ReportFilterRule,
   ReportMetricDefinition, ReportMetricKey, ReportRunRequest, ReportRunRequestSchema, ReportRunResult, DashboardDefinition, UserRole,
@@ -52,6 +52,7 @@ export const ReportsWorkspace: React.FC = () => {
   const [exporting, setExporting] = useState<'csv' | 'html' | 'xlsx' | null>(null);
   const [presentation, setPresentation] = useState<'table' | 'pivot' | 'chart'>('table');
   const [chartType, setChartType] = useState<'bar' | 'line' | 'pie'>('bar');
+  const [dataSearch, setDataSearch] = useState('');
   const activeQueryRef = useRef(activeQuery);
   const selectedColumnsRef = useRef(selectedColumns);
   activeQueryRef.current = activeQuery;
@@ -64,6 +65,9 @@ export const ReportsWorkspace: React.FC = () => {
   const activeMetrics = useMemo(() => catalog?.metrics || [], [catalog]);
   const filterFields = useMemo(() => catalog?.fields.filter(field => field.filterable !== false) || [], [catalog]);
   const filterableCatalog = useMemo(() => catalog ? { ...catalog, fields: filterFields } : null, [catalog, filterFields]);
+  const normalizedDataSearch = dataSearch.trim().toLocaleLowerCase('vi-VN');
+  const visibleGroupFields = useMemo(() => groupFields.filter(field => !normalizedDataSearch || `${field.label} ${field.key}`.toLocaleLowerCase('vi-VN').includes(normalizedDataSearch)), [groupFields, normalizedDataSearch]);
+  const visibleMetrics = useMemo(() => activeMetrics.filter(metric => !normalizedDataSearch || `${metric.label} ${metric.key}`.toLocaleLowerCase('vi-VN').includes(normalizedDataSearch)), [activeMetrics, normalizedDataSearch]);
   const selectedDashboard = useMemo(() => dashboards.find(item => item.id === selectedDashboardId), [dashboards, selectedDashboardId]);
 
   const loadCatalog = async () => {
@@ -218,15 +222,32 @@ export const ReportsWorkspace: React.FC = () => {
     {error && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800">{error}</div>}
     {notice && <div role="status" className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-xs font-semibold text-[#006b68]">{notice}</div>}
 
-    <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
-      <div className="grid gap-3 lg:grid-cols-[minmax(220px,1fr)_minmax(180px,.7fr)_minmax(180px,.7fr)_auto] lg:items-end">
+    <div data-testid="cognos-authoring-workspace" className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm lg:grid lg:grid-cols-[17rem_minmax(0,1fr)]">
+      <aside data-testid="report-data-panel" className="border-b border-slate-200 bg-slate-50 lg:border-b-0 lg:border-r">
+        <details className="group" open>
+          <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between px-4 text-sm font-bold text-slate-800 lg:cursor-default"><span>Danh mục dữ liệu</span><span className="text-[10px] font-medium text-slate-400 lg:hidden">Mở/đóng</span></summary>
+          <div className="border-t border-slate-200 p-3">
+            <label className="relative block"><span className="sr-only">Tìm trường hoặc chỉ số</span><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" /><input value={dataSearch} onChange={event => setDataSearch(event.target.value)} className="min-h-10 w-full rounded-lg border border-slate-200 bg-white pl-9 pr-3 text-xs outline-none focus:border-[#006b68]" placeholder="Tìm dữ liệu" /></label>
+            <div className="mt-4 space-y-4">
+              <section><h3 className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-slate-500"><Columns3 className="h-3.5 w-3.5" />Chiều phân tích</h3><div className="max-h-52 space-y-1 overflow-y-auto">{visibleGroupFields.map(field => <button key={field.key} type="button" onClick={() => setDraftQuery(current => ({ ...current, groupBy: field.key, pivotBy: current.pivotBy === field.key ? undefined : current.pivotBy }))} className={`w-full rounded-lg px-2.5 py-2 text-left ${draftQuery.groupBy === field.key ? 'bg-teal-100 text-[#006b68]' : 'text-slate-700 hover:bg-white'}`}><span className="block text-xs font-bold">{field.label}</span><span className="block truncate font-mono text-[9px] text-slate-400">{field.key}</span></button>)}</div></section>
+              <section><h3 className="mb-2 flex items-center gap-2 text-[11px] font-black uppercase tracking-wide text-slate-500"><Sigma className="h-3.5 w-3.5" />Chỉ số</h3><div className="max-h-52 space-y-1 overflow-y-auto">{visibleMetrics.map(metric => <label key={metric.key} className="flex cursor-pointer items-start gap-2 rounded-lg px-2.5 py-2 hover:bg-white"><input type="checkbox" className="mt-0.5" checked={draftQuery.metrics.includes(metric.key)} onChange={() => setDraftQuery(current => ({ ...current, metrics: current.metrics.includes(metric.key) ? (current.metrics.length > 1 ? current.metrics.filter(key => key !== metric.key) : current.metrics) : [...current.metrics, metric.key] }))} /><span className="min-w-0"><span className="block text-xs font-bold text-slate-700">{metric.label}</span><span className="block truncate font-mono text-[9px] text-slate-400">{metric.key}</span></span></label>)}</div></section>
+            </div>
+          </div>
+        </details>
+      </aside>
+
+      <div data-testid="report-canvas" className="min-w-0 p-4 sm:p-5">
+      <div className="grid gap-3 sm:grid-cols-[minmax(220px,1fr)_auto] sm:items-end">
         <label className="space-y-1.5 text-xs font-bold text-slate-600"><span>Mẫu báo cáo</span><select aria-label="Mẫu báo cáo" value={selectedDefinitionId} onChange={event => selectDefinition(event.target.value)} className={CONTROL_CLASS}><option value="">Báo cáo tổng hợp</option>{definitions.map(definition => <option key={definition.id} value={definition.id}>{definition.name}</option>)}</select></label>
-        <label className="space-y-1.5 text-xs font-bold text-slate-600"><span>Xem theo</span><select aria-label="Xem theo" value={draftQuery.groupBy} onChange={event => setDraftQuery(current => ({ ...current, groupBy: event.target.value as ReportFieldKey, pivotBy: current.pivotBy === event.target.value ? undefined : current.pivotBy }))} className={CONTROL_CLASS}>{groupFields.map(field => <option key={field.key} value={field.key}>{field.label}</option>)}</select></label>
-        <label className="space-y-1.5 text-xs font-bold text-slate-600"><span>Cột bảng chéo</span><select aria-label="Cột bảng chéo" value={draftQuery.pivotBy || ''} onChange={event => setDraftQuery(current => ({ ...current, pivotBy: event.target.value ? event.target.value as ReportFieldKey : undefined }))} className={CONTROL_CLASS}><option value="">Không dùng</option>{groupFields.filter(field => field.key !== draftQuery.groupBy).map(field => <option key={field.key} value={field.key}>{field.label}</option>)}</select></label>
         <div className="grid grid-cols-2 gap-2"><button type="button" onClick={() => { setCopySourceId(undefined); setShowSaveForm(current => !current); }} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl border border-slate-200 px-3 py-2.5 text-xs font-bold text-slate-600 hover:bg-slate-50"><Bookmark className="h-4 w-4" />Lưu cách xem</button>{selectedDefinitionId && <button type="button" onClick={prepareCopy} className="min-h-11 rounded-xl border border-slate-200 px-3 text-xs font-bold text-slate-600 hover:bg-slate-50">Sao chép</button>}</div>
       </div>
 
-      <fieldset className="mt-3 border-t border-slate-100 pt-3"><legend className="text-xs font-bold text-slate-600">Chỉ số</legend><div className="mt-2 flex flex-wrap gap-2">{activeMetrics.map(metric => <button key={metric.key} type="button" aria-pressed={draftQuery.metrics.includes(metric.key)} onClick={() => setDraftQuery(current => ({ ...current, metrics: current.metrics.includes(metric.key) ? (current.metrics.length > 1 ? current.metrics.filter(key => key !== metric.key) : current.metrics) : [...current.metrics, metric.key] }))} className={`min-h-9 rounded-lg border px-3 text-[11px] font-bold ${draftQuery.metrics.includes(metric.key) ? 'border-[#006b68] bg-teal-50 text-[#006b68]' : 'border-slate-200 text-slate-600 hover:bg-slate-50'}`}>{metric.label}</button>)}</div></fieldset>
+      <div className="mt-4 grid gap-px overflow-hidden rounded-xl border border-slate-200 bg-slate-200 sm:grid-cols-2 xl:grid-cols-4">
+        <label className="bg-white p-3"><span className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-slate-500"><Rows3 className="h-3.5 w-3.5" />Hàng</span><select aria-label="Xem theo" value={draftQuery.groupBy} onChange={event => setDraftQuery(current => ({ ...current, groupBy: event.target.value as ReportFieldKey, pivotBy: current.pivotBy === event.target.value ? undefined : current.pivotBy }))} className="min-h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700">{groupFields.map(field => <option key={field.key} value={field.key}>{field.label}</option>)}</select></label>
+        <label className="bg-white p-3"><span className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-slate-500"><Columns3 className="h-3.5 w-3.5" />Cột</span><select aria-label="Cột bảng chéo" value={draftQuery.pivotBy || ''} onChange={event => setDraftQuery(current => ({ ...current, pivotBy: event.target.value ? event.target.value as ReportFieldKey : undefined }))} className="min-h-9 w-full rounded-lg border border-slate-200 bg-white px-2 text-xs font-bold text-slate-700"><option value="">Không dùng</option>{groupFields.filter(field => field.key !== draftQuery.groupBy).map(field => <option key={field.key} value={field.key}>{field.label}</option>)}</select></label>
+        <div className="bg-white p-3"><span className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-slate-500"><Sigma className="h-3.5 w-3.5" />Giá trị</span><p className="line-clamp-2 text-xs font-bold text-slate-700">{draftQuery.metrics.map(key => metricsByKey.get(key)?.label).filter(Boolean).join(', ')}</p></div>
+        <div className="bg-white p-3"><span className="mb-2 flex items-center gap-2 text-[10px] font-black uppercase tracking-wide text-slate-500"><Filter className="h-3.5 w-3.5" />Bộ lọc</span><button type="button" onClick={addRule} disabled={!filterFields.length} className="min-h-9 w-full rounded-lg border border-dashed border-slate-300 px-2 text-left text-xs font-bold text-[#006b68] hover:bg-teal-50 disabled:opacity-50">{draftQuery.rules.length ? `${draftQuery.rules.length} điều kiện` : 'Thêm điều kiện'}</button></div>
+      </div>
 
       {showSaveForm && <div className="mt-3 space-y-3 rounded-xl bg-slate-50 p-3"><div className="flex flex-col gap-2 sm:flex-row"><label className="sr-only" htmlFor="report-name">Tên mẫu báo cáo</label><input id="report-name" value={reportName} onChange={event => setReportName(event.target.value)} className={`${CONTROL_CLASS} flex-1`} placeholder="Tên mẫu, ví dụ: Tồn đọng Chi nhánh 635" /><button type="button" disabled={saving} onClick={() => void saveDefinition()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-2.5 text-xs font-bold text-white hover:bg-[#005a57] disabled:opacity-50"><Save className="h-4 w-4" />{saving ? 'Đang lưu' : 'Lưu mẫu'}</button></div><RoleSharePicker selectedRoles={reportSharedRoles} onChange={setReportSharedRoles} /></div>}
 
@@ -242,6 +263,7 @@ export const ReportsWorkspace: React.FC = () => {
       </div>}
 
       <div className="mt-4 flex flex-col gap-2 border-t border-slate-100 pt-4 sm:flex-row sm:items-center sm:justify-between"><span className="text-[11px] text-slate-500">{draftQuery.rules.length === 0 ? 'Không áp dụng bộ lọc' : `${draftQuery.rules.length} điều kiện đang chọn`}</span><div className="grid grid-cols-2 gap-2 sm:flex"><button type="button" onClick={resetFilters} className="min-h-10 rounded-xl border border-slate-200 px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-50">Xóa lọc</button><button type="button" onClick={applyFilters} className="min-h-10 rounded-xl bg-[#006b68] px-4 py-2 text-xs font-bold text-white hover:bg-[#005a57]">Xem báo cáo</button></div></div>
+    </div>
     </div>
 
     {activeQuery.rules.length > 0 && <div className="flex flex-wrap gap-2" aria-label="Bộ lọc đang áp dụng">{activeQuery.rules.map((rule, index) => <span key={`${rule.key}-${index}`} className="rounded-full border border-teal-200 bg-teal-50 px-3 py-1.5 text-[11px] font-bold text-[#006b68]">{describeRule(rule, fieldsByKey.get(rule.key), operatorsByKey.get(rule.operator)?.label)}</span>)}</div>}

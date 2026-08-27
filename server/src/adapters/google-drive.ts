@@ -13,10 +13,13 @@ if (process.env.NODE_ENV !== 'test') dotenv.config();
 const DRIVE_SCOPE = 'https://www.googleapis.com/auth/drive';
 const DRIVE_API = 'https://www.googleapis.com/drive/v3';
 const DRIVE_UPLOAD_API = 'https://www.googleapis.com/upload/drive/v3';
+const SHEETS_API = 'https://sheets.googleapis.com/v4';
 const FOLDER_MIME_TYPE = 'application/vnd.google-apps.folder';
+const SPREADSHEET_MIME_TYPE = 'application/vnd.google-apps.spreadsheet';
 
 interface GoogleServiceAccount { client_email: string; private_key: string; }
 interface DriveFileMetadata { id: string; name: string; mimeType: string; size: string; parents?: string[]; trashed?: boolean; appProperties?: Record<string, string>; }
+interface SpreadsheetMetadata { sheets?: Array<{ properties?: { sheetId?: number; title?: string } }> }
 
 export interface DriveUploadResult { driveFileId: string; driveUrl: string; sha256Checksum: string; fileSize: number; mimeType: string; folderPath: string; }
 export interface DriveResumableUploadSession { uploadMode: 'google-drive'; uploadUrl: string; driveFileId: string; fileName: string; mimeType: string; fileSize: number; sha256Checksum: string; }
@@ -36,6 +39,7 @@ export interface EvidenceStorageOptions {
   fetchImpl?: typeof fetch;
 }
 export interface EvidenceStorageStatus { mode: 'local' | 'google-drive' | 'misconfigured'; durable: boolean; ready: boolean; warning?: string; }
+export interface ReportSpreadsheetResult { spreadsheetId: string; spreadsheetUrl: string; sheetName: string; }
 
 function createLocalPreviewPdf(): Buffer {
   const pageStream = (page: number) => { const content = `BT /F1 18 Tf 72 720 Td (AUDIT BGS - Local evidence preview - Page ${page} of 3) Tj ET`; return `<< /Length ${Buffer.byteLength(content, 'ascii')} >>\nstream\n${content}\nendstream`; };
@@ -138,6 +142,71 @@ export class GoogleDriveAdapter {
     this.googleOAuthRefreshToken = refreshToken?.trim() || undefined;
   }
 
+  public async getReportSpreadsheetStatus(): Promise<{ ready: boolean; message: string }> {
+    try {
+      await this.requireGoogleRootFolderAccess();
+      return { ready: true, message: 'Google Drive đã sẵn sàng để tạo bảng.' };
+    } catch (error) {
+      return { ready: false, message: error instanceof Error ? error.message : 'Google Drive chưa sẵn sàng.' };
+    }
+  }
+
+  public async createReportSpreadsheet(params: {
+    reportName: string;
+    sheetName: string;
+    columns: Array<{ key: string; label: string }>;
+  }): Promise<ReportSpreadsheetResult> {
+    await this.requireGoogleRootFolderAccess();
+    const reportName = params.reportName.normalize('NFC').trim().slice(0, 255);
+    const sheetName = params.sheetName.normalize('NFC').trim().slice(0, 100);
+    const headers = params.columns.map(column => column.label.normalize('NFC').trim()).filter(Boolean);
+    if (!reportName || !sheetName || !headers.length || headers.length > 200) {
+      throw new HttpProblem(422, 'REPORT_SPREADSHEET_INVALID', 'Cấu hình Google Sheet chưa hợp lệ', 'Cần tên báo cáo, tên sheet và từ 1 đến 200 cột dữ liệu.');
+    }
+
+    const created = await this.driveFetchJson<{ id: string; name: string; webViewLink?: string }>(
+      `${DRIVE_API}/files?${new URLSearchParams({ supportsAllDrives: 'true', fields: 'id,name,webViewLink' })}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+        body: JSON.stringify({ name: reportName, mimeType: SPREADSHEET_MIME_TYPE, parents: [this.googleDriveRootFolderId] }),
+      },
+    );
+
+    try {
+      const metadata = await this.googleFetchJson<SpreadsheetMetadata>(
+        `${SHEETS_API}/spreadsheets/${encodeURIComponent(created.id)}?fields=sheets(properties(sheetId,title))`,
+        undefined,
+        'Google Sheets',
+      );
+      const firstSheet = metadata.sheets?.[0]?.properties;
+      if (firstSheet?.sheetId === undefined) {
+        throw new HttpProblem(503, 'GOOGLE_SHEETS_INVALID_RESPONSE', 'Không thể chuẩn bị Google Sheet', 'Google Sheets không trả về trang tính mặc định.');
+      }
+      if (firstSheet.title !== sheetName) {
+        await this.googleFetch(`${SHEETS_API}/spreadsheets/${encodeURIComponent(created.id)}:batchUpdate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+          body: JSON.stringify({ requests: [{ updateSheetProperties: { properties: { sheetId: firstSheet.sheetId, title: sheetName }, fields: 'title' } }] }),
+        }, 'Google Sheets');
+      }
+      const range = `'${sheetName.replaceAll("'", "''")}'!A1:${spreadsheetColumnName(headers.length)}1`;
+      await this.googleFetch(`${SHEETS_API}/spreadsheets/${encodeURIComponent(created.id)}/values/${encodeURIComponent(range)}?valueInputOption=RAW`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json; charset=UTF-8' },
+        body: JSON.stringify({ majorDimension: 'ROWS', values: [headers] }),
+      }, 'Google Sheets');
+      return {
+        spreadsheetId: created.id,
+        spreadsheetUrl: created.webViewLink ?? `https://docs.google.com/spreadsheets/d/${created.id}/edit`,
+        sheetName,
+      };
+    } catch (error) {
+      await this.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(created.id)}?supportsAllDrives=true`, { method: 'DELETE' }).catch(() => undefined);
+      throw error;
+    }
+  }
+
   public generateFolderPath(params: { campaignCode?: string; channelCode: string; year: number | string; clusterName: string; branchCode: string; cif: string; customerName?: string; errorCode: string }): string {
     const sanitize = (value: string) => value.normalize('NFC').replace(/[^a-zA-Z0-9_\u00C0-\u1EF9-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
     const campaign = sanitize(params.campaignCode ?? 'KHONG_CHUYEN_DE');
@@ -225,11 +294,25 @@ export class GoogleDriveAdapter {
     if (!this.serviceAccount) throw new HttpProblem(503, 'GOOGLE_DRIVE_ADAPTER_NOT_READY', 'Google Drive chưa sẵn sàng', 'Không đọc được GOOGLE_SERVICE_ACCOUNT_JSON.');
     const client = new JWT({ email: this.serviceAccount.client_email, key: this.serviceAccount.private_key, scopes: [DRIVE_SCOPE] }); const token = await client.getAccessToken(); if (!token.token) throw new HttpProblem(503, 'GOOGLE_DRIVE_AUTH_FAILED', 'Không xác thực được Google Drive', 'Google không trả access token cho service account.'); return token.token;
   }
-  private async driveFetch(url: string, init: RequestInit = {}): Promise<Response> { let response: Response; try { response = await this.fetchImpl(url, { ...init, headers: { Authorization: `Bearer ${await this.getAccessToken()}`, ...init.headers } }); } catch { throw new HttpProblem(503, 'GOOGLE_DRIVE_UNAVAILABLE', 'Google Drive không khả dụng', 'Không kết nối được Google Drive API v3.'); } if (!response.ok) throw new HttpProblem(503, 'GOOGLE_DRIVE_UNAVAILABLE', 'Google Drive không khả dụng', `Google Drive API v3 trả HTTP ${response.status}.`); return response; }
+  private async googleFetch(url: string, init: RequestInit = {}, service = 'Google Drive'): Promise<Response> { let response: Response; try { response = await this.fetchImpl(url, { ...init, headers: { Authorization: `Bearer ${await this.getAccessToken()}`, ...init.headers } }); } catch { throw new HttpProblem(503, 'GOOGLE_API_UNAVAILABLE', `${service} không khả dụng`, `Không kết nối được ${service}.`); } if (!response.ok) throw new HttpProblem(503, 'GOOGLE_API_UNAVAILABLE', `${service} không khả dụng`, `${service} trả HTTP ${response.status}.`); return response; }
+  private async googleFetchJson<T>(url: string, init?: RequestInit, service?: string): Promise<T> { return (await this.googleFetch(url, init, service)).json() as Promise<T>; }
+  private async driveFetch(url: string, init: RequestInit = {}): Promise<Response> { return this.googleFetch(url, init, 'Google Drive'); }
   private async driveFetchJson<T>(url: string, init?: RequestInit): Promise<T> { return (await this.driveFetch(url, init)).json() as Promise<T>; }
-  private async requireGoogleRootFolder(): Promise<void> { this.requireGoogleMode(); const folder = await this.driveFetchJson<{ id: string; driveId?: string; mimeType: string; trashed?: boolean; capabilities?: { canAddChildren?: boolean } }>(`${DRIVE_API}/files/${encodeURIComponent(this.googleDriveRootFolderId!)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`); if (folder.id !== this.googleDriveRootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, 'GOOGLE_DRIVE_ROOT_UNAVAILABLE', 'Thư mục Google Drive chưa sẵn sàng', 'Credential hiện tại không có quyền thêm tệp vào thư mục gốc đã cấu hình.'); if (this.googleDriveAuthMode === 'service-account' && !folder.driveId) throw new HttpProblem(503, 'GOOGLE_DRIVE_SHARED_DRIVE_REQUIRED', 'Cần dùng Shared Drive cho Google Drive', 'Service account không có storage quota trong My Drive; hãy đặt thư mục gốc trong Shared Drive và cấp quyền Contributor hoặc Content manager.'); }
+  private async requireGoogleRootFolder(): Promise<void> { this.requireGoogleMode(); await this.requireGoogleRootFolderAccess(); }
+  private async requireGoogleRootFolderAccess(): Promise<void> { if (!this.googleDriveRootFolderId || !this.hasCredential()) throw new HttpProblem(503, 'GOOGLE_DRIVE_ADAPTER_NOT_READY', 'Google Drive chưa sẵn sàng', `${this.credentialWarning()} GOOGLE_DRIVE_ROOT_FOLDER_ID là bắt buộc.`); const folder = await this.driveFetchJson<{ id: string; driveId?: string; mimeType: string; trashed?: boolean; capabilities?: { canAddChildren?: boolean } }>(`${DRIVE_API}/files/${encodeURIComponent(this.googleDriveRootFolderId)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`); if (folder.id !== this.googleDriveRootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, 'GOOGLE_DRIVE_ROOT_UNAVAILABLE', 'Thư mục Google Drive chưa sẵn sàng', 'Credential hiện tại không có quyền thêm tệp vào thư mục gốc đã cấu hình.'); if (this.googleDriveAuthMode === 'service-account' && !folder.driveId) throw new HttpProblem(503, 'GOOGLE_DRIVE_SHARED_DRIVE_REQUIRED', 'Cần dùng Shared Drive cho Google Drive', 'Service account không có storage quota trong My Drive; hãy đặt thư mục gốc trong Shared Drive và cấp quyền Contributor hoặc Content manager.'); }
   private async ensureGoogleFolderPath(folderPath: string): Promise<string> { await this.requireGoogleRootFolder(); let parentId = this.googleDriveRootFolderId!; for (const folderName of folderPath.split('/').filter(Boolean)) { const query = `name = '${escapeDriveQuery(folderName)}' and '${escapeDriveQuery(parentId)}' in parents and mimeType = '${FOLDER_MIME_TYPE}' and trashed = false`; const search = await this.driveFetchJson<{ files?: Array<{ id: string }> }>(`${DRIVE_API}/files?${new URLSearchParams({ q: query, fields: 'files(id)', supportsAllDrives: 'true', includeItemsFromAllDrives: 'true' })}`); if (search.files?.[0]?.id) { parentId = search.files[0].id; continue; } const created = await this.driveFetchJson<{ id: string }>(`${DRIVE_API}/files?supportsAllDrives=true`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: folderName, mimeType: FOLDER_MIME_TYPE, parents: [parentId] }) }); parentId = created.id; } return parentId; }
   private async generateDriveFileId(): Promise<string> { const result = await this.driveFetchJson<{ ids?: string[] }>(`${DRIVE_API}/files/generateIds?count=1&space=drive`); const id = result.ids?.[0]; if (!id) throw new HttpProblem(503, 'GOOGLE_DRIVE_ID_ALLOCATION_FAILED', 'Không tạo được ID tệp Google Drive', 'Google Drive không trả file ID cho phiên tải lên.'); return id; }
+}
+
+function spreadsheetColumnName(columnCount: number): string {
+  let value = columnCount;
+  let result = '';
+  while (value > 0) {
+    value -= 1;
+    result = String.fromCharCode(65 + (value % 26)) + result;
+    value = Math.floor(value / 26);
+  }
+  return result;
 }
 
 export const googleDriveService = new GoogleDriveAdapter();

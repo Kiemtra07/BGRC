@@ -19,6 +19,7 @@ import { ReportCatalogManager } from './ReportCatalogManager';
 import { CampaignManager } from './campaigns/CampaignManager';
 
 interface Props {
+  isSystemAdmin: boolean;
   orgUnits: OrgUnit[];
   users: UserProfile[];
   channels: ReportChannel[];
@@ -42,6 +43,7 @@ interface Props {
 type AdminTab = 'CAMPAIGNS' | 'CHANNELS' | 'REPORT_CATALOG' | 'ORGANIZATION' | 'USERS' | 'PERMISSIONS' | 'AUDIT_LOG';
 
 export const AdminPortal: React.FC<Props> = ({
+  isSystemAdmin,
   orgUnits,
   users,
   channels,
@@ -63,15 +65,16 @@ export const AdminPortal: React.FC<Props> = ({
 }) => {
   const [activeTab, setActiveTab] = useState<AdminTab>('CAMPAIGNS');
 
-  const tabs: { id: AdminTab; label: string; icon: any }[] = [
+  const allTabs: { id: AdminTab; label: string; icon: any; adminOnly?: boolean }[] = [
     { id: 'CAMPAIGNS', label: 'Chuyên đề', icon: ClipboardCheck },
     { id: 'CHANNELS', label: 'Loại báo cáo', icon: FileSpreadsheet },
-    { id: 'REPORT_CATALOG', label: 'Trường báo cáo', icon: Database },
-    { id: 'ORGANIZATION', label: 'Đơn vị', icon: Building2 },
-    { id: 'USERS', label: 'Người dùng', icon: Users },
+    { id: 'REPORT_CATALOG', label: 'Trường báo cáo', icon: Database, adminOnly: true },
+    { id: 'ORGANIZATION', label: 'Đơn vị', icon: Building2, adminOnly: true },
+    { id: 'USERS', label: 'Người dùng', icon: Users, adminOnly: true },
     { id: 'PERMISSIONS', label: 'Quyền thao tác', icon: Sliders },
-    { id: 'AUDIT_LOG', label: 'Nhật ký', icon: History },
+    { id: 'AUDIT_LOG', label: 'Nhật ký', icon: History, adminOnly: true },
   ];
+  const tabs = allTabs.filter(tab => isSystemAdmin || !tab.adminOnly);
 
   return (
     <div className="min-w-0 max-w-full space-y-6">
@@ -118,7 +121,7 @@ export const AdminPortal: React.FC<Props> = ({
 
       {/* Active Tab Content */}
       <div className="animate-fade-in">
-        {activeTab === 'CAMPAIGNS' && <CampaignManager campaigns={campaigns} users={users} orgUnits={orgUnits} channels={channels} onCreate={onCampaignCreated} onUpdate={onCampaignUpdated} onDelete={onCampaignDeleted} onImportDraft={onCampaignImportDraft} onProvisionDrive={onCampaignProvisionDrive} />}
+        {activeTab === 'CAMPAIGNS' && <CampaignManager canProvisionDrive={isSystemAdmin} campaigns={campaigns} users={users} orgUnits={orgUnits} channels={channels} onCreate={onCampaignCreated} onUpdate={onCampaignUpdated} onDelete={onCampaignDeleted} onImportDraft={onCampaignImportDraft} onProvisionDrive={onCampaignProvisionDrive} />}
         {activeTab === 'CHANNELS' && (
           <DynamicChannelManager channels={channels} onChannelCreated={onChannelCreated} onChannelUpdated={onChannelUpdated} onChannelDeleted={onChannelDeleted} />
         )}

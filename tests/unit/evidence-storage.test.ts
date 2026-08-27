@@ -228,6 +228,58 @@ describe('local evidence upload guard', () => {
     expect(content).toMatchObject({ fileName: 'Biên bản 10MB.pdf', mimeType: 'application/pdf' });
   });
 
+  it('creates a Google Sheet in the configured folder and writes report headers', async () => {
+    const requests: Array<{ url: string; init?: RequestInit }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      requests.push({ url, init });
+      if (url.includes('/files/root-folder')) {
+        return Response.json({ id: 'root-folder', driveId: 'shared-drive-1', mimeType: 'application/vnd.google-apps.folder', trashed: false, capabilities: { canAddChildren: true } });
+      }
+      if (url.includes('/drive/v3/files?') && init?.method === 'POST') {
+        return Response.json({ id: 'sheet-123', name: 'Báo cáo tín dụng', webViewLink: 'https://docs.google.com/spreadsheets/d/sheet-123/edit' });
+      }
+      if (url.includes('/v4/spreadsheets/sheet-123?fields=')) {
+        return Response.json({ sheets: [{ properties: { sheetId: 0, title: 'Sheet1' } }] });
+      }
+      if (url.endsWith('/v4/spreadsheets/sheet-123:batchUpdate')) return Response.json({ replies: [{}] });
+      if (url.includes('/v4/spreadsheets/sheet-123/values/')) return Response.json({ updatedCells: 3 });
+      throw new Error(`Unexpected Google request: ${url}`);
+    };
+    const adapter = new GoogleDriveAdapter({
+      storageMode: 'local',
+      googleDriveRootFolderId: 'root-folder',
+      accessTokenProvider: async () => 'token-for-test',
+      fetchImpl,
+    });
+
+    await expect(adapter.createReportSpreadsheet({
+      reportName: 'Báo cáo tín dụng',
+      sheetName: 'Dữ liệu',
+      columns: [
+        { key: 'cif', label: 'CIF' },
+        { key: 'customer_name', label: 'Tên khách hàng' },
+        { key: 'exposure', label: 'Dư nợ' },
+      ],
+    })).resolves.toEqual({
+      spreadsheetId: 'sheet-123',
+      spreadsheetUrl: 'https://docs.google.com/spreadsheets/d/sheet-123/edit',
+      sheetName: 'Dữ liệu',
+    });
+
+    const createRequest = requests.find(request => request.url.includes('/drive/v3/files?'));
+    expect(JSON.parse(String(createRequest?.init?.body))).toMatchObject({
+      name: 'Báo cáo tín dụng',
+      mimeType: 'application/vnd.google-apps.spreadsheet',
+      parents: ['root-folder'],
+    });
+    const valuesRequest = requests.find(request => request.url.includes('/values/'));
+    expect(JSON.parse(String(valuesRequest?.init?.body))).toEqual({
+      majorDimension: 'ROWS',
+      values: [['CIF', 'Tên khách hàng', 'Dư nợ']],
+    });
+  });
+
   it('keeps mock seed previews available only to explicit local storage', async () => {
     const adapter = new GoogleDriveAdapter({ storageMode: 'local', localEvidenceDir: temporaryEvidenceDirectory() });
 

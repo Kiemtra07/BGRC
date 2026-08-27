@@ -81,6 +81,8 @@ export const FindingDetailPage: React.FC<Props> = ({
   const isInternalReviewer = currentUser.roles.some(role => ['SUPERVISOR', 'INTERNAL_APPROVER'].includes(role));
   const canManageWorkspace = currentUser.roles.some(role => ['INTERNAL_OFFICER', 'SUPERVISOR', 'INTERNAL_APPROVER', 'BRANCH_INPUT', 'BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(role));
   const canFlagSpecialCase = currentUser.roles.some(role => ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'BRANCH_INPUT'].includes(role));
+  const customerIsSpecialCase = items.some(item => item.isSpecialCase);
+  const canEditCustomerSpecialCase = items.every(item => item.workflowStatus === 'PENDING' || item.workflowStatus === 'REJECTED');
   const canAddSubItems = currentUser.roles.some(role => ['INTERNAL_OFFICER', 'SUPERVISOR'].includes(role));
   const canReviewSubItems = (finding?.workflowStatus === 'SUBMITTED_BRANCH' && isBranchController)
     || (finding?.workflowStatus === 'SUBMITTED_BRANCH_LEADER' && isBranchLeader)
@@ -144,9 +146,12 @@ export const FindingDetailPage: React.FC<Props> = ({
     try {
       setBusy(true);
       setError(null);
-      const updated = await api.setSpecialCase(finding.id, { isSpecialCase });
-      setItems(previous => previous.map(item => item.id === updated.id ? updated : item));
-      onFindingUpdated(updated);
+      await api.setSpecialCase(finding.id, { isSpecialCase });
+      if (isSpecialCase) await api.watchTarget(targetCommand('CUSTOMER'));
+      const customerCase = await api.getCustomerCase(finding.cif, finding.branchCode);
+      setItems(customerCase.findings);
+      customerCase.findings.forEach(onFindingUpdated);
+      await onWorkspaceChanged();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Không thể cập nhật dấu sao trường hợp đặc biệt.');
     } finally {
@@ -277,7 +282,7 @@ export const FindingDetailPage: React.FC<Props> = ({
                   <span className="rounded-md bg-white/12 px-2 py-1">{items.length} mã lỗi</span>
                   <span className="rounded-md bg-white/12 px-2 py-1">CN {finding.branchCode}</span>
                 </div>
-                <h1 className="flex min-w-0 items-center gap-2 text-sm font-black sm:text-lg"><span className="truncate">{finding.customerName}</span>{finding.isSpecialCase && <span title="Trường hợp đặc biệt" aria-label="Trường hợp đặc biệt" className="inline-flex shrink-0 text-amber-300"><Star className="h-4 w-4 fill-current" /></span>}</h1>
+                <h1 className="flex min-w-0 items-center gap-2 text-sm font-black sm:text-lg"><span className="truncate">{finding.customerName}</span>{canFlagSpecialCase ? <button type="button" aria-label="Đánh dấu khách hàng là trường hợp đặc biệt" aria-pressed={customerIsSpecialCase} title={canEditCustomerSpecialCase ? 'Trường hợp đặc biệt' : 'Dấu sao đã khóa sau khi gửi duyệt'} disabled={busy || !canEditCustomerSpecialCase} onClick={() => void toggleSpecialCase(!customerIsSpecialCase)} className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-60 ${customerIsSpecialCase ? 'border-amber-300 bg-amber-400/20 text-amber-300' : 'border-white/25 bg-white/10 text-white/70 hover:bg-white/20'}`}><Star className={`h-4 w-4 ${customerIsSpecialCase ? 'fill-current' : ''}`} /></button> : customerIsSpecialCase && <span title="Trường hợp đặc biệt" aria-label="Trường hợp đặc biệt" className="inline-flex shrink-0 text-amber-300"><Star className="h-4 w-4 fill-current" /></span>}</h1>
                 <p className="mt-1 truncate text-[11px] text-teal-50 sm:text-xs">{finding.branchName} · {finding.department || 'Chưa phân phòng'}</p>
               </div>
             </div>
@@ -405,14 +410,6 @@ export const FindingDetailPage: React.FC<Props> = ({
             {finding.resolutionNotes && <div className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-xs leading-5 text-teal-900"><strong>Giải trình chi nhánh:</strong> {finding.resolutionNotes}</div>}
             {finding.dynamicPayload && Object.keys(finding.dynamicPayload).length > 0 && <section className="overflow-hidden rounded-xl border border-slate-200" aria-label="Dữ liệu báo cáo"><h3 className="bg-slate-50 px-3 py-2 text-xs font-black text-slate-800">Dữ liệu báo cáo</h3><dl className={`grid gap-px bg-slate-200 ${finding.presentationMode === 'EXCEL_GRID' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>{Object.entries(finding.dynamicPayload).map(([key, value]) => <div key={key} className="bg-white p-3"><dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{key.replace(/_/g, ' ')}</dt><dd className="mt-1 text-xs font-semibold text-slate-800">{String(value ?? '')}</dd></div>)}</dl></section>}
             {evidenceRequired && !hasAvailableEvidence && ['PENDING', 'REJECTED', 'SUBMITTED_BRANCH', 'SUBMITTED_BRANCH_LEADER', 'SUBMITTED_INTERNAL'].includes(finding.workflowStatus) && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-800">Cần ít nhất một tài liệu hợp lệ trước khi chuyển bước.</div>}
-
-            {canFlagSpecialCase && (finding.workflowStatus === 'PENDING' || finding.workflowStatus === 'REJECTED') && <ActionPanel title="Dấu sao">
-              <label className={`flex min-h-11 items-center gap-3 rounded-xl border px-3 py-2.5 ${finding.isSpecialCase ? 'border-amber-300 bg-amber-50' : 'border-slate-200 bg-white'}`}>
-                <input aria-label="Đánh dấu trường hợp đặc biệt" type="checkbox" checked={Boolean(finding.isSpecialCase)} disabled={busy} onChange={event => toggleSpecialCase(event.target.checked)} className="h-4 w-4 shrink-0 accent-amber-500" />
-                <Star className={`h-4 w-4 ${finding.isSpecialCase ? 'fill-amber-400 text-amber-500' : 'text-slate-400'}`} />
-                <span className="text-xs font-black text-slate-900">Trường hợp đặc biệt</span>
-              </label>
-            </ActionPanel>}
 
             {(finding.workflowStatus === 'PENDING' || finding.workflowStatus === 'REJECTED') && isBranchInput && <ActionPanel title="Chi nhánh khắc phục">
               <textarea value={resolutionNotes} onChange={event => setResolutionNotes(event.target.value)} rows={4} placeholder="Nêu rõ nội dung đã khắc phục, tài liệu và ngày hoàn thành..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-[#006b68] focus:outline-none focus:ring-2 focus:ring-[#006b68]/15" />

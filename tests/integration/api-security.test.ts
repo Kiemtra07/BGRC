@@ -31,7 +31,7 @@ describe('API security boundaries', () => {
     expect(response.json()).toMatchObject({ code: 'INVALID_LOCAL_USER' });
   });
 
-  it('blocks non-admin users from admin APIs', async () => {
+  it('blocks branch users from configuration APIs', async () => {
     const response = await app.inject({
       method: 'GET',
       url: '/api/v1/admin/users',
@@ -39,7 +39,7 @@ describe('API security boundaries', () => {
     });
 
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toMatchObject({ code: 'ADMIN_REQUIRED' });
+    expect(response.json()).toMatchObject({ code: 'FORBIDDEN' });
   });
 
   it('serves the persisted workflow audit trail only to administrators', async () => {
