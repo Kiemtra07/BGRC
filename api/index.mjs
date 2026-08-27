@@ -2053,9 +2053,12 @@ var DurableStateCoordinator = class {
 
 // server/src/state/runtime-request-lock.ts
 var livenessPaths = /* @__PURE__ */ new Set(["/api/v1/health", "/api/v1/ready"]);
-function shouldHydrateRuntimeStatePerRequest(env, requestPath) {
+var nonHydratedPaths = /* @__PURE__ */ new Set([...livenessPaths, "/api/v1/internal/sla/run"]);
+var readMethods = /* @__PURE__ */ new Set(["GET", "HEAD"]);
+function shouldHydrateRuntimeStatePerRequest(env, requestPath, method = "GET") {
   if (env.DATA_STORE_MODE !== "postgres") return false;
-  return !livenessPaths.has(requestPath.split("?")[0]);
+  if (!readMethods.has(method.toUpperCase())) return false;
+  return !nonHydratedPaths.has(requestPath.split("?")[0]);
 }
 var RuntimeRequestLock = class {
   tail = Promise.resolve();
@@ -3613,7 +3616,7 @@ function releaseRuntimeRequest(request) {
   release?.();
 }
 app.addHook("onRequest", async (request) => {
-  if (!shouldHydrateRuntimeStatePerRequest(process.env, request.url)) return;
+  if (!shouldHydrateRuntimeStatePerRequest(process.env, request.url, request.method)) return;
   const release = await runtimeRequestLock.acquire();
   runtimeRequestReleases.set(request, release);
   try {
@@ -5579,6 +5582,9 @@ function assertSafeRuntimeConfiguration(env = process.env) {
   if (env.SEED_DEMO_DATA === "true" || env.SEED_DEMO_USERS === "true") violations.push("SEED_DEMO_DATA kh\xF4ng \u0111\u01B0\u1EE3c b\u1EADt \u1EDF production");
   if (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH) {
     violations.push("thi\u1EBFu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH");
+  }
+  if (!env.BOOTSTRAP_ADMIN_EMAIL?.trim()) {
+    violations.push("thi\u1EBFu BOOTSTRAP_ADMIN_EMAIL cho \u0111\u0103ng nh\u1EADp Google OIDC");
   }
   if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push("thi\u1EBFu OIDC_ISSUER_URL/OIDC_AUDIENCE");
   if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
