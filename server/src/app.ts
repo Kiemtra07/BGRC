@@ -1137,7 +1137,7 @@ function releaseRuntimeRequest(request: FastifyRequest): void {
 }
 
 app.addHook('onRequest', async (request) => {
-  if (!shouldHydrateRuntimeStatePerRequest(process.env, request.url)) return;
+  if (!shouldHydrateRuntimeStatePerRequest(process.env, request.url, request.method)) return;
   const release = await runtimeRequestLock.acquire();
   runtimeRequestReleases.set(request, release);
   try {
