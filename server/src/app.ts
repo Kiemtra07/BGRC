@@ -3416,6 +3416,9 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
   if (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH) {
     violations.push('thiếu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH');
   }
+  if (!env.BOOTSTRAP_ADMIN_EMAIL?.trim()) {
+    violations.push('thiếu BOOTSTRAP_ADMIN_EMAIL cho đăng nhập Google OIDC');
+  }
   if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push('thiếu OIDC_ISSUER_URL/OIDC_AUDIENCE');
   if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
     violations.push('thiếu cấu hình Google OIDC');

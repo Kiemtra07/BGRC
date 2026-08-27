@@ -141,6 +141,7 @@ describe('demo data must not reach production', () => {
     GOOGLE_DRIVE_ROOT_FOLDER_ID: 'folder-id',
     BOOTSTRAP_ADMIN_USERNAME: 'quantri',
     BOOTSTRAP_ADMIN_PASSWORD_HASH: 'scrypt$salt$key',
+    BOOTSTRAP_ADMIN_EMAIL: 'quantri@example.com',
   };
 
   it('refuses to start production with demo seeding enabled', () => {
@@ -151,6 +152,11 @@ describe('demo data must not reach production', () => {
   it('refuses production without a bootstrap administrator, which would lock everyone out', () => {
     const { BOOTSTRAP_ADMIN_USERNAME, BOOTSTRAP_ADMIN_PASSWORD_HASH, ...withoutAdmin } = productionBase;
     expect(() => assertSafeRuntimeConfiguration(withoutAdmin)).toThrow(/BOOTSTRAP_ADMIN/);
+  });
+
+  it('refuses OIDC production without the bootstrap administrator Google email', () => {
+    const { BOOTSTRAP_ADMIN_EMAIL, ...withoutAdminEmail } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration(withoutAdminEmail)).toThrow(/BOOTSTRAP_ADMIN_EMAIL/);
   });
 
   it('refuses production when the Google OIDC authorization-code client is incomplete', () => {
