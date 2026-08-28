@@ -2379,9 +2379,11 @@ const REDACTED_DIAGNOSTIC = 'Chi tiết lỗi chỉ hiển thị cho quản tr�
 export function buildReadinessPayload(
   dataStore: StateRepositoryStatus,
   evidenceStorage: EvidenceStorageStatus,
-  options: { includeDiagnostics?: boolean } = {},
+  options: { includeDiagnostics?: boolean; authMode?: string } = {},
 ) {
   const includeDiagnostics = options.includeDiagnostics ?? false;
+  const authMode = options.authMode ?? 'local-credential-session';
+  const productionSafeAuth = authMode === 'credentials' || authMode === 'oidc';
   const diagnostic = (warning: string | undefined, fallback: string): string => (
     includeDiagnostics ? warning ?? fallback : REDACTED_DIAGNOSTIC
   );
@@ -2415,7 +2417,7 @@ export function buildReadinessPayload(
     checks: {
       dataStore: redactedDataStore,
       evidenceStorage: redactedEvidenceStorage,
-      auth: { mode: 'local-credential-session', productionSafe: false },
+      auth: { mode: authMode, productionSafe: productionSafeAuth },
     },
     message,
   };
@@ -2432,7 +2434,7 @@ function optionalAdminViewer(request: FastifyRequest): UserProfile | undefined {
 app.get('/api/v1/ready', async (req) => buildReadinessPayload(
   await stateRepository.getStatus(),
   await googleDriveService.getStorageStatus(),
-  { includeDiagnostics: Boolean(optionalAdminViewer(req)) },
+  { includeDiagnostics: Boolean(optionalAdminViewer(req)), authMode: process.env.AUTH_MODE },
 ));
 
 function requireCronAuthorization(request: FastifyRequest): void {
