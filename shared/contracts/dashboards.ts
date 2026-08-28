@@ -513,3 +513,167 @@ export const CreateDashboardDefinitionSchema = z.object({
   }
 });
 export type CreateDashboardDefinitionDTO = z.input<typeof CreateDashboardDefinitionSchema>;
+
+/**
+ * Drill-through: the detail rows behind one aggregated number. The caller sends the same query the
+ * screen is showing plus the coordinates of the cell that was clicked, so the server re-derives the
+ * row set from its own scope instead of trusting a client-side list of finding ids.
+ */
+export const ReportDrillRequestSchema = z.object({
+  query: ReportRunRequestSchema,
+  /** Value of `query.groupBy` for the clicked row; omitted when drilling a grand total. */
+  rowKey: z.string().max(300).optional(),
+  /** Value of `query.pivotBy` for the clicked crosstab column. */
+  columnKey: z.string().max(300).optional(),
+  page: z.number().int().min(1).max(500).default(1),
+  pageSize: z.number().int().min(5).max(100).default(25),
+});
+export type ReportDrillRequest = z.infer<typeof ReportDrillRequestSchema>;
+
+export interface ReportDrillRow {
+  findingId: string;
+  cif: string;
+  customerName: string;
+  branchCode: string;
+  branchName: string;
+  department?: string;
+  officerName?: string;
+  errorCode: string;
+  errorTitle: string;
+  workflowStatusLabel: string;
+  slaStatusLabel: string;
+  deadlineDate: string;
+  exposureAmount: number;
+  creditBalance: number;
+}
+
+export interface ReportDrillResult {
+  total: number;
+  page: number;
+  pageSize: number;
+  rowLabel?: string;
+  columnLabel?: string;
+  rows: ReportDrillRow[];
+}
+
+/**
+ * Reports the audit team runs every cycle, shipped so a new user has something useful on the first
+ * open instead of an empty builder. They are plain `ReportRunRequest` values, run through the same
+ * catalog normalisation as a user-built query — an admin who disables a field simply drops the
+ * presets that need it rather than breaking the screen.
+ */
+export interface ReportPreset {
+  id: string;
+  name: string;
+  description: string;
+  query: ReportRunRequest;
+  presentation: 'table' | 'pivot' | 'chart';
+  chartType?: 'bar' | 'line' | 'pie';
+}
+
+const preset = (
+  id: string,
+  name: string,
+  description: string,
+  query: Partial<ReportRunRequest> & Pick<ReportRunRequest, 'groupBy' | 'metrics'>,
+  presentation: ReportPreset['presentation'] = 'table',
+  chartType?: ReportPreset['chartType'],
+): ReportPreset => ({
+  id,
+  name,
+  description,
+  presentation,
+  chartType,
+  query: { rules: [], match: 'ALL', limit: 25, ...query },
+});
+
+export const REPORT_PRESETS: ReportPreset[] = [
+  preset(
+    'preset.branch_overview',
+    'Tổng hợp theo chi nhánh',
+    'Số khách hàng, số mã lỗi và giá trị ảnh hưởng của từng chi nhánh.',
+    {
+      groupBy: 'dimension.branch',
+      metrics: ['metric.customer_count', 'metric.finding_count', 'metric.exposure_sum'],
+      sort: { key: 'metric.exposure_sum', direction: 'desc' },
+    },
+  ),
+  preset(
+    'preset.overdue_by_branch',
+    'Sai sót quá hạn theo chi nhánh',
+    'Chỉ các sai sót đã quá hạn, xếp theo chi nhánh nhiều nhất.',
+    {
+      rules: [{ key: 'flag.overdue', operator: 'op.is_true' }],
+      groupBy: 'dimension.branch',
+      metrics: ['metric.overdue_count', 'metric.finding_count', 'metric.exposure_sum'],
+      sort: { key: 'metric.overdue_count', direction: 'desc' },
+    },
+  ),
+  preset(
+    'preset.remediation_progress',
+    'Tiến độ khắc phục theo cụm',
+    'Tỷ lệ khắc phục và số lỗi đã đóng của từng cụm địa bàn.',
+    {
+      groupBy: 'dimension.cluster',
+      metrics: ['metric.finding_count', 'metric.resolved_count', 'metric.remediation_rate'],
+      sort: { key: 'metric.remediation_rate', direction: 'asc' },
+    },
+  ),
+  preset(
+    'preset.status_by_branch',
+    'Bảng chéo chi nhánh × trạng thái',
+    'Hồ sơ đang nằm ở bước nào của từng chi nhánh.',
+    {
+      groupBy: 'dimension.branch',
+      pivotBy: 'dimension.workflow_status',
+      metrics: ['metric.finding_count'],
+    },
+    'pivot',
+  ),
+  preset(
+    'preset.top_error_codes',
+    'Mã lỗi phổ biến nhất',
+    'Nhóm theo mã lỗi để thấy sai sót nào lặp lại nhiều nhất.',
+    {
+      groupBy: 'dimension.error_code',
+      metrics: ['metric.finding_count', 'metric.customer_count', 'metric.exposure_sum'],
+      sort: { key: 'metric.finding_count', direction: 'desc' },
+      limit: 15,
+    },
+    'chart',
+    'bar',
+  ),
+  preset(
+    'preset.sla_pressure',
+    'Áp lực SLA',
+    'Phân bố hồ sơ theo trạng thái SLA để biết khối lượng sắp đến hạn.',
+    {
+      groupBy: 'dimension.sla_status',
+      metrics: ['metric.finding_count', 'metric.exposure_sum'],
+      sort: { key: 'metric.finding_count', direction: 'desc' },
+    },
+    'chart',
+    'pie',
+  ),
+  preset(
+    'preset.officer_workload',
+    'Khối lượng theo cán bộ QLKH',
+    'Cán bộ nào đang giữ nhiều sai sót chưa đóng nhất.',
+    {
+      groupBy: 'dimension.officer',
+      metrics: ['metric.finding_count', 'metric.overdue_count', 'metric.credit_balance_sum'],
+      sort: { key: 'metric.finding_count', direction: 'desc' },
+      limit: 20,
+    },
+  ),
+  preset(
+    'preset.campaign_summary',
+    'Kết quả theo chuyên đề',
+    'So sánh khối lượng và tiến độ khắc phục giữa các chuyên đề kiểm tra.',
+    {
+      groupBy: 'dimension.campaign',
+      metrics: ['metric.finding_count', 'metric.resolved_count', 'metric.remediation_rate'],
+      sort: { key: 'metric.finding_count', direction: 'desc' },
+    },
+  ),
+];
