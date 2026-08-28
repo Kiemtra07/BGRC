@@ -44,6 +44,12 @@ const UserCard: React.FC<{ user: UserProfile; compact?: boolean; onAuthenticator
           <Mail className="h-3 w-3 shrink-0" />
           <span className="truncate">{user.email}</span>
         </div>
+        {user.googleWorkspaceEmail && user.googleWorkspaceEmail.toLowerCase() !== user.email.toLowerCase() && (
+          <div className="mt-1 flex min-w-0 items-center gap-1 text-[10px] text-violet-700">
+            <Mail className="h-3 w-3 shrink-0" />
+            <span className="truncate" title="Email Google Workspace dùng cho file đính kèm">Drive: {user.googleWorkspaceEmail}</span>
+          </div>
+        )}
       </div>
       <span className={`shrink-0 rounded-full px-2 py-1 text-[10px] font-bold ${user.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
         {user.isActive ? 'Hoạt động' : 'Tạm khóa'}
@@ -69,6 +75,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
   const [searchTerm, setSearchTerm] = useState('');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
+  const [googleWorkspaceEmail, setGoogleWorkspaceEmail] = useState('');
   const [portal, setPortal] = useState<'INTERNAL' | 'BRANCH'>('INTERNAL');
   const [role, setRole] = useState<UserRole>('INTERNAL_OFFICER');
   const [selectedInternalTeam, setSelectedInternalTeam] = useState('');
@@ -108,6 +115,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
   const resetForm = () => {
     setFullName('');
     setEmail('');
+    setGoogleWorkspaceEmail('');
     setPortal('INTERNAL');
     setRole('INTERNAL_OFFICER');
     setSelectedInternalTeam('');
@@ -134,6 +142,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
     const payload: CreateUserDTO = {
       fullName,
       email,
+      googleWorkspaceEmail: googleWorkspaceEmail.trim() || undefined,
       username: email.split('@')[0],
       portal,
       roles: [role],
@@ -295,7 +304,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
       {userImportPreview.length > 0 && (
         <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="Xem trước nhập người dùng">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div><h4 className="text-sm font-bold text-slate-900">Xem trước danh sách người dùng</h4><p className="mt-1 text-xs text-slate-500">{userImportPreview.filter(row => !row.errors.length).length} hợp lệ · {userImportPreview.filter(row => row.errors.length).length} cần sửa. Google OAuth vẫn cấu hình thủ công.</p></div>
+            <div><h4 className="text-sm font-bold text-slate-900">Xem trước danh sách người dùng</h4><p className="mt-1 text-xs text-slate-500">{userImportPreview.filter(row => !row.errors.length).length} hợp lệ · {userImportPreview.filter(row => row.errors.length).length} cần sửa. Email Google Workspace chỉ dùng cấp quyền file đính kèm; OAuth Drive vẫn do quản trị viên kết nối.</p></div>
             <div className="flex gap-2"><button type="button" onClick={() => setUserImportPreview([])} className="rounded-xl px-4 py-2 text-xs font-bold text-slate-600">Hủy</button><button type="button" onClick={commitUserImport} disabled={isImportingUsers || !userImportPreview.some(row => row.payload && !row.errors.length)} className="inline-flex items-center gap-2 rounded-xl bg-[#006b68] px-4 py-2 text-xs font-bold text-white disabled:bg-slate-300"><Download className="h-4 w-4" />{isImportingUsers ? 'Đang tạo...' : 'Tạo tài khoản hợp lệ'}</button></div>
           </div>
           <div className="mt-3 max-h-72 overflow-auto rounded-xl border border-slate-200"><table className="w-full text-left text-xs"><thead className="sticky top-0 bg-slate-100"><tr><th className="p-2">Dòng</th><th className="p-2">Người dùng</th><th className="p-2">Vai trò</th><th className="p-2">Mật khẩu</th><th className="p-2">Kết quả</th></tr></thead><tbody>{userImportPreview.map(row => <tr key={row.rowNumber} className="border-t border-slate-100"><td className="p-2">{row.rowNumber}</td><td className="p-2"><div className="font-semibold">{row.payload?.fullName || 'Không hợp lệ'}</div><div className="text-slate-500">{row.payload?.email}</div></td><td className="p-2">{row.payload?.primaryRole}</td><td className="p-2">{row.passwordMode === 'PROVIDED' ? 'Đã cung cấp' : 'Tự sinh'}</td><td className={`p-2 ${row.errors.length ? 'text-red-700' : 'text-emerald-700'}`}>{row.errors.join('; ') || 'Sẵn sàng'}</td></tr>)}</tbody></table></div>
@@ -401,6 +410,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
                 <label className="text-xs font-bold text-slate-700">Họ và tên<input value={fullName} onChange={event => setFullName(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 px-3 text-xs font-medium outline-none focus:border-[#006b68]" required /></label>
                 <label className="text-xs font-bold text-slate-700">Email doanh nghiệp<input type="email" value={email} onChange={event => setEmail(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 px-3 text-xs font-medium outline-none focus:border-[#006b68]" required /></label>
               </div>
+              <label className="block text-xs font-bold text-slate-700">Email Google Workspace dùng cho file đính kèm<input type="email" value={googleWorkspaceEmail} onChange={event => setGoogleWorkspaceEmail(event.target.value)} placeholder="Để trống nếu trùng email doanh nghiệp" className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 px-3 text-xs font-medium outline-none focus:border-[#006b68]" /><span className="mt-1 block text-[10px] font-medium text-slate-500">Email này được dùng khi cấp quyền Google Drive; không thay thế email và mật khẩu đăng nhập.</span></label>
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="text-xs font-bold text-slate-700">Khối người dùng<select value={portal} onChange={event => handlePortalChange(event.target.value as 'INTERNAL' | 'BRANCH')} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs"><option value="INTERNAL">Khối nội bộ</option><option value="BRANCH">Mạng lưới chi nhánh</option></select></label>
                 <label className="text-xs font-bold text-slate-700">Vai trò<select value={role} onChange={event => setRole(event.target.value as UserRole)} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs">

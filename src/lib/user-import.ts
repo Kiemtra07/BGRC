@@ -14,6 +14,7 @@ const headerKey = (value: unknown): string => normalize(value).normalize('NFD').
 const aliases: Record<string, string[]> = {
   username: ['ten dang nhap', 'username'], fullName: ['ho va ten', 'ten nguoi dung'], email: ['email'], password: ['mat khau tam', 'mat khau'],
   portal: ['cong', 'portal'], primaryRole: ['vai tro chinh', 'vai tro'], additionalRoles: ['vai tro bo sung'],
+  coplusRole: ['vai tro coplus', 'coplus role'], googleWorkspaceEmail: ['email google workspace', 'google workspace email', 'email google drive', 'mail google'],
   internalTeam: ['ma don vi nhom noi bo', 'ma nhom noi bo', 'nhom noi bo'], branchCode: ['ma chi nhanh', 'chi nhanh'],
   department: ['phong pgd', 'phong', 'pgd'], status: ['trang thai'],
 };
@@ -39,6 +40,8 @@ export function parseUserImportRows(rows: unknown[][], existingUsers: UserProfil
     const password = at('password') || undefined;
     const payload = {
       username, fullName: at('fullName'), email, password, portal, roles, primaryRole,
+      coplusRole: at('coplusRole') || undefined,
+      googleWorkspaceEmail: at('googleWorkspaceEmail').toLowerCase() || undefined,
       internalTeamId: internalTeam?.id,
       teamRole: primaryRole === 'INTERNAL_APPROVER' ? 'LEAD' as const : primaryRole === 'INTERNAL_OFFICER' ? 'MEMBER' as const : undefined,
       branchCode: at('branchCode') || undefined,

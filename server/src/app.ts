@@ -3049,6 +3049,7 @@ async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Prom
     portal: body.portal,
     roles: body.roles,
     primaryRole: body.primaryRole,
+    googleWorkspaceEmail: body.googleWorkspaceEmail?.trim().toLowerCase(),
     // Every account carries a CoPlus code so the UI can name its role the way the handbook does;
     // fall back to the closest match when the caller did not state one.
     coplusRole: body.coplusRole ?? inferCoPlusRole(body.roles),

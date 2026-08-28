@@ -47,6 +47,7 @@ describe('Admin batch user import', () => {
             primaryRole: 'BRANCH_INPUT',
             branchCode: '635',
             department: 'Phòng QLKH 1',
+            googleWorkspaceEmail: 'batch.branch.635@workspace.bank.com.vn',
             isActive: true,
           },
         },
@@ -71,7 +72,7 @@ describe('Admin batch user import', () => {
 
     expect(first.statusCode).toBe(201);
     expect(first.json()).toMatchObject({
-      created: [{ rowNumber: 2, user: { email: 'batch.branch.635@bank.com.vn' }, temporaryPassword: expect.any(String) }],
+      created: [{ rowNumber: 2, user: { email: 'batch.branch.635@bank.com.vn', googleWorkspaceEmail: 'batch.branch.635@workspace.bank.com.vn' }, temporaryPassword: expect.any(String) }],
       failed: [{ rowNumber: 3, code: 'USER_EMAIL_EXISTS' }],
     });
     expect(replay.statusCode).toBe(201);
