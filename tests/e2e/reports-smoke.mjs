@@ -22,6 +22,23 @@ try {
   assert.equal(await workspace.getByText('Thiết lập báo cáo', { exact: true }).count(), 0, 'Người xem không được thấy khối thiết lập kỹ thuật');
   await page.getByLabel('Mẫu báo cáo').waitFor();
   await page.getByLabel('Xem theo').waitFor();
+
+  // Built-in presets are the first thing a new user can act on, so they must render and run.
+  const presetList = workspace.getByTestId('report-preset-list');
+  await presetList.waitFor();
+  const presetCount = await presetList.getByRole('button').count();
+  assert.ok(presetCount >= 6, `Cần ít nhất 6 mẫu dựng sẵn, đang có ${presetCount}`);
+  const presetRun = page.waitForResponse(response => response.url().includes('/api/v1/reports/runs') && response.request().method() === 'POST' && response.status() === 200);
+  await presetList.getByRole('button').filter({ hasText: 'Tổng hợp theo chi nhánh' }).click();
+  await presetRun;
+  await workspace.getByText('Đang xem mẫu dựng sẵn “Tổng hợp theo chi nhánh”.').waitFor();
+
+  // Every zone of the canvas is one control, and the filter section only appears once.
+  for (const zone of ['rows', 'columns', 'values', 'filters']) {
+    await workspace.getByTestId(`report-zone-${zone}`).waitFor();
+  }
+  assert.equal(await page.getByRole('button', { name: 'Thêm điều kiện', exact: true }).count(), 1, 'Chỉ được có một nút thêm điều kiện');
+  assert.equal(await page.getByLabel('Xem theo').count(), 1, 'Chỉ được có một chỗ chọn chiều hàng');
   const filterActionRow = page.getByRole('button', { name: 'Thêm điều kiện', exact: true }).locator('xpath=..');
   assert.ok((await filterActionRow.boundingBox()).height < 100, 'Hàng thao tác bộ lọc phải gọn trên desktop');
 
@@ -71,19 +88,32 @@ try {
   await htmlPage.screenshot({ path: path.resolve('tests/e2e/artifacts/report-export-html-desktop.png'), fullPage: true });
   await htmlPage.close();
   await page.getByRole('button', { name: 'Thêm điều kiện', exact: true }).click();
+  await page.getByTestId('report-filter-rule').waitFor();
   await page.getByLabel('Nội dung lọc 1').selectOption('dimension.branch');
-  await page.getByLabel('Giá trị lọc').selectOption('635');
+  // Picking a value is enough: the builder re-runs on its own, no apply step in between.
   const reportResponse = page.waitForResponse(response => response.url().includes('/api/v1/reports/runs') && response.request().method() === 'POST' && response.status() === 200);
-  await page.getByRole('button', { name: 'Xem báo cáo', exact: true }).click();
+  await page.getByLabel('Giá trị lọc').selectOption('635');
   await reportResponse;
+  await page.getByRole('button', { name: 'Xem báo cáo', exact: true }).click();
   await page.screenshot({ path: path.resolve('tests/e2e/artifacts/reports-filtered-desktop.png'), fullPage: true });
 
-  await page.getByLabel('Cột bảng chéo').selectOption('dimension.workflow_status');
   const pivotResponse = page.waitForResponse(response => response.url().includes('/api/v1/reports/runs') && response.request().method() === 'POST' && response.status() === 200);
-  await page.getByRole('button', { name: 'Xem báo cáo', exact: true }).click();
+  await page.getByLabel('Cột bảng chéo').selectOption('dimension.workflow_status');
   await pivotResponse;
   await page.getByRole('tab', { name: 'Bảng chéo', exact: true }).click();
-  await page.getByTestId('report-crosstab').waitFor();
+  const crosstab = page.getByTestId('report-crosstab');
+  await crosstab.waitFor();
+
+  // Drill-through: a number in the crosstab opens the findings behind it.
+  const drillResponse = page.waitForResponse(response => response.url().includes('/api/v1/reports/drill') && response.status() === 200);
+  await crosstab.locator('tbody td button').first().click();
+  await drillResponse;
+  const drillPanel = page.getByTestId('report-drill-panel');
+  await drillPanel.waitFor();
+  assert.ok(await drillPanel.locator('tbody tr').count() > 0, 'Bảng hồ sơ chi tiết không có dòng nào');
+  await page.screenshot({ path: path.resolve('tests/e2e/artifacts/reports-drill-desktop.png'), fullPage: false });
+  await drillPanel.getByRole('button', { name: 'Đóng hồ sơ chi tiết' }).click();
+  await drillPanel.waitFor({ state: 'detached' });
   await page.getByRole('tab', { name: 'Biểu đồ', exact: true }).click();
   await page.getByLabel('Loại biểu đồ').selectOption('line');
   await page.getByTestId('report-chart').waitFor();
@@ -97,7 +127,7 @@ try {
   await page.screenshot({ path: path.resolve('tests/e2e/artifacts/reports-filtered-mobile-375.png'), fullPage: true });
 
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.getByRole('button', { name: 'Quản trị', exact: true }).click();
+  await page.getByRole('button', { name: 'Cấu hình', exact: true }).click();
   await page.getByRole('button', { name: 'Trường báo cáo', exact: true }).click();
   const catalogManager = page.getByTestId('report-catalog-manager');
   await catalogManager.waitFor();

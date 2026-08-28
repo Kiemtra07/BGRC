@@ -85,3 +85,36 @@ export const InternalRejectCommandSchema = z.object({
   regulatoryBasis: z.string().optional(),
 });
 export type InternalRejectCommandDTO = z.infer<typeof InternalRejectCommandSchema>;
+
+/**
+ * A finding's approval route, resolved for display. The server derives it from the report type
+ * version pinned on the finding — the same `stages` an administrator edits — so the step names and
+ * the branch a user sees on screen are the ones that were configured, not a hard-coded copy.
+ */
+export type ApprovalStepState = 'DONE' | 'CURRENT' | 'UPCOMING';
+
+export interface FindingApprovalStep {
+  stageId: string;
+  stageName: string;
+  statusCode: WorkflowStatus;
+  allowedRoles: UserRole[];
+  /** Person resolved for this step when the route was pinned at submit time. */
+  assigneeName?: string;
+  state: ApprovalStepState;
+  /** True when the step exists only because the finding carries the special-case star. */
+  conditional: boolean;
+  completedAt?: string;
+  completedByName?: string;
+}
+
+export interface FindingApprovalRouteView {
+  findingId: string;
+  workflowType: 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER';
+  isSpecialCase: boolean;
+  isClosed: boolean;
+  /** Name of the stage that sent the finding back; set only while it sits in REJECTED. */
+  returnedFromStageName?: string;
+  /** Index into `steps`, or -1 once the finding is closed. */
+  currentStepIndex: number;
+  steps: FindingApprovalStep[];
+}

@@ -18,7 +18,6 @@ const activeUiFiles = [
   'src/components/admin/ExcelTemplateImporterModal.tsx',
   'src/components/admin/OrganizationManager.tsx',
   'src/components/admin/UserManager.tsx',
-  'src/components/admin/WorkflowBuilder.tsx',
   'src/components/admin/ButtonPermissionMatrix.tsx',
   'src/components/admin/SlaEscalationConfig.tsx',
   'src/components/admin/AuditTrailViewer.tsx',

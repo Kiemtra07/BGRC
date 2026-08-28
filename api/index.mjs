@@ -5244,6 +5244,8 @@ app.get("/api/v1/health", async () => ({ status: "UP", timestamp: (/* @__PURE__ 
 var REDACTED_DIAGNOSTIC = "Chi ti\u1EBFt l\u1ED7i ch\u1EC9 hi\u1EC3n th\u1ECB cho qu\u1EA3n tr\u1ECB vi\xEAn \u0111\xE3 \u0111\u0103ng nh\u1EADp.";
 function buildReadinessPayload(dataStore, evidenceStorage, options = {}) {
   const includeDiagnostics = options.includeDiagnostics ?? false;
+  const authMode = options.authMode ?? "local-credential-session";
+  const productionSafeAuth = authMode === "credentials" || authMode === "oidc";
   const diagnostic = (warning, fallback) => includeDiagnostics ? warning ?? fallback : REDACTED_DIAGNOSTIC;
   const postgresUnavailable = dataStore.mode === "postgres" && !dataStore.ready;
   const dataStoreMessage = dataStore.mode === "postgres" ? postgresUnavailable ? `Postgres kh\xF4ng s\u1EB5n s\xE0ng. ${diagnostic(dataStore.warning, "Kh\xF4ng th\u1EC3 x\xE1c nh\u1EADn k\u1EBFt n\u1ED1i database.")}` : "Postgres \u0111\xE3 k\u1EBFt n\u1ED1i; state \u0111ang l\u01B0u b\u1EC1n v\u1EEFng ngo\xE0i filesystem serverless." : dataStore.durable ? "Local mode \u0111ang l\u01B0u tr\u1EA1ng th\xE1i b\u1EC1n v\u1EEFng b\u1EB1ng JSON nguy\xEAn t\u1EED." : "Local mode \u0111ang ch\u1EA1y b\u1EB1ng b\u1ED9 nh\u1EDB; d\u1EEF li\u1EC7u s\u1EBD m\u1EA5t khi ti\u1EBFn tr\xECnh d\u1EEBng.";
@@ -5258,7 +5260,7 @@ function buildReadinessPayload(dataStore, evidenceStorage, options = {}) {
     checks: {
       dataStore: redactedDataStore,
       evidenceStorage: redactedEvidenceStorage,
-      auth: { mode: "local-credential-session", productionSafe: false }
+      auth: { mode: authMode, productionSafe: productionSafeAuth }
     },
     message
   };
@@ -5272,7 +5274,7 @@ function optionalAdminViewer(request) {
 app.get("/api/v1/ready", async (req) => buildReadinessPayload(
   await stateRepository.getStatus(),
   await googleDriveService.getStorageStatus(),
-  { includeDiagnostics: Boolean(optionalAdminViewer(req)) }
+  { includeDiagnostics: Boolean(optionalAdminViewer(req)), authMode: process.env.AUTH_MODE }
 ));
 function requireCronAuthorization(request) {
   const secret = process.env.CRON_SECRET;
@@ -5809,6 +5811,7 @@ async function createUserAccount(req, body) {
     portal: body.portal,
     roles: body.roles,
     primaryRole: body.primaryRole,
+    googleWorkspaceEmail: body.googleWorkspaceEmail?.trim().toLowerCase(),
     // Every account carries a CoPlus code so the UI can name its role the way the handbook does;
     // fall back to the closest match when the caller did not state one.
     coplusRole: body.coplusRole ?? inferCoPlusRole(body.roles),
@@ -6525,6 +6528,59 @@ app.put("/api/v1/findings/:id/special-case", async (req) => {
     evidences: availableEvidencesForFinding(finding.id),
     history: workflowEvents.filter((event) => event.findingId === finding.id)
   };
+});
+function buildFindingApprovalRoute(finding) {
+  const pinnedVersion = reportChannelVersions.find((version) => version.id === finding.channelVersionId);
+  const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.workflowType ?? "TWO_TIER";
+  const configured = pinnedVersion?.snapshot.workflowConfig?.stages ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.stages ?? defaultWorkflowConfig(finding.channelId, workflowType).stages;
+  const leaderApplies = workflowType === "THREE_TIER" || workflowType === "TWO_TIER" && Boolean(finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase);
+  const leaderStage = configured.find((stage) => stage.statusCode === "SUBMITTED_BRANCH_LEADER") ?? defaultWorkflowConfig(finding.channelId, "THREE_TIER").stages.find((stage) => stage.statusCode === "SUBMITTED_BRANCH_LEADER");
+  const ordered = configured.filter((stage) => stage.statusCode !== "SUBMITTED_BRANCH_LEADER");
+  const stages = leaderApplies ? [
+    ...ordered.slice(0, Math.max(1, ordered.findIndex((stage) => stage.statusCode === "SUBMITTED_INTERNAL"))),
+    leaderStage,
+    ...ordered.slice(Math.max(1, ordered.findIndex((stage) => stage.statusCode === "SUBMITTED_INTERNAL")))
+  ] : ordered;
+  const nameOf = (userId) => appUsers.find((candidate) => candidate.id === userId)?.fullName;
+  const assigneeFor = (statusCode) => {
+    if (statusCode === "SUBMITTED_BRANCH") return nameOf(finding.approvalRoute?.branchControllerUserId);
+    if (statusCode === "SUBMITTED_BRANCH_LEADER") return nameOf(finding.approvalRoute?.branchLeaderUserId);
+    if (statusCode === "SUBMITTED_INTERNAL") return nameOf(finding.approvalRoute?.internalApproverUserId);
+    return void 0;
+  };
+  const history = workflowEvents.filter((event) => event.findingId === finding.id);
+  const isClosed = finding.workflowStatus === "WAIVED_RESOLVED";
+  const isReturned = finding.workflowStatus === "REJECTED";
+  const activeStatus = isReturned ? stages[0].statusCode : finding.workflowStatus;
+  const activeIndex = stages.findIndex((stage) => stage.statusCode === activeStatus);
+  const steps = stages.map((stage, index) => {
+    const completion = [...history].reverse().find((event) => event.fromStatus === stage.statusCode && event.toStatus !== "REJECTED");
+    const state = isClosed || activeIndex >= 0 && index < activeIndex ? "DONE" : index === activeIndex ? "CURRENT" : "UPCOMING";
+    return {
+      stageId: stage.stageId,
+      stageName: stage.stageName,
+      statusCode: stage.statusCode,
+      allowedRoles: stage.allowedRoles,
+      assigneeName: assigneeFor(stage.statusCode),
+      state,
+      conditional: stage.statusCode === "SUBMITTED_BRANCH_LEADER" && workflowType !== "THREE_TIER",
+      completedAt: state === "DONE" ? completion?.createdAt : void 0,
+      completedByName: state === "DONE" ? completion?.actorName : void 0
+    };
+  });
+  return {
+    findingId: finding.id,
+    workflowType,
+    isSpecialCase: Boolean(finding.isSpecialCase),
+    isClosed,
+    returnedFromStageName: isReturned ? stages.find((stage) => stage.statusCode === history.filter((event) => event.toStatus === "REJECTED").at(-1)?.fromStatus)?.stageName : void 0,
+    currentStepIndex: isClosed ? -1 : activeIndex,
+    steps
+  };
+}
+app.get("/api/v1/findings/:id/approval-route", async (req) => {
+  const user = getCurrentUser(req);
+  return buildFindingApprovalRoute(getScopedFindingOrThrow(req.params.id, user));
 });
 app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
   const user = getCurrentUser(req);

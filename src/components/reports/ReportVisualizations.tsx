@@ -11,7 +11,7 @@ const metricValue = (value: number, metric?: ReportMetricDefinition): string => 
   if (metric?.unit === 'MILLION_VND') return `${value.toLocaleString('vi-VN')} triệu`;
   return value.toLocaleString('vi-VN');
 };
-export const ReportCrosstab: React.FC<{ pivot: ReportPivotResult; metric?: ReportMetricDefinition }> = ({ pivot, metric }) => (
+export const ReportCrosstab: React.FC<{ pivot: ReportPivotResult; metric?: ReportMetricDefinition; onDrill?: (rowKey: string, columnKey?: string) => void }> = ({ pivot, metric, onDrill }) => (
   <div className="min-w-0 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm" data-testid="report-crosstab">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
       <h3 className="text-sm font-bold text-slate-900">Bảng chéo</h3>
@@ -20,7 +20,7 @@ export const ReportCrosstab: React.FC<{ pivot: ReportPivotResult; metric?: Repor
     <div className="overflow-x-auto">
       <table className="w-full min-w-[680px] text-left text-xs">
         <thead className="bg-slate-50 text-[10px] font-bold uppercase tracking-wide text-slate-500"><tr><th className="sticky left-0 bg-slate-50 px-4 py-3">Hàng</th>{pivot.columns.map(column => <th key={column.key} className="px-4 py-3 text-right">{column.label}</th>)}<th className="px-4 py-3 text-right">Tổng</th></tr></thead>
-        <tbody className="divide-y divide-slate-100">{pivot.rows.map(row => <tr key={row.key}><td className="sticky left-0 bg-white px-4 py-3 font-semibold text-slate-800">{row.label}</td>{pivot.columns.map(column => <td key={column.key} className="px-4 py-3 text-right text-slate-700">{metricValue(row.values[column.key] || 0, metric)}</td>)}<td className="px-4 py-3 text-right font-black text-[#006b68]">{metricValue(row.total, metric)}</td></tr>)}</tbody>
+        <tbody className="divide-y divide-slate-100">{pivot.rows.map(row => <tr key={row.key}><td className="sticky left-0 bg-white px-4 py-3 font-semibold text-slate-800">{row.label}</td>{pivot.columns.map(column => <td key={column.key} className="px-4 py-3 text-right text-slate-700">{onDrill ? <button type="button" onClick={() => onDrill(row.key, column.key)} className="underline-offset-2 hover:text-[#006b68] hover:underline">{metricValue(row.values[column.key] || 0, metric)}</button> : metricValue(row.values[column.key] || 0, metric)}</td>)}<td className="px-4 py-3 text-right font-black text-[#006b68]">{onDrill ? <button type="button" onClick={() => onDrill(row.key)} className="underline-offset-2 hover:underline">{metricValue(row.total, metric)}</button> : metricValue(row.total, metric)}</td></tr>)}</tbody>
       </table>
     </div>
     {pivot.rows.length === 0 && <p className="p-5 text-xs text-slate-500">Không có dữ liệu phù hợp với bộ lọc.</p>}

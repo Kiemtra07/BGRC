@@ -123,7 +123,6 @@ export const ReportTypeEditor: React.FC<Props> = ({ channel, onClose, onSave }) 
         <header className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4 sm:px-6">
           <div>
             <div className="flex items-center gap-2"><h3 className="text-base font-extrabold text-slate-900">{channel ? channel.name : 'Tạo loại báo cáo'}</h3>{channel && <span className="rounded-full bg-slate-100 px-2 py-0.5 text-[10px] font-bold text-slate-600">Phiên bản {channel.configVersion}</span>}</div>
-            <p className="mt-1 text-xs text-slate-500">Form, luồng, SLA và tích hợp được lưu cùng một phiên bản.</p>
           </div>
           <button type="button" aria-label="Đóng" onClick={onClose} className="rounded-lg p-2 text-slate-500 hover:bg-slate-100"><X className="h-5 w-5" /></button>
         </header>
@@ -141,6 +140,11 @@ export const ReportTypeEditor: React.FC<Props> = ({ channel, onClose, onSave }) 
 
         <footer className="border-t border-slate-200 bg-slate-50 px-4 py-3 sm:px-6">
           {error && <div role="alert" className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{error}</div>}
+          {/* Form, luồng, SLA và tích hợp are one version, and the version boundary decides which
+              findings feel the change — so the rule sits with the button that applies it. */}
+          <p className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-800">
+            Form, luồng, SLA và tích hợp được lưu cùng một phiên bản. Thay đổi chỉ áp dụng cho hồ sơ tạo sau khi lưu.
+          </p>
           <div className="flex items-center justify-end gap-2"><button type="button" onClick={onClose} className="rounded-lg px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200">Hủy</button><button type="button" disabled={saving} onClick={submit} className="inline-flex items-center gap-2 rounded-lg bg-[#006b68] px-4 py-2 text-xs font-bold text-white hover:bg-[#005956] disabled:opacity-60"><Save className="h-4 w-4" />{saving ? 'Đang lưu...' : channel ? 'Lưu phiên bản mới' : 'Tạo loại báo cáo'}</button></div>
         </footer>
       </div>

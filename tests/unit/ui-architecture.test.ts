@@ -253,6 +253,45 @@ describe('UI and business terminology architecture', () => {
     expect(adminPortal).not.toContain('bg-sky-600');
   });
 
+  it('shows the configured approval route to the people working the finding', () => {
+    const stepper = read('src/components/portal/ApprovalRouteStepper.tsx');
+    const detail = read('src/components/portal/FindingDetailPage.tsx');
+    const workflow = read('src/components/admin/report-types/WorkflowConfigEditor.tsx');
+    const editor = read('src/components/admin/report-types/ReportTypeEditor.tsx');
+    const formSchema = read('src/components/admin/report-types/FormSchemaEditor.tsx');
+    const matrix = read('src/components/admin/ButtonPermissionMatrix.tsx');
+    const apiSource = read('src/services/api.ts');
+
+    // The route the branch sees is resolved by the server from the pinned version, never rebuilt
+    // from a second hard-coded list of stages in the client.
+    expect(stepper).toContain('data-testid="approval-route-stepper"');
+    expect(stepper).toContain('getFindingApprovalRoute');
+    expect(stepper).not.toContain('Kiểm soát chi nhánh');
+    expect(apiSource).toContain('approval-route');
+    expect(detail).toContain('<ApprovalRouteStepper');
+    expect(detail).toContain('refreshToken={finding.version}');
+
+    // History is the audit trail; the newest entries stay on screen instead of behind a summary.
+    expect(detail).toContain('data-testid="finding-history"');
+    expect(detail).toContain('Xem {older.length} mốc cũ hơn');
+
+    // The admin diagram has to show the star branch, because the engine really does insert it.
+    expect(workflow).toContain('data-testid="workflow-stage-conditional"');
+    expect(workflow).toContain('Chỉ chèn vào tuyến khi hồ sơ được gắn dấu sao.');
+    expect(workflow).toContain('Tên bước đặt ở đây là tên hiển thị trên tuyến duyệt của hồ sơ');
+
+    // The version rule belongs with the button that applies it, not buried in one tab.
+    expect(editor).toContain('Thay đổi chỉ áp dụng cho hồ sơ tạo sau khi lưu.');
+
+    // A disabled block must say what unlocks it.
+    expect(formSchema).toContain('Thêm ít nhất một trường ở mục “Trường dữ liệu của form” bên dưới trước.');
+
+    // The branch-leader role exists in the routes, so the reference table must document it.
+    expect(matrix).toContain("'branchLeader'");
+    expect(matrix).toContain('Lãnh đạo CN');
+    expect(matrix).toContain('branch-leader-review');
+  });
+
   it('provides a block-based report form CMS with Excel template generation', () => {
     const editor = read('src/components/admin/report-types/FormSchemaEditor.tsx');
     const runtimeForm = read('src/components/ingestion/WebFormFindingModal.tsx');

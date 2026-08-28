@@ -57,6 +57,9 @@ import {
   ReportFieldKey,
   ReportFilterRule,
   ReportMetricKey,
+  FindingApprovalRouteView,
+  FindingApprovalStep,
+  WorkflowStatus,
   ReportDrillRequest,
   ReportDrillRequestSchema,
   ReportDrillResult,
@@ -3885,6 +3888,91 @@ app.put('/api/v1/findings/:id/special-case', async (req: FastifyRequest<{ Params
 });
 
 // 1. Submit Branch (Branch nộp hồ sơ)
+/**
+ * Build the display route for one finding out of the report type version pinned on it. The stage
+ * names come from the administrator's configuration rather than a second hard-coded list, so what
+ * the branch sees on the finding is exactly what was set up in "Luồng phê duyệt".
+ *
+ * The branch-leader step is conditional: a THREE_TIER type always carries it, while a TWO_TIER type
+ * only routes through it when the finding is starred — that rule lives in
+ * `executeBranchControlApprove`, and this must not drift from it.
+ */
+function buildFindingApprovalRoute(finding: Finding): FindingApprovalRouteView {
+  const pinnedVersion = reportChannelVersions.find(version => version.id === finding.channelVersionId);
+  const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType
+    ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.workflowType
+    ?? 'TWO_TIER';
+  const configured = pinnedVersion?.snapshot.workflowConfig?.stages
+    ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.stages
+    ?? defaultWorkflowConfig(finding.channelId, workflowType).stages;
+
+  const leaderApplies = workflowType === 'THREE_TIER'
+    || (workflowType === 'TWO_TIER' && Boolean(finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase));
+  const leaderStage = configured.find(stage => stage.statusCode === 'SUBMITTED_BRANCH_LEADER')
+    ?? defaultWorkflowConfig(finding.channelId, 'THREE_TIER').stages.find(stage => stage.statusCode === 'SUBMITTED_BRANCH_LEADER')!;
+
+  // A two-tier configuration has no leader stage of its own, so a starred finding needs one spliced
+  // in ahead of head office; a three-tier one already has it in the configured order.
+  const ordered = configured.filter(stage => stage.statusCode !== 'SUBMITTED_BRANCH_LEADER');
+  const stages = leaderApplies
+    ? [
+      ...ordered.slice(0, Math.max(1, ordered.findIndex(stage => stage.statusCode === 'SUBMITTED_INTERNAL'))),
+      leaderStage,
+      ...ordered.slice(Math.max(1, ordered.findIndex(stage => stage.statusCode === 'SUBMITTED_INTERNAL'))),
+    ]
+    : ordered;
+
+  const nameOf = (userId?: string): string | undefined => appUsers.find(candidate => candidate.id === userId)?.fullName;
+  const assigneeFor = (statusCode: WorkflowStatus): string | undefined => {
+    if (statusCode === 'SUBMITTED_BRANCH') return nameOf(finding.approvalRoute?.branchControllerUserId);
+    if (statusCode === 'SUBMITTED_BRANCH_LEADER') return nameOf(finding.approvalRoute?.branchLeaderUserId);
+    if (statusCode === 'SUBMITTED_INTERNAL') return nameOf(finding.approvalRoute?.internalApproverUserId);
+    return undefined;
+  };
+
+  const history = workflowEvents.filter(event => event.findingId === finding.id);
+  const isClosed = finding.workflowStatus === 'WAIVED_RESOLVED';
+  const isReturned = finding.workflowStatus === 'REJECTED';
+  // A returned finding is back in the branch's hands, which is the first step of the route.
+  const activeStatus: WorkflowStatus = isReturned ? stages[0].statusCode : finding.workflowStatus;
+  const activeIndex = stages.findIndex(stage => stage.statusCode === activeStatus);
+
+  const steps: FindingApprovalStep[] = stages.map((stage, index) => {
+    const completion = [...history].reverse().find(event => event.fromStatus === stage.statusCode && event.toStatus !== 'REJECTED');
+    const state: FindingApprovalStep['state'] = isClosed || (activeIndex >= 0 && index < activeIndex)
+      ? 'DONE'
+      : index === activeIndex ? 'CURRENT' : 'UPCOMING';
+    return {
+      stageId: stage.stageId,
+      stageName: stage.stageName,
+      statusCode: stage.statusCode,
+      allowedRoles: stage.allowedRoles,
+      assigneeName: assigneeFor(stage.statusCode),
+      state,
+      conditional: stage.statusCode === 'SUBMITTED_BRANCH_LEADER' && workflowType !== 'THREE_TIER',
+      completedAt: state === 'DONE' ? completion?.createdAt : undefined,
+      completedByName: state === 'DONE' ? completion?.actorName : undefined,
+    };
+  });
+
+  return {
+    findingId: finding.id,
+    workflowType,
+    isSpecialCase: Boolean(finding.isSpecialCase),
+    isClosed,
+    returnedFromStageName: isReturned
+      ? stages.find(stage => stage.statusCode === history.filter(event => event.toStatus === 'REJECTED').at(-1)?.fromStatus)?.stageName
+      : undefined,
+    currentStepIndex: isClosed ? -1 : activeIndex,
+    steps,
+  };
+}
+
+app.get('/api/v1/findings/:id/approval-route', async (req: FastifyRequest<{ Params: { id: string } }>) => {
+  const user = getCurrentUser(req);
+  return buildFindingApprovalRoute(getScopedFindingOrThrow(req.params.id, user));
+});
+
 app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>, reply) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);

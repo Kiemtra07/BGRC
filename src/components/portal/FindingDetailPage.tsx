@@ -8,6 +8,7 @@ import { RiskLevel, businessLineLabels, canManageEvidenceAtBranch, EvidenceObjec
 import { api } from '../../services/api';
 import { slaStatusLabels, workflowActionLabels, workflowEventLabels, workflowStatusLabels } from '../../content/ui-copy';
 import { EvidenceViewer } from '../evidence/EvidenceViewer';
+import { ApprovalRouteStepper } from './ApprovalRouteStepper';
 
 interface Props {
   findings: Finding[];
@@ -386,6 +387,9 @@ export const FindingDetailPage: React.FC<Props> = ({
               <div className={`mt-2 rounded-xl border p-3 text-xs font-bold ${slaTone[finding.slaStatus]}`}>Hạn xử lý {new Date(`${finding.deadlineDate}T00:00:00`).toLocaleDateString('vi-VN')} · {deadlineNotice}</div>
             </div>
 
+            {/* `version` increments on every workflow command, so it doubles as the refresh signal. */}
+            <ApprovalRouteStepper findingId={finding.id} refreshToken={finding.version} />
+
             <SubItemReview
               finding={finding}
               acceptedIds={acceptedSubItemIds}
@@ -467,10 +471,21 @@ export const FindingDetailPage: React.FC<Props> = ({
               </div>
             </details>
 
-            {finding.history?.length ? <details className="group border-t border-slate-200 pt-3">
-              <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between text-xs font-black text-slate-800">Lịch sử xử lý ({finding.history.length}) <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
-              <ol className="mt-3 space-y-3">{[...finding.history].reverse().map(event => <li key={event.id} className="relative border-l-2 border-teal-100 pl-3 text-[11px] leading-4"><span className="absolute -left-[5px] top-1 h-2 w-2 rounded-full bg-[#006b68]" /><strong className="text-slate-800">{event.actorName}</strong><span className="block text-slate-500">{workflowEventLabels[event.command]} · {new Date(event.createdAt).toLocaleString('vi-VN')}</span>{event.notes && <span className="mt-1 block text-slate-600">{event.notes}</span>}</li>)}</ol>
-            </details> : null}
+            {/* Who did what, when is the core of an audit record, so the latest entries stay visible
+                and only the older tail is folded away. */}
+            {finding.history?.length ? (() => {
+              const newestFirst = [...finding.history].reverse();
+              const recent = newestFirst.slice(0, 3);
+              const older = newestFirst.slice(3);
+              return <div className="border-t border-slate-200 pt-3" data-testid="finding-history">
+                <h3 className="text-xs font-black text-slate-800">Lịch sử xử lý ({finding.history.length})</h3>
+                <ol className="mt-3 space-y-3">{recent.map(event => <HistoryEntry key={event.id} event={event} />)}</ol>
+                {older.length > 0 && <details className="group mt-3">
+                  <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between text-[11px] font-bold text-slate-600">Xem {older.length} mốc cũ hơn <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
+                  <ol className="mt-3 space-y-3">{older.map(event => <HistoryEntry key={event.id} event={event} />)}</ol>
+                </details>}
+              </div>;
+            })() : null}
 
             {busy && <div className="flex items-center justify-center gap-2 text-xs font-semibold text-[#006b68]"><RefreshCw className="h-4 w-4 animate-spin" />Đang cập nhật hồ sơ...</div>}
           </section>}
@@ -479,6 +494,13 @@ export const FindingDetailPage: React.FC<Props> = ({
     </article>
   );
 };
+
+const HistoryEntry: React.FC<{ event: NonNullable<Finding['history']>[number] }> = ({ event }) => <li className="relative border-l-2 border-teal-100 pl-3 text-[11px] leading-4">
+  <span className="absolute -left-[5px] top-1 h-2 w-2 rounded-full bg-[#006b68]" />
+  <strong className="text-slate-800">{event.actorName}</strong>
+  <span className="block text-slate-500">{workflowEventLabels[event.command]} · {new Date(event.createdAt).toLocaleString('vi-VN')}</span>
+  {event.notes && <span className="mt-1 block text-slate-600">{event.notes}</span>}
+</li>;
 
 const Detail: React.FC<{ label: string; value: string }> = ({ label, value }) => <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className="block text-[9px] font-bold uppercase tracking-wide text-slate-400">{label}</span><span className="mt-1 block font-semibold text-slate-700">{value}</span></div>;
 const ActionPanel: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => <div className="space-y-3 border-t border-slate-200 pt-4"><h3 className="flex items-center gap-2 text-xs font-black text-slate-900"><ShieldCheck className="h-4 w-4 text-[#006b68]" />{title}</h3>{children}</div>;

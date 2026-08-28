@@ -2,7 +2,7 @@ import React from 'react';
 import { Check, LockKeyhole, X } from 'lucide-react';
 import { workflowActionLabels } from '../../content/ui-copy';
 
-const roleKeys = ['admin', 'officer', 'supervisor', 'approver', 'controller', 'branchInput', 'viewer'] as const;
+const roleKeys = ['admin', 'officer', 'supervisor', 'approver', 'controller', 'branchLeader', 'branchInput', 'viewer'] as const;
 type RoleKey = typeof roleKeys[number];
 
 interface PermissionRow {
@@ -18,6 +18,7 @@ const roles: Array<{ key: RoleKey; label: string }> = [
   { key: 'supervisor', label: 'Lãnh đạo HT' },
   { key: 'approver', label: 'Phê duyệt HT' },
   { key: 'controller', label: 'Kiểm soát CN' },
+  { key: 'branchLeader', label: 'Lãnh đạo CN' },
   { key: 'branchInput', label: 'Cán bộ CN' },
   { key: 'viewer', label: 'Chỉ xem' },
 ];
@@ -31,6 +32,7 @@ const matrix: PermissionRow[] = [
   { id: 'upload', label: 'Tải bằng chứng', description: 'Đính kèm hồ sơ PDF hoặc hình ảnh', allowed: ['branchInput'] },
   { id: 'submit', label: workflowActionLabels.submitBranch, description: 'Chuyển hồ sơ sang kiểm soát chi nhánh', allowed: ['branchInput'] },
   { id: 'branch-review', label: `${workflowActionLabels.branchApprove} / ${workflowActionLabels.returnToBranch}`, description: 'Kiểm tra hồ sơ trong phạm vi chi nhánh', allowed: ['controller'] },
+  { id: 'branch-leader-review', label: 'Lãnh đạo CN duyệt / chuyển trả', description: 'Bước chỉ có ở luồng ba cấp hoặc hồ sơ gắn dấu sao', allowed: ['branchLeader'] },
   { id: 'internal-review', label: `${workflowActionLabels.internalApprove} / ${workflowActionLabels.returnToBranch}`, description: 'Ra quyết định cuối cùng', allowed: ['supervisor', 'approver'] },
   { id: 'export', label: 'Khai thác và xuất báo cáo', description: 'Xuất dữ liệu theo đúng phạm vi được cấp', allowed: allRoles },
 ];

@@ -5,6 +5,7 @@ import {
   InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO,
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, CreateDashboardDefinitionDTO, DashboardDefinition, ReportFilterQuery,
   AuditLogEntry, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
+  FindingApprovalRouteView,
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest, ReportDrillRequest, ReportDrillResult,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness, CreateReportSpreadsheetDTO, ReportSpreadsheetResult,
@@ -138,6 +139,9 @@ class ApiService {
   );
   public createReportDefinition = (data: CreateReportDefinitionDTO): Promise<ReportDefinition> => (
     this.request('/reports/definitions', { method: 'POST', body: JSON.stringify(data) })
+  );
+  public getFindingApprovalRoute = (findingId: string): Promise<FindingApprovalRouteView> => (
+    this.request(`/findings/${encodeURIComponent(findingId)}/approval-route`)
   );
   public getDashboardDefinitions = (): Promise<DashboardDefinition[]> => this.request('/reports/dashboards');
   public createDashboardDefinition = (data: CreateDashboardDefinitionDTO): Promise<DashboardDefinition> => (
