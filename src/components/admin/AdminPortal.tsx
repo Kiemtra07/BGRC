@@ -9,7 +9,7 @@ import {
   Database,
   ClipboardCheck,
 } from 'lucide-react';
-import { AuditCampaign, BulkUserImportDTO, BulkUserImportResult, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO } from '../../../shared/contracts';
+import { AuditCampaign, BulkUserImportDTO, BulkUserImportResult, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse } from '../../../shared/contracts';
 import { DynamicChannelManager } from './DynamicChannelManager';
 import { OrganizationManager } from './OrganizationManager';
 import { UserManager } from './UserManager';
@@ -29,6 +29,7 @@ interface Props {
   onOrgUnitDeleted: (id: string) => Promise<void>;
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
   onUsersImported: (batch: BulkUserImportDTO) => Promise<BulkUserImportResult>;
+  onAuthenticatorChange: (id: string, data: UpdateAuthenticatorDTO) => Promise<UpdateAuthenticatorResponse>;
   onChannelCreated: (channel: Partial<CreateReportChannelDTO>) => Promise<void>;
   onChannelUpdated: (id: string, channel: UpdateReportChannelDTO) => Promise<void>;
   onChannelDeleted: (id: string) => Promise<void>;
@@ -53,6 +54,7 @@ export const AdminPortal: React.FC<Props> = ({
   onOrgUnitDeleted,
   onUserCreated,
   onUsersImported,
+  onAuthenticatorChange,
   onChannelCreated,
   onChannelUpdated,
   onChannelDeleted,
@@ -135,7 +137,7 @@ export const AdminPortal: React.FC<Props> = ({
         )}
 
         {activeTab === 'USERS' && (
-          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} onUsersImported={onUsersImported} />
+          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} />
         )}
 
         {activeTab === 'PERMISSIONS' && (

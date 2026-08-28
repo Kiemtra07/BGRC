@@ -6,10 +6,10 @@ import {
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, CreateDashboardDefinitionDTO, DashboardDefinition, ReportFilterQuery,
   AuditLogEntry, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
-  ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest,
+  ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest, ReportDrillRequest, ReportDrillResult,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness, CreateReportSpreadsheetDTO, ReportSpreadsheetResult,
   ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO, CreatedUserResponse, ResetUserPasswordDTO,
-  BulkUserImportDTO, BulkUserImportResult,
+  BulkUserImportDTO, BulkUserImportResult, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse,
   LoginDTO, LoginResponse,
   AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, UpdateAuditCampaignDTO, UpdateOrgUnitDTO,
 } from '../../shared/contracts';
@@ -133,6 +133,9 @@ class ApiService {
   public runReport = (query: ReportRunRequest): Promise<ReportRunResult> => (
     this.request('/reports/runs', { method: 'POST', body: JSON.stringify(query) })
   );
+  public drillReport = (request: ReportDrillRequest): Promise<ReportDrillResult> => (
+    this.request('/reports/drill', { method: 'POST', body: JSON.stringify(request) })
+  );
   public createReportDefinition = (data: CreateReportDefinitionDTO): Promise<ReportDefinition> => (
     this.request('/reports/definitions', { method: 'POST', body: JSON.stringify(data) })
   );
@@ -162,6 +165,9 @@ class ApiService {
   }
   public resetUserPassword(id: string, data: ResetUserPasswordDTO = {}): Promise<CreatedUserResponse> {
     return this.request(`/admin/users/${id}/password`, { method: 'POST', body: JSON.stringify(data) });
+  }
+  public updateUserAuthenticator(id: string, data: UpdateAuthenticatorDTO): Promise<UpdateAuthenticatorResponse> {
+    return this.request(`/admin/users/${id}/authenticator`, { method: 'PUT', body: JSON.stringify(data) });
   }
   public createChannel(data: Partial<CreateReportChannelDTO>): Promise<ReportChannel> {
     return this.request('/admin/channels', { method: 'POST', body: JSON.stringify(data) });

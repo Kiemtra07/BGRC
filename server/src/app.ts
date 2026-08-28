@@ -57,6 +57,9 @@ import {
   ReportFieldKey,
   ReportFilterRule,
   ReportMetricKey,
+  ReportDrillRequest,
+  ReportDrillRequestSchema,
+  ReportDrillResult,
   ReportRunRequest,
   ReportRunRequestSchema,
   ReportRunResult,
@@ -74,6 +77,8 @@ import {
   ReportChannelVersion,
   LoginSchema,
   AuthSessionRecord,
+  UpdateAuthenticatorSchema,
+  UpdateAuthenticatorResponse,
   SetWorkspacePrioritySchema,
   AuditCampaign,
   CreateAuditCampaignSchema,
@@ -106,6 +111,13 @@ import {
 } from './security/access-control';
 import { hashPassword, verifyPassword } from './security/password';
 import { AuthSessionStore } from './security/session-store';
+import {
+  buildOtpAuthUri,
+  decryptTotpSecret,
+  encryptTotpSecret,
+  generateTotpSecret,
+  verifyTotpCode,
+} from './security/totp';
 import {
   createGoogleDriveOAuthState,
   decryptGoogleDriveRefreshToken,
@@ -811,9 +823,21 @@ const DEFAULT_REPORT_EXPORT_FIELDS = new Set<ReportFieldKey>([
 // Keep every existing report rule usable after the filter-setting upgrade. Administrators can
 // narrow this list in the report catalog without invalidating legacy report templates on upgrade.
 const DEFAULT_REPORT_FILTER_FIELDS = new Set<ReportFieldKey>(REPORT_FIELD_CATALOG.map(field => field.key));
-const DEFAULT_REPORT_METRICS = new Set<ReportMetricKey>([
-  'metric.customer_count', 'metric.finding_count', 'metric.exposure_sum',
-]);
+// Every metric in the catalogue is derived from fields the finding already carries, so there is no
+// cost to offering all of them. Keeping the built-in report presets runnable out of the box matters
+// more than a conservative default; an administrator can still switch any of them off.
+const DEFAULT_REPORT_METRICS = new Set<ReportMetricKey>(REPORT_METRIC_CATALOG.map(metric => metric.key));
+
+/**
+ * A stored catalogue no administrator has ever saved is just a snapshot of the defaults of the day
+ * it was written, so it must not freeze a deployment on an older default set — that is what hides
+ * the built-in report presets after the metric defaults widen. A configuration carrying
+ * `updatedByUserId` is a real human choice and is always kept as it is.
+ */
+function hydrateReportCatalogConfiguration(stored?: ReportCatalogConfiguration): ReportCatalogConfiguration {
+  if (!stored) return createDefaultReportCatalogConfiguration();
+  return stored.updatedByUserId ? stored : createDefaultReportCatalogConfiguration();
+}
 
 function createDefaultReportCatalogConfiguration(): ReportCatalogConfiguration {
   return {
@@ -864,6 +888,14 @@ let workspaceWatchTargets: WorkspaceTargetRecord[] = [];
 let reportChannelVersions: ReportChannelVersion[] = [];
 let authSessions: AuthSessionRecord[] = [];
 
+interface AuthenticatorCredential {
+  userId: string;
+  encryptedSecret: string;
+  configuredAt: string;
+}
+
+let authenticatorCredentials: AuthenticatorCredential[] = [];
+
 interface GoogleDriveOAuthCredential {
   encryptedRefreshToken: string;
   connectedByUserId: string;
@@ -884,12 +916,15 @@ type SecurityEventType =
   | 'AUTH_LOGIN_SUCCEEDED'
   | 'AUTH_LOGIN_FAILED'
   | 'AUTH_LOGIN_THROTTLED'
+  | 'AUTH_MFA_FAILED'
+  | 'AUTH_MFA_SUCCEEDED'
   | 'AUTH_LOGOUT'
   | 'AUTH_OIDC_LOGIN_SUCCEEDED'
   | 'AUTH_OIDC_LOGIN_REJECTED'
   | 'ADMIN_USER_CREATED'
   | 'ADMIN_USER_IMPORT_COMMITTED'
   | 'ADMIN_USER_PASSWORD_RESET'
+  | 'ADMIN_AUTHENTICATOR_TOGGLED'
   | 'ADMIN_GOOGLE_DRIVE_CONNECTED'
   | 'DATA_REPORT_EXPORTED'
   | 'DATA_EVIDENCE_DOWNLOADED';
@@ -943,6 +978,7 @@ interface LocalAppState {
   workspaceAccepted: WorkspaceTargetRecord[];
   workspaceWatchTargets: WorkspaceTargetRecord[];
   authSessions?: AuthSessionRecord[];
+  authenticatorCredentials?: AuthenticatorCredential[];
   auditCampaigns?: AuditCampaign[];
   credentials?: CredentialEntry[];
   googleDriveOAuthCredential?: GoogleDriveOAuthCredential;
@@ -1045,6 +1081,7 @@ const hydratedState = await stateRepository.load({
   importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
   workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
   credentials: credentialDirectory,
+  authenticatorCredentials,
   googleDriveOAuthCredential, securityEvents, loginAttempts,
 });
 orgUnits = hydratedState.orgUnits;
@@ -1082,17 +1119,29 @@ importBatches = hydratedState.importBatches;
 slaExtensions = hydratedState.slaExtensions;
 reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
 dashboardDefinitions = (hydratedState.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
-reportCatalogConfiguration = hydratedState.reportCatalogConfiguration ?? createDefaultReportCatalogConfiguration();
+reportCatalogConfiguration = hydrateReportCatalogConfiguration(hydratedState.reportCatalogConfiguration);
 idempotencyRecords = hydratedState.idempotencyRecords ?? {};
 findingFollows = hydratedState.findingFollows ?? [];
 workspaceAccepted = hydratedState.workspaceAccepted ?? [];
 workspaceWatchTargets = hydratedState.workspaceWatchTargets ?? [];
 authSessions = hydratedState.authSessions ?? [];
+authenticatorCredentials = hydratedState.authenticatorCredentials ?? [];
 securityEvents = hydratedState.securityEvents ?? [];
 loginAttempts = hydratedState.loginAttempts ?? [];
 authSessionStore = new AuthSessionStore({ records: authSessions });
 auditCampaigns = hydratedState.auditCampaigns?.length ? hydratedState.auditCampaigns : auditCampaigns;
 googleDriveOAuthCredential = hydratedState.googleDriveOAuthCredential;
+
+function applyAuthenticatorProjection(): void {
+  const configured = new Set(authenticatorCredentials.map(item => item.userId));
+  appUsers = appUsers.map(user => ({
+    ...user,
+    authenticatorRequired: user.authenticatorRequired === true,
+    authenticatorConfigured: configured.has(user.id),
+  }));
+}
+
+applyAuthenticatorProjection();
 
 function googleOAuthStateSecret(): string {
   const secret = process.env.GOOGLE_OAUTH_STATE_SECRET;
@@ -1104,6 +1153,17 @@ function googleOAuthEncryptionKey(): string {
   const key = process.env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY;
   if (!key) throw new HttpProblem(503, 'GOOGLE_OAUTH_NOT_CONFIGURED', 'OAuth Google Drive chưa được cấu hình', 'Thiếu GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY trên máy chủ.');
   return key;
+}
+
+function authenticatorEncryptionKey(): string {
+  const configured = process.env.AUTHENTICATOR_ENCRYPTION_KEY?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === 'production') {
+    throw new HttpProblem(503, 'AUTHENTICATOR_NOT_CONFIGURED', 'Authenticator chưa được cấu hình', 'Thiếu AUTHENTICATOR_ENCRYPTION_KEY trên máy chủ.');
+  }
+  // Development/test fallback is deterministic for local JSON restart, but production must use a
+  // secret managed outside the process environment file.
+  return crypto.createHash('sha256').update(`auditbgs-local-authenticator:${process.cwd()}`).digest('base64');
 }
 
 function hydrateGoogleDriveOAuthCredential(credential: GoogleDriveOAuthCredential | undefined): void {
@@ -1275,6 +1335,7 @@ function currentLocalState(): LocalAppState {
     importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
     workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
     credentials: credentialDirectory,
+    authenticatorCredentials,
     googleDriveOAuthCredential, securityEvents, loginAttempts,
   };
 }
@@ -1293,17 +1354,19 @@ function restoreDurableLocalState(restored: LocalAppState): void {
   slaExtensions = restored.slaExtensions;
   reportDefinitions = restored.reportDefinitions.map(normalizeReportDefinition);
   dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
-  reportCatalogConfiguration = restored.reportCatalogConfiguration ?? createDefaultReportCatalogConfiguration();
+  reportCatalogConfiguration = hydrateReportCatalogConfiguration(restored.reportCatalogConfiguration);
   idempotencyRecords = restored.idempotencyRecords ?? {};
   findingFollows = restored.findingFollows ?? [];
   workspaceAccepted = restored.workspaceAccepted ?? [];
   workspaceWatchTargets = restored.workspaceWatchTargets ?? [];
   authSessions = restored.authSessions ?? [];
+  authenticatorCredentials = restored.authenticatorCredentials ?? [];
   securityEvents = restored.securityEvents ?? [];
   loginAttempts = restored.loginAttempts ?? [];
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
   if (restored.credentials?.length) credentialDirectory = restored.credentials;
+  applyAuthenticatorProjection();
   hydrateGoogleDriveOAuthCredential(restored.googleDriveOAuthCredential);
 }
 
@@ -2122,6 +2185,49 @@ function executeReportRun(items: Finding[], query: ReportRunRequest): ReportRunR
   };
 }
 
+/**
+ * Detail rows behind one aggregated cell. The cell is addressed by the *values* of the group and
+ * pivot fields rather than by a client-supplied list of ids, so the rows can only ever come from the
+ * caller's own data scope re-applied here.
+ */
+function executeReportDrill(items: Finding[], request: ReportDrillRequest): ReportDrillResult {
+  const { query, rowKey, columnKey } = request;
+  const matched = applyCanonicalReportRules(items, query.rules, query.match);
+  const inCell = matched.filter(finding => {
+    if (rowKey !== undefined && String(reportFieldAccessors[query.groupBy](finding) || 'UNASSIGNED') !== rowKey) return false;
+    if (columnKey !== undefined && query.pivotBy && String(reportFieldAccessors[query.pivotBy](finding) || 'UNASSIGNED') !== columnKey) return false;
+    return true;
+  });
+  const sample = inCell[0];
+  const start = (request.page - 1) * request.pageSize;
+  return {
+    total: inCell.length,
+    page: request.page,
+    pageSize: request.pageSize,
+    rowLabel: sample && rowKey !== undefined ? reportValueLabel(query.groupBy, reportFieldAccessors[query.groupBy](sample), sample) : undefined,
+    columnLabel: sample && columnKey !== undefined && query.pivotBy ? reportValueLabel(query.pivotBy, reportFieldAccessors[query.pivotBy](sample), sample) : undefined,
+    rows: [...inCell]
+      .sort((left, right) => right.exposureAmount - left.exposureAmount || left.cif.localeCompare(right.cif, 'vi-VN'))
+      .slice(start, start + request.pageSize)
+      .map(finding => ({
+        findingId: finding.id,
+        cif: finding.cif,
+        customerName: finding.customerName,
+        branchCode: finding.branchCode,
+        branchName: finding.branchName,
+        department: finding.department,
+        officerName: finding.officerName,
+        errorCode: finding.errorCode,
+        errorTitle: finding.errorTitle,
+        workflowStatusLabel: workflowStatusLabels[finding.workflowStatus],
+        slaStatusLabel: slaStatusLabels[finding.slaStatus],
+        deadlineDate: finding.deadlineDate,
+        exposureAmount: finding.exposureAmount,
+        creditBalance: finding.creditBalance,
+      })),
+  };
+}
+
 function normalizedReportCatalogConfiguration(): ReportCatalogConfiguration {
   const configuredFields = new Map(reportCatalogConfiguration.fields.map(field => [field.key, field]));
   const configuredMetrics = new Map(reportCatalogConfiguration.metrics.map(metric => [metric.key, metric]));
@@ -2477,7 +2583,8 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
     throw error;
   }
 
-  const directoryEntry = credentialDirectory.find(item => item.username === normalizedUsername);
+  const emailOwner = appUsers.find(item => item.isActive && item.email.toLocaleLowerCase('vi-VN') === normalizedUsername);
+  const directoryEntry = credentialDirectory.find(item => item.username === normalizedUsername || item.userId === emailOwner?.id);
   // Always verify a hash, even for an unknown username, so timing does not disclose existence.
   const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? unknownUserPasswordHash);
   const user = directoryEntry ? appUsers.find(item => item.id === directoryEntry.userId && item.isActive) : undefined;
@@ -2494,6 +2601,40 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
     });
     await persistLocalState();
     throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
+  }
+
+  if (user.authenticatorRequired) {
+    const credential = authenticatorCredentials.find(item => item.userId === user.id);
+    if (!credential) {
+      throw new HttpProblem(503, 'MFA_SETUP_REQUIRED', 'Chưa hoàn tất Authenticator', 'Quản trị viên cần cấp lại mã thiết lập Google Authenticator cho tài khoản này.');
+    }
+    let secret: string;
+    try {
+      secret = decryptTotpSecret(credential.encryptedSecret, authenticatorEncryptionKey());
+    } catch {
+      throw new HttpProblem(503, 'MFA_CREDENTIAL_INVALID', 'Authenticator chưa sẵn sàng', 'Không thể đọc cấu hình Google Authenticator của tài khoản.');
+    }
+    if (!credentials.mfaCode || !verifyTotpCode(secret, credentials.mfaCode, nowMs)) {
+      recordSecurityEvent({
+        type: 'AUTH_MFA_FAILED',
+        outcome: 'FAILURE',
+        subject: normalizedUsername,
+        detail: 'Từ chối đăng nhập vì mã Google Authenticator không đúng hoặc đã hết hạn.',
+        ipAddress: req.ip,
+      });
+      await persistLocalState();
+      throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator.');
+    }
+    recordSecurityEvent({
+      type: 'AUTH_MFA_SUCCEEDED',
+      outcome: 'SUCCESS',
+      actorUserId: user.id,
+      actorName: user.fullName,
+      actorRole: user.primaryRole,
+      subject: normalizedUsername,
+      detail: 'Xác thực Google Authenticator thành công.',
+      ipAddress: req.ip,
+    });
   }
 
   // Đăng nhập đúng xoá bộ đếm sai; createAuthenticatedSession bên dưới ghi state ngay sau đó.
@@ -2985,6 +3126,54 @@ app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body
   rememberIdempotentResponse(idempotency, result);
   await persistLocalState();
   return reply.code(201).send(result);
+});
+
+/** Bật/tắt bắt buộc Google Authenticator. Secret chỉ trả về đúng một lần khi bật lần đầu. */
+app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = UpdateAuthenticatorSchema.parse(req.body);
+  const user = appUsers.find(item => item.id === req.params.id);
+  if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
+
+  let setup: UpdateAuthenticatorResponse['setup'];
+  const existing = authenticatorCredentials.find(item => item.userId === user.id);
+  if (body.enabled) {
+    if (!existing) {
+      const secret = generateTotpSecret();
+      authenticatorCredentials.push({
+        userId: user.id,
+        encryptedSecret: encryptTotpSecret(secret, authenticatorEncryptionKey()),
+        configuredAt: new Date().toISOString(),
+      });
+      setup = { secret, otpauthUri: buildOtpAuthUri(secret, user.email) };
+    }
+    user.authenticatorRequired = true;
+    user.authenticatorConfigured = true;
+  } else {
+    authenticatorCredentials = authenticatorCredentials.filter(item => item.userId !== user.id);
+    user.authenticatorRequired = false;
+    user.authenticatorConfigured = false;
+    const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+    authSessions = authSessionStore.records();
+    recordUserSecurityEvent(req, actor, {
+      type: 'ADMIN_AUTHENTICATOR_TOGGLED',
+      outcome: 'SUCCESS',
+      subject: user.username,
+      detail: `Tắt yêu cầu Google Authenticator cho ${user.fullName}; thu hồi ${revokedSessions} phiên.`,
+    });
+    await persistLocalState();
+    return { user } satisfies UpdateAuthenticatorResponse;
+  }
+
+  recordUserSecurityEvent(req, actor, {
+    type: 'ADMIN_AUTHENTICATOR_TOGGLED',
+    outcome: 'SUCCESS',
+    subject: user.username,
+    detail: `Bật yêu cầu Google Authenticator cho ${user.fullName}.`,
+  });
+  await persistLocalState();
+  return { user, ...(setup ? { setup } : {}) } satisfies UpdateAuthenticatorResponse;
 });
 
 /** Đặt lại mật khẩu cho một tài khoản. Trả mật khẩu tạm khi quản trị viên không tự đặt. */
@@ -4238,6 +4427,13 @@ app.post('/api/v1/reports/runs', async (req: FastifyRequest<{ Body: any }>) => {
   return executeReportRun(scoped, query);
 });
 
+app.post('/api/v1/reports/drill', async (req: FastifyRequest<{ Body: any }>) => {
+  const request = ReportDrillRequestSchema.parse(req.body);
+  assertReportConfigurationAvailable(request.query);
+  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  return executeReportDrill(scoped, request);
+});
+
 app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, reply) => {
   const exportingUser = getCurrentUser(req);
   const request = ReportExportRequestSchema.parse(req.body);
@@ -4396,18 +4592,23 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
   if (env.NODE_ENV !== 'production') return;
 
   const violations: string[] = [];
-  if (env.AUTH_MODE !== 'oidc') violations.push('AUTH_MODE phải là oidc');
+  const credentialAuth = env.AUTH_MODE === 'credentials' || env.AUTH_MODE === 'local-credential-session';
+  if (!credentialAuth && env.AUTH_MODE !== 'oidc') violations.push('AUTH_MODE phải là credentials hoặc oidc');
   if (env.SEED_DEMO_DATA === 'true' || env.SEED_DEMO_USERS === 'true') violations.push('SEED_DEMO_DATA không được bật ở production');
   // Không seed demo thì phải có đúng một tài khoản quản trị khởi tạo, nếu không sẽ không ai vào được.
   if (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH) {
     violations.push('thiếu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH');
   }
   if (!env.BOOTSTRAP_ADMIN_EMAIL?.trim()) {
-    violations.push('thiếu BOOTSTRAP_ADMIN_EMAIL cho đăng nhập Google OIDC');
+    violations.push('thiếu BOOTSTRAP_ADMIN_EMAIL');
   }
-  if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push('thiếu OIDC_ISSUER_URL/OIDC_AUDIENCE');
-  if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
-    violations.push('thiếu cấu hình Google OIDC');
+  if (!credentialAuth) {
+    if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push('thiếu OIDC_ISSUER_URL/OIDC_AUDIENCE');
+    if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
+      violations.push('thiếu cấu hình Google OIDC');
+    }
+  } else if (!env.AUTHENTICATOR_ENCRYPTION_KEY) {
+    violations.push('thiếu AUTHENTICATOR_ENCRYPTION_KEY cho mã hóa secret Authenticator');
   }
   if (env.DATA_STORE_MODE !== 'postgres' || !env.DATABASE_URL) violations.push('DATA_STORE_MODE=postgres và DATABASE_URL là bắt buộc');
   if (!env.CRON_SECRET) violations.push('thiếu CRON_SECRET');

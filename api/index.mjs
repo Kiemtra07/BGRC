@@ -157,7 +157,11 @@ var inferCoPlusRole = (roles) => {
 import { z as z3 } from "zod";
 var LoginSchema = z3.object({
   username: z3.string().trim().min(2).max(100),
-  password: z3.string().min(1).max(200)
+  password: z3.string().min(1).max(200),
+  mfaCode: z3.string().trim().regex(/^\d{6}$/, "M\xE3 Authenticator ph\u1EA3i g\u1ED3m 6 ch\u1EEF s\u1ED1.").optional()
+});
+var UpdateAuthenticatorSchema = z3.object({
+  enabled: z3.boolean()
 });
 var UserRoleSchema = z3.enum([
   "ADMIN",
@@ -952,6 +956,113 @@ var CreateDashboardDefinitionSchema = z11.object({
     context.addIssue({ code: z11.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem dashboard chia s\u1EBB" });
   }
 });
+var ReportDrillRequestSchema = z11.object({
+  query: ReportRunRequestSchema,
+  /** Value of `query.groupBy` for the clicked row; omitted when drilling a grand total. */
+  rowKey: z11.string().max(300).optional(),
+  /** Value of `query.pivotBy` for the clicked crosstab column. */
+  columnKey: z11.string().max(300).optional(),
+  page: z11.number().int().min(1).max(500).default(1),
+  pageSize: z11.number().int().min(5).max(100).default(25)
+});
+var preset = (id, name, description, query, presentation = "table", chartType) => ({
+  id,
+  name,
+  description,
+  presentation,
+  chartType,
+  query: { rules: [], match: "ALL", limit: 25, ...query }
+});
+var REPORT_PRESETS = [
+  preset(
+    "preset.branch_overview",
+    "T\u1ED5ng h\u1EE3p theo chi nh\xE1nh",
+    "S\u1ED1 kh\xE1ch h\xE0ng, s\u1ED1 m\xE3 l\u1ED7i v\xE0 gi\xE1 tr\u1ECB \u1EA3nh h\u01B0\u1EDFng c\u1EE7a t\u1EEBng chi nh\xE1nh.",
+    {
+      groupBy: "dimension.branch",
+      metrics: ["metric.customer_count", "metric.finding_count", "metric.exposure_sum"],
+      sort: { key: "metric.exposure_sum", direction: "desc" }
+    }
+  ),
+  preset(
+    "preset.overdue_by_branch",
+    "Sai s\xF3t qu\xE1 h\u1EA1n theo chi nh\xE1nh",
+    "Ch\u1EC9 c\xE1c sai s\xF3t \u0111\xE3 qu\xE1 h\u1EA1n, x\u1EBFp theo chi nh\xE1nh nhi\u1EC1u nh\u1EA5t.",
+    {
+      rules: [{ key: "flag.overdue", operator: "op.is_true" }],
+      groupBy: "dimension.branch",
+      metrics: ["metric.overdue_count", "metric.finding_count", "metric.exposure_sum"],
+      sort: { key: "metric.overdue_count", direction: "desc" }
+    }
+  ),
+  preset(
+    "preset.remediation_progress",
+    "Ti\u1EBFn \u0111\u1ED9 kh\u1EAFc ph\u1EE5c theo c\u1EE5m",
+    "T\u1EF7 l\u1EC7 kh\u1EAFc ph\u1EE5c v\xE0 s\u1ED1 l\u1ED7i \u0111\xE3 \u0111\xF3ng c\u1EE7a t\u1EEBng c\u1EE5m \u0111\u1ECBa b\xE0n.",
+    {
+      groupBy: "dimension.cluster",
+      metrics: ["metric.finding_count", "metric.resolved_count", "metric.remediation_rate"],
+      sort: { key: "metric.remediation_rate", direction: "asc" }
+    }
+  ),
+  preset(
+    "preset.status_by_branch",
+    "B\u1EA3ng ch\xE9o chi nh\xE1nh \xD7 tr\u1EA1ng th\xE1i",
+    "H\u1ED3 s\u01A1 \u0111ang n\u1EB1m \u1EDF b\u01B0\u1EDBc n\xE0o c\u1EE7a t\u1EEBng chi nh\xE1nh.",
+    {
+      groupBy: "dimension.branch",
+      pivotBy: "dimension.workflow_status",
+      metrics: ["metric.finding_count"]
+    },
+    "pivot"
+  ),
+  preset(
+    "preset.top_error_codes",
+    "M\xE3 l\u1ED7i ph\u1ED5 bi\u1EBFn nh\u1EA5t",
+    "Nh\xF3m theo m\xE3 l\u1ED7i \u0111\u1EC3 th\u1EA5y sai s\xF3t n\xE0o l\u1EB7p l\u1EA1i nhi\u1EC1u nh\u1EA5t.",
+    {
+      groupBy: "dimension.error_code",
+      metrics: ["metric.finding_count", "metric.customer_count", "metric.exposure_sum"],
+      sort: { key: "metric.finding_count", direction: "desc" },
+      limit: 15
+    },
+    "chart",
+    "bar"
+  ),
+  preset(
+    "preset.sla_pressure",
+    "\xC1p l\u1EF1c SLA",
+    "Ph\xE2n b\u1ED1 h\u1ED3 s\u01A1 theo tr\u1EA1ng th\xE1i SLA \u0111\u1EC3 bi\u1EBFt kh\u1ED1i l\u01B0\u1EE3ng s\u1EAFp \u0111\u1EBFn h\u1EA1n.",
+    {
+      groupBy: "dimension.sla_status",
+      metrics: ["metric.finding_count", "metric.exposure_sum"],
+      sort: { key: "metric.finding_count", direction: "desc" }
+    },
+    "chart",
+    "pie"
+  ),
+  preset(
+    "preset.officer_workload",
+    "Kh\u1ED1i l\u01B0\u1EE3ng theo c\xE1n b\u1ED9 QLKH",
+    "C\xE1n b\u1ED9 n\xE0o \u0111ang gi\u1EEF nhi\u1EC1u sai s\xF3t ch\u01B0a \u0111\xF3ng nh\u1EA5t.",
+    {
+      groupBy: "dimension.officer",
+      metrics: ["metric.finding_count", "metric.overdue_count", "metric.credit_balance_sum"],
+      sort: { key: "metric.finding_count", direction: "desc" },
+      limit: 20
+    }
+  ),
+  preset(
+    "preset.campaign_summary",
+    "K\u1EBFt qu\u1EA3 theo chuy\xEAn \u0111\u1EC1",
+    "So s\xE1nh kh\u1ED1i l\u01B0\u1EE3ng v\xE0 ti\u1EBFn \u0111\u1ED9 kh\u1EAFc ph\u1EE5c gi\u1EEFa c\xE1c chuy\xEAn \u0111\u1EC1 ki\u1EC3m tra.",
+    {
+      groupBy: "dimension.campaign",
+      metrics: ["metric.finding_count", "metric.resolved_count", "metric.remediation_rate"],
+      sort: { key: "metric.finding_count", direction: "desc" }
+    }
+  )
+];
 
 // shared/contracts/campaigns.ts
 import { z as z12 } from "zod";
@@ -2760,6 +2871,101 @@ var AuthSessionStore = class {
   }
 };
 
+// server/src/security/totp.ts
+import { createCipheriv, createDecipheriv, createHmac, randomBytes as randomBytes3, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+var BASE32_ALPHABET = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+var TOTP_PERIOD_SECONDS = 30;
+var TOTP_DIGITS = 6;
+function decodeBase32(value) {
+  const normalized = value.replace(/[=\s-]/g, "").toUpperCase();
+  if (!normalized || !/^[A-Z2-7]+$/.test(normalized)) throw new Error("Invalid TOTP secret.");
+  let bits = 0;
+  let buffer = 0;
+  const bytes = [];
+  for (const character of normalized) {
+    buffer = buffer << 5 | BASE32_ALPHABET.indexOf(character);
+    bits += 5;
+    if (bits >= 8) {
+      bits -= 8;
+      bytes.push(buffer >>> bits & 255);
+    }
+  }
+  return Buffer.from(bytes);
+}
+function encodeBase32(value) {
+  let bits = 0;
+  let buffer = 0;
+  let output = "";
+  for (const byte of value) {
+    buffer = buffer << 8 | byte;
+    bits += 8;
+    while (bits >= 5) {
+      bits -= 5;
+      output += BASE32_ALPHABET[buffer >>> bits & 31];
+    }
+  }
+  if (bits > 0) output += BASE32_ALPHABET[buffer << 5 - bits & 31];
+  return output;
+}
+function counterBuffer(counter) {
+  const result = Buffer.alloc(8);
+  result.writeUInt32BE(Math.floor(counter / 4294967296), 0);
+  result.writeUInt32BE(counter >>> 0, 4);
+  return result;
+}
+function generateTotpSecret() {
+  return encodeBase32(randomBytes3(20));
+}
+function generateTotpCode(secret, timestampMs = Date.now(), digits = TOTP_DIGITS) {
+  if (![6, 8].includes(digits)) throw new Error("TOTP digits must be 6 or 8.");
+  const counter = Math.floor(timestampMs / 1e3 / TOTP_PERIOD_SECONDS);
+  const digest = createHmac("sha1", decodeBase32(secret)).update(counterBuffer(counter)).digest();
+  const offset = digest[digest.length - 1] & 15;
+  const binary = (digest[offset] & 127) << 24 | (digest[offset + 1] & 255) << 16 | (digest[offset + 2] & 255) << 8 | digest[offset + 3] & 255;
+  return String(binary % 10 ** digits).padStart(digits, "0");
+}
+function verifyTotpCode(secret, submittedCode, timestampMs = Date.now(), window = 1) {
+  if (!/^\d{6}$/.test(submittedCode) || !Number.isInteger(window) || window < 0 || window > 2) return false;
+  try {
+    for (let offset = -window; offset <= window; offset += 1) {
+      const expected = Buffer.from(generateTotpCode(secret, timestampMs + offset * TOTP_PERIOD_SECONDS * 1e3));
+      const actual = Buffer.from(submittedCode);
+      if (timingSafeEqual2(expected, actual)) return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+function buildOtpAuthUri(secret, accountName, issuer = "AuditBGS") {
+  const normalizedSecret = secret.replace(/[=\s-]/g, "").toUpperCase();
+  decodeBase32(normalizedSecret);
+  const label = `${issuer}:${accountName}`;
+  return `otpauth://totp/${encodeURIComponent(label)}?secret=${encodeURIComponent(normalizedSecret)}&issuer=${encodeURIComponent(issuer)}&algorithm=SHA1&digits=6&period=30`;
+}
+function encryptionKey(value) {
+  const trimmed = value.trim();
+  const key = /^[0-9a-f]{64}$/i.test(trimmed) ? Buffer.from(trimmed, "hex") : Buffer.from(trimmed, "base64");
+  if (key.length !== 32) throw new Error("TOTP encryption key must be 32 bytes.");
+  return key;
+}
+function encryptTotpSecret(secret, key) {
+  decodeBase32(secret);
+  const iv = randomBytes3(12);
+  const cipher = createCipheriv("aes-256-gcm", encryptionKey(key), iv);
+  const encrypted = Buffer.concat([cipher.update(secret), cipher.final()]);
+  return ["v1", iv, cipher.getAuthTag(), encrypted].map((part) => part.toString("base64url")).join(".");
+}
+function decryptTotpSecret(payload, key) {
+  const [version, ivEncoded, tagEncoded, dataEncoded] = payload.split(".");
+  if (version !== "v1" || !ivEncoded || !tagEncoded || !dataEncoded) throw new Error("Invalid encrypted TOTP secret.");
+  const decipher = createDecipheriv("aes-256-gcm", encryptionKey(key), Buffer.from(ivEncoded, "base64url"));
+  decipher.setAuthTag(Buffer.from(tagEncoded, "base64url"));
+  const plaintext = Buffer.concat([decipher.update(Buffer.from(dataEncoded, "base64url")), decipher.final()]).toString("utf8");
+  decodeBase32(plaintext);
+  return plaintext;
+}
+
 // server/src/security/google-drive-oauth-state.ts
 import crypto3 from "node:crypto";
 var STATE_TTL_MS = 10 * 60 * 1e3;
@@ -2798,14 +3004,14 @@ function verifyGoogleDriveOAuthState({ state, secret, now = Date.now() }) {
   if (payload.version !== 1 || !payload.userId || !Number.isSafeInteger(payload.expiresAt) || payload.expiresAt < now) throw new Error("OAuth state is expired or invalid.");
   return { userId: payload.userId };
 }
-function encryptionKey(rawKey) {
+function encryptionKey2(rawKey) {
   if (!/^[a-f0-9]{64}$/i.test(rawKey)) throw new Error("Google OAuth credential encryption key is invalid.");
   return Buffer.from(rawKey, "hex");
 }
 function encryptGoogleDriveRefreshToken(refreshToken, rawKey) {
   if (!refreshToken) throw new Error("Google OAuth refresh token is missing.");
   const iv = crypto3.randomBytes(12);
-  const cipher = crypto3.createCipheriv("aes-256-gcm", encryptionKey(rawKey), iv);
+  const cipher = crypto3.createCipheriv("aes-256-gcm", encryptionKey2(rawKey), iv);
   const ciphertext = Buffer.concat([cipher.update(refreshToken, "utf8"), cipher.final()]);
   return ["v1", base64Url(iv), base64Url(cipher.getAuthTag()), base64Url(ciphertext)].join(".");
 }
@@ -2813,7 +3019,7 @@ function decryptGoogleDriveRefreshToken(storedCredential, rawKey) {
   const [version, encodedIv, encodedTag, encodedCiphertext, ...extra] = storedCredential.split(".");
   if (version !== "v1" || !encodedIv || !encodedTag || !encodedCiphertext || extra.length) throw new Error("Google OAuth credential is invalid.");
   try {
-    const decipher = crypto3.createDecipheriv("aes-256-gcm", encryptionKey(rawKey), decodeBase64Url(encodedIv));
+    const decipher = crypto3.createDecipheriv("aes-256-gcm", encryptionKey2(rawKey), decodeBase64Url(encodedIv));
     decipher.setAuthTag(decodeBase64Url(encodedTag));
     return Buffer.concat([decipher.update(decodeBase64Url(encodedCiphertext)), decipher.final()]).toString("utf8");
   } catch {
@@ -3816,11 +4022,11 @@ var DEFAULT_REPORT_EXPORT_FIELDS = /* @__PURE__ */ new Set([
   "date.deadline"
 ]);
 var DEFAULT_REPORT_FILTER_FIELDS = new Set(REPORT_FIELD_CATALOG.map((field) => field.key));
-var DEFAULT_REPORT_METRICS = /* @__PURE__ */ new Set([
-  "metric.customer_count",
-  "metric.finding_count",
-  "metric.exposure_sum"
-]);
+var DEFAULT_REPORT_METRICS = new Set(REPORT_METRIC_CATALOG.map((metric) => metric.key));
+function hydrateReportCatalogConfiguration(stored) {
+  if (!stored) return createDefaultReportCatalogConfiguration();
+  return stored.updatedByUserId ? stored : createDefaultReportCatalogConfiguration();
+}
 function createDefaultReportCatalogConfiguration() {
   return {
     version: 1,
@@ -3846,6 +4052,7 @@ var workspaceAccepted = [];
 var workspaceWatchTargets = [];
 var reportChannelVersions = [];
 var authSessions = [];
+var authenticatorCredentials = [];
 var googleDriveOAuthCredential;
 var securityEvents = [];
 var loginAttempts = [];
@@ -3918,6 +4125,7 @@ var hydratedState = await stateRepository.load({
   authSessions,
   auditCampaigns,
   credentials: credentialDirectory,
+  authenticatorCredentials,
   googleDriveOAuthCredential,
   securityEvents,
   loginAttempts
@@ -3955,17 +4163,27 @@ importBatches = hydratedState.importBatches;
 slaExtensions = hydratedState.slaExtensions;
 reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
 dashboardDefinitions = (hydratedState.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
-reportCatalogConfiguration = hydratedState.reportCatalogConfiguration ?? createDefaultReportCatalogConfiguration();
+reportCatalogConfiguration = hydrateReportCatalogConfiguration(hydratedState.reportCatalogConfiguration);
 idempotencyRecords = hydratedState.idempotencyRecords ?? {};
 findingFollows = hydratedState.findingFollows ?? [];
 workspaceAccepted = hydratedState.workspaceAccepted ?? [];
 workspaceWatchTargets = hydratedState.workspaceWatchTargets ?? [];
 authSessions = hydratedState.authSessions ?? [];
+authenticatorCredentials = hydratedState.authenticatorCredentials ?? [];
 securityEvents = hydratedState.securityEvents ?? [];
 loginAttempts = hydratedState.loginAttempts ?? [];
 authSessionStore = new AuthSessionStore({ records: authSessions });
 auditCampaigns = hydratedState.auditCampaigns?.length ? hydratedState.auditCampaigns : auditCampaigns;
 googleDriveOAuthCredential = hydratedState.googleDriveOAuthCredential;
+function applyAuthenticatorProjection() {
+  const configured = new Set(authenticatorCredentials.map((item) => item.userId));
+  appUsers = appUsers.map((user) => ({
+    ...user,
+    authenticatorRequired: user.authenticatorRequired === true,
+    authenticatorConfigured: configured.has(user.id)
+  }));
+}
+applyAuthenticatorProjection();
 function googleOAuthStateSecret() {
   const secret = process.env.GOOGLE_OAUTH_STATE_SECRET;
   if (!secret || secret.length < 16) throw new HttpProblem(503, "GOOGLE_OAUTH_NOT_CONFIGURED", "OAuth Google Drive ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh", "Thi\u1EBFu GOOGLE_OAUTH_STATE_SECRET tr\xEAn m\xE1y ch\u1EE7.");
@@ -3975,6 +4193,14 @@ function googleOAuthEncryptionKey() {
   const key = process.env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY;
   if (!key) throw new HttpProblem(503, "GOOGLE_OAUTH_NOT_CONFIGURED", "OAuth Google Drive ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh", "Thi\u1EBFu GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY tr\xEAn m\xE1y ch\u1EE7.");
   return key;
+}
+function authenticatorEncryptionKey() {
+  const configured = process.env.AUTHENTICATOR_ENCRYPTION_KEY?.trim();
+  if (configured) return configured;
+  if (process.env.NODE_ENV === "production") {
+    throw new HttpProblem(503, "AUTHENTICATOR_NOT_CONFIGURED", "Authenticator ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh", "Thi\u1EBFu AUTHENTICATOR_ENCRYPTION_KEY tr\xEAn m\xE1y ch\u1EE7.");
+  }
+  return crypto5.createHash("sha256").update(`auditbgs-local-authenticator:${process.cwd()}`).digest("base64");
 }
 function hydrateGoogleDriveOAuthCredential(credential) {
   googleDriveOAuthCredential = credential;
@@ -4126,6 +4352,7 @@ function currentLocalState() {
     authSessions,
     auditCampaigns,
     credentials: credentialDirectory,
+    authenticatorCredentials,
     googleDriveOAuthCredential,
     securityEvents,
     loginAttempts
@@ -4144,17 +4371,19 @@ function restoreDurableLocalState(restored) {
   slaExtensions = restored.slaExtensions;
   reportDefinitions = restored.reportDefinitions.map(normalizeReportDefinition);
   dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
-  reportCatalogConfiguration = restored.reportCatalogConfiguration ?? createDefaultReportCatalogConfiguration();
+  reportCatalogConfiguration = hydrateReportCatalogConfiguration(restored.reportCatalogConfiguration);
   idempotencyRecords = restored.idempotencyRecords ?? {};
   findingFollows = restored.findingFollows ?? [];
   workspaceAccepted = restored.workspaceAccepted ?? [];
   workspaceWatchTargets = restored.workspaceWatchTargets ?? [];
   authSessions = restored.authSessions ?? [];
+  authenticatorCredentials = restored.authenticatorCredentials ?? [];
   securityEvents = restored.securityEvents ?? [];
   loginAttempts = restored.loginAttempts ?? [];
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
   if (restored.credentials?.length) credentialDirectory = restored.credentials;
+  applyAuthenticatorProjection();
   hydrateGoogleDriveOAuthCredential(restored.googleDriveOAuthCredential);
 }
 var runtimeRequestLock = new RuntimeRequestLock();
@@ -4857,6 +5086,40 @@ function executeReportRun(items, query) {
     pivot
   };
 }
+function executeReportDrill(items, request) {
+  const { query, rowKey, columnKey } = request;
+  const matched = applyCanonicalReportRules(items, query.rules, query.match);
+  const inCell = matched.filter((finding) => {
+    if (rowKey !== void 0 && String(reportFieldAccessors[query.groupBy](finding) || "UNASSIGNED") !== rowKey) return false;
+    if (columnKey !== void 0 && query.pivotBy && String(reportFieldAccessors[query.pivotBy](finding) || "UNASSIGNED") !== columnKey) return false;
+    return true;
+  });
+  const sample = inCell[0];
+  const start = (request.page - 1) * request.pageSize;
+  return {
+    total: inCell.length,
+    page: request.page,
+    pageSize: request.pageSize,
+    rowLabel: sample && rowKey !== void 0 ? reportValueLabel(query.groupBy, reportFieldAccessors[query.groupBy](sample), sample) : void 0,
+    columnLabel: sample && columnKey !== void 0 && query.pivotBy ? reportValueLabel(query.pivotBy, reportFieldAccessors[query.pivotBy](sample), sample) : void 0,
+    rows: [...inCell].sort((left, right) => right.exposureAmount - left.exposureAmount || left.cif.localeCompare(right.cif, "vi-VN")).slice(start, start + request.pageSize).map((finding) => ({
+      findingId: finding.id,
+      cif: finding.cif,
+      customerName: finding.customerName,
+      branchCode: finding.branchCode,
+      branchName: finding.branchName,
+      department: finding.department,
+      officerName: finding.officerName,
+      errorCode: finding.errorCode,
+      errorTitle: finding.errorTitle,
+      workflowStatusLabel: workflowStatusLabels[finding.workflowStatus],
+      slaStatusLabel: slaStatusLabels[finding.slaStatus],
+      deadlineDate: finding.deadlineDate,
+      exposureAmount: finding.exposureAmount,
+      creditBalance: finding.creditBalance
+    }))
+  };
+}
 function normalizedReportCatalogConfiguration() {
   const configuredFields = new Map(reportCatalogConfiguration.fields.map((field) => [field.key, field]));
   const configuredMetrics = new Map(reportCatalogConfiguration.metrics.map((metric) => [metric.key, metric]));
@@ -5138,7 +5401,8 @@ app.post("/api/v1/auth/login", async (req, reply) => {
     await persistLocalState();
     throw error;
   }
-  const directoryEntry = credentialDirectory.find((item) => item.username === normalizedUsername);
+  const emailOwner = appUsers.find((item) => item.isActive && item.email.toLocaleLowerCase("vi-VN") === normalizedUsername);
+  const directoryEntry = credentialDirectory.find((item) => item.username === normalizedUsername || item.userId === emailOwner?.id);
   const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? unknownUserPasswordHash);
   const user = directoryEntry ? appUsers.find((item) => item.id === directoryEntry.userId && item.isActive) : void 0;
   if (!passwordValid || !user) {
@@ -5152,6 +5416,39 @@ app.post("/api/v1/auth/login", async (req, reply) => {
     });
     await persistLocalState();
     throw new HttpProblem(401, "INVALID_CREDENTIALS", "\u0110\u0103ng nh\u1EADp kh\xF4ng th\xE0nh c\xF4ng", "T\xE0i kho\u1EA3n ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng.");
+  }
+  if (user.authenticatorRequired) {
+    const credential = authenticatorCredentials.find((item) => item.userId === user.id);
+    if (!credential) {
+      throw new HttpProblem(503, "MFA_SETUP_REQUIRED", "Ch\u01B0a ho\xE0n t\u1EA5t Authenticator", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n c\u1EA5p l\u1EA1i m\xE3 thi\u1EBFt l\u1EADp Google Authenticator cho t\xE0i kho\u1EA3n n\xE0y.");
+    }
+    let secret;
+    try {
+      secret = decryptTotpSecret(credential.encryptedSecret, authenticatorEncryptionKey());
+    } catch {
+      throw new HttpProblem(503, "MFA_CREDENTIAL_INVALID", "Authenticator ch\u01B0a s\u1EB5n s\xE0ng", "Kh\xF4ng th\u1EC3 \u0111\u1ECDc c\u1EA5u h\xECnh Google Authenticator c\u1EE7a t\xE0i kho\u1EA3n.");
+    }
+    if (!credentials.mfaCode || !verifyTotpCode(secret, credentials.mfaCode, nowMs)) {
+      recordSecurityEvent({
+        type: "AUTH_MFA_FAILED",
+        outcome: "FAILURE",
+        subject: normalizedUsername,
+        detail: "T\u1EEB ch\u1ED1i \u0111\u0103ng nh\u1EADp v\xEC m\xE3 Google Authenticator kh\xF4ng \u0111\xFAng ho\u1EB7c \u0111\xE3 h\u1EBFt h\u1EA1n.",
+        ipAddress: req.ip
+      });
+      await persistLocalState();
+      throw new HttpProblem(401, "MFA_REQUIRED", "C\u1EA7n m\xE3 Authenticator", "Nh\u1EADp m\xE3 6 ch\u1EEF s\u1ED1 \u0111ang hi\u1EC3n th\u1ECB trong Google Authenticator.");
+    }
+    recordSecurityEvent({
+      type: "AUTH_MFA_SUCCEEDED",
+      outcome: "SUCCESS",
+      actorUserId: user.id,
+      actorName: user.fullName,
+      actorRole: user.primaryRole,
+      subject: normalizedUsername,
+      detail: "X\xE1c th\u1EF1c Google Authenticator th\xE0nh c\xF4ng.",
+      ipAddress: req.ip
+    });
   }
   clearLoginFailures(normalizedUsername);
   recordSecurityEvent({
@@ -5584,6 +5881,50 @@ app.post("/api/v1/admin/users/imports/commit", async (req, reply) => {
   rememberIdempotentResponse(idempotency, result);
   await persistLocalState();
   return reply.code(201).send(result);
+});
+app.put("/api/v1/admin/users/:id/authenticator", async (req) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = UpdateAuthenticatorSchema.parse(req.body);
+  const user = appUsers.find((item) => item.id === req.params.id);
+  if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
+  let setup;
+  const existing = authenticatorCredentials.find((item) => item.userId === user.id);
+  if (body.enabled) {
+    if (!existing) {
+      const secret = generateTotpSecret();
+      authenticatorCredentials.push({
+        userId: user.id,
+        encryptedSecret: encryptTotpSecret(secret, authenticatorEncryptionKey()),
+        configuredAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      setup = { secret, otpauthUri: buildOtpAuthUri(secret, user.email) };
+    }
+    user.authenticatorRequired = true;
+    user.authenticatorConfigured = true;
+  } else {
+    authenticatorCredentials = authenticatorCredentials.filter((item) => item.userId !== user.id);
+    user.authenticatorRequired = false;
+    user.authenticatorConfigured = false;
+    const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+    authSessions = authSessionStore.records();
+    recordUserSecurityEvent(req, actor, {
+      type: "ADMIN_AUTHENTICATOR_TOGGLED",
+      outcome: "SUCCESS",
+      subject: user.username,
+      detail: `T\u1EAFt y\xEAu c\u1EA7u Google Authenticator cho ${user.fullName}; thu h\u1ED3i ${revokedSessions} phi\xEAn.`
+    });
+    await persistLocalState();
+    return { user };
+  }
+  recordUserSecurityEvent(req, actor, {
+    type: "ADMIN_AUTHENTICATOR_TOGGLED",
+    outcome: "SUCCESS",
+    subject: user.username,
+    detail: `B\u1EADt y\xEAu c\u1EA7u Google Authenticator cho ${user.fullName}.`
+  });
+  await persistLocalState();
+  return { user, ...setup ? { setup } : {} };
 });
 app.post("/api/v1/admin/users/:id/password", async (req) => {
   requireAdmin(getCurrentUser(req));
@@ -6650,6 +6991,12 @@ app.post("/api/v1/reports/runs", async (req) => {
   const scoped = filterFindingsByScope(findings, getCurrentUser(req));
   return executeReportRun(scoped, query);
 });
+app.post("/api/v1/reports/drill", async (req) => {
+  const request = ReportDrillRequestSchema.parse(req.body);
+  assertReportConfigurationAvailable(request.query);
+  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  return executeReportDrill(scoped, request);
+});
 app.post("/api/v1/reports/exports", async (req, reply) => {
   const exportingUser = getCurrentUser(req);
   const request = ReportExportRequestSchema.parse(req.body);
@@ -6778,17 +7125,22 @@ var PORT = Number(process.env.PORT) || 3001;
 function assertSafeRuntimeConfiguration(env = process.env) {
   if (env.NODE_ENV !== "production") return;
   const violations = [];
-  if (env.AUTH_MODE !== "oidc") violations.push("AUTH_MODE ph\u1EA3i l\xE0 oidc");
+  const credentialAuth = env.AUTH_MODE === "credentials" || env.AUTH_MODE === "local-credential-session";
+  if (!credentialAuth && env.AUTH_MODE !== "oidc") violations.push("AUTH_MODE ph\u1EA3i l\xE0 credentials ho\u1EB7c oidc");
   if (env.SEED_DEMO_DATA === "true" || env.SEED_DEMO_USERS === "true") violations.push("SEED_DEMO_DATA kh\xF4ng \u0111\u01B0\u1EE3c b\u1EADt \u1EDF production");
   if (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH) {
     violations.push("thi\u1EBFu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH");
   }
   if (!env.BOOTSTRAP_ADMIN_EMAIL?.trim()) {
-    violations.push("thi\u1EBFu BOOTSTRAP_ADMIN_EMAIL cho \u0111\u0103ng nh\u1EADp Google OIDC");
+    violations.push("thi\u1EBFu BOOTSTRAP_ADMIN_EMAIL");
   }
-  if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push("thi\u1EBFu OIDC_ISSUER_URL/OIDC_AUDIENCE");
-  if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
-    violations.push("thi\u1EBFu c\u1EA5u h\xECnh Google OIDC");
+  if (!credentialAuth) {
+    if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push("thi\u1EBFu OIDC_ISSUER_URL/OIDC_AUDIENCE");
+    if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
+      violations.push("thi\u1EBFu c\u1EA5u h\xECnh Google OIDC");
+    }
+  } else if (!env.AUTHENTICATOR_ENCRYPTION_KEY) {
+    violations.push("thi\u1EBFu AUTHENTICATOR_ENCRYPTION_KEY cho m\xE3 h\xF3a secret Authenticator");
   }
   if (env.DATA_STORE_MODE !== "postgres" || !env.DATABASE_URL) violations.push("DATA_STORE_MODE=postgres v\xE0 DATABASE_URL l\xE0 b\u1EAFt bu\u1ED9c");
   if (!env.CRON_SECRET) violations.push("thi\u1EBFu CRON_SECRET");

@@ -13,9 +13,12 @@ describe('authentication UI architecture', () => {
     expect(appSource).not.toContain('switchUser');
     expect(loginSource).toContain('autoComplete="username"');
     expect(loginSource).toContain('autoComplete="current-password"');
+    expect(loginSource).toContain('autoComplete="one-time-code"');
+    expect(loginSource).toContain('Email đăng nhập');
     expect(loginSource).toContain('Đăng nhập');
     expect(apiSource).not.toContain("'x-user-id'");
     expect(apiSource).toContain("credentials: 'same-origin'");
+    expect(apiSource).toContain('/authenticator');
   });
 
   it('keeps browser smokes on the real session-login contract', () => {

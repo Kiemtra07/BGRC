@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import { app } from '../../server/src/app';
+import { generateTotpCode } from '../../server/src/security/totp';
 
 const originalHeaderBridge = process.env.ALLOW_TEST_USER_HEADER;
 
@@ -67,5 +68,42 @@ describe('local credential authentication', () => {
     process.env.ALLOW_TEST_USER_HEADER = 'false';
     const response = await app.inject({ method: 'GET', url: '/api/v1/me', headers: { 'x-user-id': 'user-admin' } });
     expect(response.statusCode).toBe(401);
+  });
+
+  it('logs in by email and requires the Google Authenticator token when an admin enables it', async () => {
+    const enable = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/admin/users/user-branch-635/authenticator',
+      headers: { 'x-user-id': 'user-admin' },
+      payload: { enabled: true },
+    });
+    expect(enable.statusCode).toBe(200);
+    const setup = enable.json().setup;
+    expect(setup.secret).toMatch(/^[A-Z2-7]+$/);
+    expect(setup.otpauthUri).toContain('otpauth://totp/');
+
+    const missingToken = await app.inject({
+      method: 'POST', url: '/api/v1/auth/login',
+      payload: { username: 'cbht635@bidv.com.vn', password: 'BranchInput@2026' },
+    });
+    expect(missingToken.statusCode).toBe(401);
+    expect(missingToken.json().code).toBe('MFA_REQUIRED');
+
+    const token = generateTotpCode(setup.secret);
+    const login = await app.inject({
+      method: 'POST', url: '/api/v1/auth/login',
+      payload: { username: 'cbht635@bidv.com.vn', password: 'BranchInput@2026', mfaCode: token },
+    });
+    expect(login.statusCode).toBe(200);
+    expect(login.json().user.email).toBe('cbht635@bidv.com.vn');
+
+    const disable = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/admin/users/user-branch-635/authenticator',
+      headers: { 'x-user-id': 'user-admin' },
+      payload: { enabled: false },
+    });
+    expect(disable.statusCode).toBe(200);
+    expect(disable.json().user.authenticatorRequired).toBe(false);
   });
 });

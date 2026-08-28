@@ -168,6 +168,20 @@ describe('demo data must not reach production', () => {
     expect(() => assertSafeRuntimeConfiguration(productionBase)).not.toThrow();
   });
 
+  it('accepts production email/password auth when the Authenticator encryption key is present', () => {
+    const { OIDC_ISSUER_URL, OIDC_AUDIENCE, GOOGLE_OIDC_CLIENT_ID, GOOGLE_OIDC_CLIENT_SECRET, GOOGLE_OIDC_REDIRECT_URI, GOOGLE_OIDC_STATE_SECRET, ...credentialBase } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration({
+      ...credentialBase,
+      AUTH_MODE: 'credentials',
+      AUTHENTICATOR_ENCRYPTION_KEY: 'a'.repeat(64),
+    })).not.toThrow();
+  });
+
+  it('rejects production email/password auth without the Authenticator encryption key', () => {
+    const { OIDC_ISSUER_URL, OIDC_AUDIENCE, GOOGLE_OIDC_CLIENT_ID, GOOGLE_OIDC_CLIENT_SECRET, GOOGLE_OIDC_REDIRECT_URI, GOOGLE_OIDC_STATE_SECRET, ...credentialBase } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration({ ...credentialBase, AUTH_MODE: 'credentials' })).toThrow(/AUTHENTICATOR_ENCRYPTION_KEY/);
+  });
+
   it('accepts production Google Drive configuration backed by a personal OAuth user', () => {
     const { GOOGLE_SERVICE_ACCOUNT_JSON, ...oauthBase } = productionBase;
     expect(() => assertSafeRuntimeConfiguration({

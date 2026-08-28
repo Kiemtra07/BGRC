@@ -34,11 +34,17 @@ export interface UserProfile {
   branchName?: string;
   department?: string;
   googleWorkspaceEmail?: string;
+  /** Admin-controlled second-factor requirement. The secret is never part of this profile. */
+  authenticatorRequired?: boolean;
+  /** True after the server has provisioned an encrypted TOTP secret for the account. */
+  authenticatorConfigured?: boolean;
 }
 
 export interface LoginDTO {
   username: string;
   password: string;
+  /** Google Authenticator six-digit token when the account requires MFA. */
+  mfaCode?: string;
 }
 
 export interface LoginResponse {
@@ -59,7 +65,23 @@ export interface AuthSessionRecord {
 export const LoginSchema = z.object({
   username: z.string().trim().min(2).max(100),
   password: z.string().min(1).max(200),
+  mfaCode: z.string().trim().regex(/^\d{6}$/, 'Mã Authenticator phải gồm 6 chữ số.').optional(),
 });
+
+export const UpdateAuthenticatorSchema = z.object({
+  enabled: z.boolean(),
+});
+export type UpdateAuthenticatorDTO = z.infer<typeof UpdateAuthenticatorSchema>;
+
+export interface AuthenticatorSetup {
+  secret: string;
+  otpauthUri: string;
+}
+
+export interface UpdateAuthenticatorResponse {
+  user: UserProfile;
+  setup?: AuthenticatorSetup;
+}
 
 const UserRoleSchema = z.enum([
   'ADMIN',
