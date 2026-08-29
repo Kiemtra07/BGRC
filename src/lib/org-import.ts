@@ -13,6 +13,30 @@ const aliases: Record<string, string[]> = {
   code: ['ma don vi', 'ma', 'code'], name: ['ten don vi', 'ten', 'name'], type: ['loai don vi', 'loai', 'type'], parent: ['ma don vi cha', 'don vi cha', 'parent', 'parent code'], status: ['trang thai', 'status'],
 };
 
+const parseCsvLine = (line: string, delimiter: ',' | ';'): string[] => {
+  const cells: string[] = [];
+  let cell = '';
+  let quoted = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index];
+    if (char === '"') {
+      if (quoted && line[index + 1] === '"') {
+        cell += '"';
+        index += 1;
+      } else {
+        quoted = !quoted;
+      }
+    } else if (char === delimiter && !quoted) {
+      cells.push(cell.trim());
+      cell = '';
+    } else {
+      cell += char;
+    }
+  }
+  cells.push(cell.trim());
+  return cells;
+};
+
 export function parseOrgImportRows(rows: unknown[][], existingUnits: OrgUnit[]): OrgImportPreviewRow[] {
   if (!rows.length) return [];
   const headers = rows[0].map(headerKey);
@@ -35,11 +59,10 @@ export function parseOrgImportRows(rows: unknown[][], existingUnits: OrgUnit[]):
 
 export async function parseOrgImportFile(file: File, existingUnits: OrgUnit[]): Promise<OrgImportPreviewRow[]> {
   if (file.name.toLocaleLowerCase().endsWith('.csv')) {
-    const rows = (await file.text()).split(/\r?\n/).filter(Boolean).map(line => {
-      const cells: string[] = [];
-      line.replace(/(?:^|,)\s*(?:"([^"]*(?:""[^"]*)*)"|([^,]*))/g, (_match, quoted, plain) => { cells.push(String(quoted ?? plain ?? '').replace(/""/g, '"')); return ''; });
-      return cells;
-    });
+    const content = await file.text();
+    const lines = content.split(/\r?\n/).filter(line => line.trim());
+    const delimiter: ',' | ';' = lines[0]?.includes(';') ? ';' : ',';
+    const rows = lines.map(line => parseCsvLine(line, delimiter));
     return parseOrgImportRows(rows, existingUnits);
   }
   return parseOrgImportRows(await readXlsxFile(file) as unknown as unknown[][], existingUnits);
