@@ -4484,6 +4484,7 @@ var hydratedState = await stateRepository.load({
   securityEvents,
   loginAttempts
 });
+var repositoryHydrationBaseline = structuredClone(hydratedState);
 if (!DEMO_SEED_ENABLED) {
   const demoUserIds = new Set(DEMO_SEED_IDS.users);
   const demoOrgUnitIds = new Set(DEMO_SEED_IDS.orgUnits.filter((id) => id !== "org-ho"));
@@ -4809,10 +4810,12 @@ app.addHook("onError", async (request) => {
 async function persistLocalState() {
   const base = durableState.snapshot();
   const snapshot = currentLocalState();
+  const mergeBase = repositoryHydrationBaseline ?? base;
   const saved = await durableState.persistAsync(
-    async () => stateRepository.update(snapshot, (latest) => threeWayMergeState(base, snapshot, latest)),
+    async () => stateRepository.update(snapshot, (latest) => threeWayMergeState(mergeBase, snapshot, latest)),
     restoreDurableLocalState
   );
+  repositoryHydrationBaseline = void 0;
   restoreDurableLocalState(saved);
 }
 async function evaluateCurrentSlaState() {

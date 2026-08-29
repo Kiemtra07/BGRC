@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { branchScopeTypeForRole, hasFindingAccess } from '../../server/src/security/access-control';
+import { threeWayMergeState } from '../../server/src/state/three-way-state-merge';
 import type { Finding, UserProfile, UserRole } from '../../shared/contracts';
 
 /**
@@ -75,5 +76,11 @@ describe('phạm vi dữ liệu theo chi nhánh và phòng', () => {
   it('fails closed for a legacy account with no persisted scopes', () => {
     const legacy = user('BRANCH_INPUT', { scopes: undefined });
     expect(hasFindingAccess(legacy, finding({}))).toBe(false);
+  });
+
+  it('merges startup cleanup against the unprojected repository snapshot', () => {
+    const base = { users: [{ id: 'demo', active: true }], settings: {} };
+    const projected = { users: [], settings: { mfaPolicy: 'DISABLED' } };
+    expect(threeWayMergeState(base, projected, base)).toEqual(projected);
   });
 });

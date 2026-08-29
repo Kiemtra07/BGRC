@@ -1216,6 +1216,11 @@ const hydratedState = await stateRepository.load({
   authenticatorCredentials,
   googleDriveOAuthCredential, securityEvents, loginAttempts,
 });
+// Keep the exact repository snapshot as the merge base. Startup compatibility projections below
+// may remove demo records or restore structural fields before DurableStateCoordinator is created;
+// using that already-projected state as the merge base would make the first startup backfill look
+// like a concurrent edit and crash a serverless module during initialization.
+let repositoryHydrationBaseline: LocalAppState | undefined = structuredClone(hydratedState);
 // A production process can be started against an older local snapshot that still contains
 // records from the opt-in demo seed. Never rehydrate those fabricated identities or business
 // records when demo seeding is disabled; the structural head-office root is kept separately.
@@ -1607,10 +1612,12 @@ app.addHook('onError', async (request) => {
 async function persistLocalState(): Promise<void> {
   const base = durableState.snapshot();
   const snapshot = currentLocalState();
+  const mergeBase = repositoryHydrationBaseline ?? base;
   const saved = await durableState.persistAsync(
-    async () => stateRepository.update(snapshot, latest => threeWayMergeState(base, snapshot, latest)),
+    async () => stateRepository.update(snapshot, latest => threeWayMergeState(mergeBase, snapshot, latest)),
     restoreDurableLocalState,
   );
+  repositoryHydrationBaseline = undefined;
   restoreDurableLocalState(saved);
 }
 
