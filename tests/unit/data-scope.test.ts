@@ -71,4 +71,9 @@ describe('phạm vi dữ liệu theo chi nhánh và phòng', () => {
     expect(hasFindingAccess(internal, finding({ branchCode: '999', department: 'Phòng lạ' }))).toBe(true);
     expect(hasFindingAccess({ ...internal, isActive: false }, finding({}))).toBe(false);
   });
+
+  it('fails closed for a legacy account with no persisted scopes', () => {
+    const legacy = user('BRANCH_INPUT', { scopes: undefined });
+    expect(hasFindingAccess(legacy, finding({}))).toBe(false);
+  });
 });

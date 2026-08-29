@@ -2780,8 +2780,9 @@ function branchScopeTypeForRole(primaryRole) {
 }
 function hasFindingAccess(user, finding) {
   if (!user.isActive) return false;
-  if (user.scopes.some((scope) => scope.scopeType === "ALL")) return true;
-  return user.scopes.some((scope) => {
+  const scopes = Array.isArray(user.scopes) ? user.scopes : [];
+  if (scopes.some((scope) => scope.scopeType === "ALL")) return true;
+  return scopes.some((scope) => {
     const scopedBranchCode = scope.orgUnitCode ?? user.branchCode;
     const scopedBranchName = scope.branchName ?? user.branchName;
     const branchMatches = scopedBranchCode ? scopedBranchCode === finding.branchCode : normalize(scopedBranchName) === normalize(finding.branchName);
@@ -4557,13 +4558,15 @@ function applyAuthenticatorProjection() {
 }
 function applyBranchScopeProjection() {
   appUsers = appUsers.map((user) => {
-    if (user.portal !== "BRANCH") return user;
+    const hasPersistedScopes = Array.isArray(user.scopes);
+    const scopes = hasPersistedScopes ? user.scopes : [];
+    if (user.portal !== "BRANCH") return hasPersistedScopes ? user : { ...user, scopes };
     const expected = branchScopeTypeForRole(user.primaryRole);
-    const needsChange = user.scopes.some((scope) => (scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT") && scope.scopeType !== expected);
+    const needsChange = scopes.some((scope) => (scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT") && scope.scopeType !== expected) || !hasPersistedScopes;
     if (!needsChange) return user;
     return {
       ...user,
-      scopes: user.scopes.map((scope) => scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT" ? { ...scope, scopeType: expected, departmentName: scope.departmentName ?? user.department } : scope)
+      scopes: scopes.map((scope) => scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT" ? { ...scope, scopeType: expected, departmentName: scope.departmentName ?? user.department } : scope)
     };
   });
 }

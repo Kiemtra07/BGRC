@@ -47,9 +47,12 @@ export function branchScopeTypeForRole(primaryRole: UserRole): 'BRANCH' | 'DEPAR
 
 export function hasFindingAccess(user: UserProfile, finding: Finding): boolean {
   if (!user.isActive) return false;
-  if (user.scopes.some(scope => scope.scopeType === 'ALL')) return true;
+  // Legacy snapshots may not have persisted scopes for an account. Missing scope is deny-all,
+  // and must not turn a malformed profile into a runtime 500.
+  const scopes = Array.isArray(user.scopes) ? user.scopes : [];
+  if (scopes.some(scope => scope.scopeType === 'ALL')) return true;
 
-  return user.scopes.some(scope => {
+  return scopes.some(scope => {
     const scopedBranchCode = scope.orgUnitCode ?? user.branchCode;
     const scopedBranchName = scope.branchName ?? user.branchName;
     const branchMatches = scopedBranchCode

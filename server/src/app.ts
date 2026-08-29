@@ -1308,15 +1308,19 @@ function applyAuthenticatorProjection(): void {
  */
 function applyBranchScopeProjection(): void {
   appUsers = appUsers.map(user => {
-    if (user.portal !== 'BRANCH') return user;
+    // Older snapshots may contain an account created before scopes were persisted. Treat that
+    // shape as no access instead of allowing boot-time projection to crash the whole API.
+    const hasPersistedScopes = Array.isArray(user.scopes);
+    const scopes = hasPersistedScopes ? user.scopes : [];
+    if (user.portal !== 'BRANCH') return hasPersistedScopes ? user : { ...user, scopes };
     const expected = branchScopeTypeForRole(user.primaryRole);
-    const needsChange = user.scopes.some(scope => (
+    const needsChange = scopes.some(scope => (
       (scope.scopeType === 'BRANCH' || scope.scopeType === 'DEPARTMENT') && scope.scopeType !== expected
-    ));
+    )) || !hasPersistedScopes;
     if (!needsChange) return user;
     return {
       ...user,
-      scopes: user.scopes.map(scope => (
+      scopes: scopes.map(scope => (
         scope.scopeType === 'BRANCH' || scope.scopeType === 'DEPARTMENT'
           ? { ...scope, scopeType: expected, departmentName: scope.departmentName ?? user.department }
           : scope
