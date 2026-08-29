@@ -47,7 +47,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/60 backdrop-blur-sm animate-in fade-in duration-200">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-2xl border border-rule w-full max-w-4xl max-h-[90vh] flex flex-col overflow-hidden">
         
         {/* Header */}
         <div className="px-6 py-4 border-b border-slate-100 flex items-center justify-between bg-slate-50/70">
@@ -60,7 +60,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
                 {file.fileName}
               </h3>
               <p className="text-xs text-slate-500 flex items-center gap-2">
-                <span>Google Drive ID: <code className="text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded text-[11px]">{file.driveFileId}</code></span>
+                <span>Mã tệp Google Drive: <code className="text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded text-[11px]">{file.driveFileId}</code></span>
                 <span>•</span>
                 <span>Kích thước: {file.fileSize}</span>
               </p>
@@ -71,7 +71,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
               href={file.driveUrl}
               target="_blank"
               rel="noreferrer"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-100 border border-slate-200 rounded-lg transition"
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-white hover:bg-slate-100 border border-rule rounded-lg transition"
             >
               <ExternalLink className="w-3.5 h-3.5 text-slate-500" />
               Mở trên Drive
@@ -104,7 +104,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
 
         {/* Preview Body */}
         <div className="p-6 flex-1 overflow-y-auto bg-slate-100/60 flex flex-col items-center justify-center min-h-[360px]">
-          <div className="w-full max-w-2xl bg-white rounded-xl p-8 border border-slate-200 shadow-sm text-center">
+          <div className="w-full max-w-2xl bg-white rounded-xl p-8 border border-rule shadow-panel text-center">
             
             <div className="w-16 h-16 mx-auto mb-4 rounded-2xl bg-brand-50 border border-brand-200 flex items-center justify-center text-brand-500">
               <FileText className="w-8 h-8" />
@@ -119,7 +119,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
               <span className="font-semibold text-brand-600">AuditBGS_Central_Drive_Archive_2026</span>
             </p>
 
-            <div className="grid grid-cols-2 gap-3 text-left bg-slate-50 p-4 rounded-xl border border-slate-200 text-xs mb-6">
+            <div className="grid grid-cols-2 gap-3 text-left bg-slate-50 p-4 rounded-xl border border-rule text-xs mb-6">
               <div>
                 <span className="text-slate-500">Người tải lên:</span>
                 <p className="font-medium text-slate-800 mt-0.5">{file.uploadedBy}</p>
@@ -128,7 +128,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
                 <span className="text-slate-500">Thời gian tải:</span>
                 <p className="font-medium text-slate-800 mt-0.5">{file.uploadDate}</p>
               </div>
-              <div className="col-span-2 border-t border-slate-200 pt-2.5 mt-1">
+              <div className="col-span-2 border-t border-rule pt-2.5 mt-1">
                 <span className="text-slate-500">Ghi chú khắc phục:</span>
                 <p className="font-medium text-slate-800 mt-0.5">{file.notes || 'Không có ghi chú thêm'}</p>
               </div>
@@ -137,7 +137,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
             <div className="flex items-center justify-center gap-3">
               <button
                 onClick={() => alert(`Đang tải xuống tệp ${file.fileName} từ Google Drive...`)}
-                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg shadow-sm transition"
+                className="inline-flex items-center gap-2 px-4 py-2 text-xs font-semibold text-slate-700 bg-white hover:bg-slate-50 border border-slate-300 rounded-lg shadow-panel transition"
               >
                 <Download className="w-4 h-4 text-slate-500" />
                 Tải về bản sao (.zip/.pdf)
@@ -152,7 +152,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
                   Xóa khỏi Google Drive (Khối Nội Bộ)
                 </button>
               ) : (
-                <div className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-400 bg-slate-100 border border-slate-200 rounded-lg cursor-not-allowed">
+                <div className="inline-flex items-center gap-1.5 px-3 py-2 text-xs font-medium text-slate-400 bg-slate-100 border border-rule rounded-lg cursor-not-allowed">
                   <Lock className="w-3.5 h-3.5" />
                   Chi nhánh đã khóa quyền xóa
                 </div>
@@ -165,7 +165,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
         <div className="px-6 py-3.5 border-t border-slate-100 bg-white flex items-center justify-between text-xs text-slate-500">
           <div className="flex items-center gap-1.5">
             <CheckCircle2 className="w-4 h-4 text-emerald-600" />
-            <span>Mã hóa bảo mật cấp độ doanh nghiệp & tuân thủ chính sách lưu trữ AuditBGS</span>
+            <span>Tệp được bảo vệ và lưu trữ theo chính sách của Audit Monitoring</span>
           </div>
           <button
             onClick={onClose}

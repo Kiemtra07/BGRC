@@ -62,7 +62,7 @@ export const EvidenceViewer: React.FC<Props> = ({ evidence }) => {
   }, [evidence.id, evidence.updatedAt]);
 
   if (error) return <ViewerError message={error} />;
-  if (!blob) return <div className="flex h-full min-h-[360px] items-center justify-center" role="status"><Loader2 className="h-7 w-7 animate-spin text-[#006b68]" /><span className="sr-only">Đang tải tệp</span></div>;
+  if (!blob) return <div className="flex h-full min-h-[360px] items-center justify-center" role="status"><Loader2 className="h-7 w-7 animate-spin text-brand-600" /><span className="sr-only">Đang tải tệp</span></div>;
 
   const extension = evidence.fileName.split('.').pop()?.toLowerCase();
   if (evidence.mimeType === 'application/pdf' || extension === 'pdf') {
@@ -211,7 +211,7 @@ const ExcelViewer: React.FC<{ blob: Blob; fileName: string }> = ({ blob, fileNam
 
   const activeSheet = sheets.find(item => item.sheet === sheetName) || sheets[0];
   if (error) return <ViewerError message={error} />;
-  if (!activeSheet) return <div className="flex h-full items-center justify-center" role="status"><Loader2 className="h-7 w-7 animate-spin text-[#006b68]" /></div>;
+  if (!activeSheet) return <div className="flex h-full items-center justify-center" role="status"><Loader2 className="h-7 w-7 animate-spin text-brand-600" /></div>;
 
   return (
     <div className="grid h-full min-h-[480px] grid-rows-[auto_minmax(0,1fr)] bg-white" data-testid="excel-viewer">
@@ -233,7 +233,7 @@ const ExcelViewer: React.FC<{ blob: Blob; fileName: string }> = ({ blob, fileNam
               <tr key={rowIndex}>
                 <th className="sticky left-0 z-20 min-w-12 border-b border-r border-slate-300 bg-slate-200 px-2 py-1 text-center text-[10px] font-bold text-slate-500">{rowIndex + 1}</th>
                 {row.map((cell, columnIndex) => (
-                  <td key={columnIndex} className={`min-w-32 max-w-80 whitespace-pre-wrap border-b border-r border-slate-200 px-2 py-1.5 text-[11px] text-slate-800 ${rowIndex === 0 ? 'sticky top-0 z-10 bg-teal-50 font-bold text-[#006b68]' : 'bg-white'}`}>{formatCell(cell)}</td>
+                  <td key={columnIndex} className={`min-w-32 max-w-80 whitespace-pre-wrap border-b border-r border-rule px-2 py-1.5 text-[11px] text-slate-800 ${rowIndex === 0 ? 'sticky top-0 z-10 bg-brand-50 font-bold text-brand-600' : 'bg-white'}`}>{formatCell(cell)}</td>
                 ))}
               </tr>
             ))}
@@ -285,9 +285,9 @@ const ViewerError: React.FC<{ message: string }> = ({ message }) => (
 const DownloadFallback: React.FC<{ blob: Blob; fileName: string }> = ({ blob, fileName }) => {
   const objectUrl = useObjectUrl(blob);
   return <div className="flex h-full min-h-[360px] flex-col items-center justify-center p-8 text-center">
-    <FileDown className="mb-3 h-9 w-9 text-[#006b68]" />
+    <FileDown className="mb-3 h-9 w-9 text-brand-600" />
     <p className="text-sm font-bold text-slate-900">Định dạng này chưa hỗ trợ xem trực tiếp</p>
-    {objectUrl && <a href={objectUrl} download={fileName} className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl bg-[#006b68] px-4 py-2 text-xs font-bold text-white"><Download className="h-4 w-4" />Tải tệp xuống</a>}
+    {objectUrl && <a href={objectUrl} download={fileName} className="mt-4 inline-flex min-h-11 items-center gap-2 rounded-xl bg-brand-500 px-4 py-2 text-xs font-bold text-white"><Download className="h-4 w-4" />Tải tệp xuống</a>}
   </div>;
 };
 

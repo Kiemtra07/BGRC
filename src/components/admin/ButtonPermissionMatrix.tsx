@@ -49,7 +49,7 @@ const PermissionCell: React.FC<{ allowed: boolean; role: string; action: string 
 
 export const ButtonPermissionMatrix: React.FC = () => (
   <div className="space-y-6">
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="rounded-2xl border border-rule bg-white p-5 shadow-panel">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h3 className="text-base font-bold text-slate-900">Quyền thao tác</h3>
@@ -57,17 +57,17 @@ export const ButtonPermissionMatrix: React.FC = () => (
             Quyền đang áp dụng; bảng này chỉ dùng để đối chiếu.
           </p>
         </div>
-        <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-[#006b68]/20 bg-[#006b68]/10 px-3 py-1 text-xs font-bold text-[#006b68]">
+        <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-brand-500/20 bg-brand-500/10 px-3 py-1 text-xs font-bold text-brand-600">
           <LockKeyhole className="h-3.5 w-3.5" />
           Đang áp dụng
         </span>
       </div>
     </section>
 
-    <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+    <section className="overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
       <div className="overflow-x-auto">
         <table className="min-w-[1120px] w-full text-left text-xs">
-          <thead className="border-b border-slate-200 bg-slate-50 text-slate-700">
+          <thead className="border-b border-rule bg-slate-50 text-slate-700">
             <tr>
               <th className="sticky left-0 z-10 min-w-64 bg-slate-50 px-5 py-4 font-bold">Hành động</th>
               {roles.map(role => <th key={role.key} className="px-3 py-4 text-center font-mono text-[10px] font-bold">{role.label}</th>)}

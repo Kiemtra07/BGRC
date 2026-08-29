@@ -44,6 +44,19 @@ describe('SupabaseAuthAdapter', () => {
     }));
   });
 
+  it('rotates access and refresh tokens with the refresh token grant', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      access_token: 'access-2', refresh_token: 'refresh-2', expires_in: 3600,
+      user: { id: 'auth-1', email: 'user@example.com' },
+    }), { status: 200 }));
+    const adapter = createSupabaseAuthAdapter({ url: 'https://demo.supabase.co', publishableKey: 'publishable', fetchImpl });
+
+    await expect(adapter.refreshSession('refresh-1')).resolves.toMatchObject({ accessToken: 'access-2', refreshToken: 'refresh-2' });
+    expect(fetchImpl).toHaveBeenCalledWith('https://demo.supabase.co/auth/v1/token?grant_type=refresh_token', expect.objectContaining({
+      method: 'POST', body: JSON.stringify({ refresh_token: 'refresh-1' }),
+    }));
+  });
+
   it('changes a password with the current access token', async () => {
     const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
     const adapter = createSupabaseAuthAdapter({ url: 'https://demo.supabase.co', publishableKey: 'publishable', fetchImpl });
@@ -53,6 +66,17 @@ describe('SupabaseAuthAdapter', () => {
       method: 'PUT',
       headers: expect.objectContaining({ apikey: 'publishable', Authorization: 'Bearer access-1' }),
       body: JSON.stringify({ password: 'A-new-password-123' }),
+    }));
+  });
+
+  it('revokes the current session through Supabase logout', async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(new Response('', { status: 200 }));
+    const adapter = createSupabaseAuthAdapter({ url: 'https://demo.supabase.co', publishableKey: 'publishable', fetchImpl });
+
+    await adapter.signOut('access-1');
+    expect(fetchImpl).toHaveBeenCalledWith('https://demo.supabase.co/auth/v1/logout', expect.objectContaining({
+      method: 'POST',
+      headers: expect.objectContaining({ apikey: 'publishable', Authorization: 'Bearer access-1' }),
     }));
   });
 });

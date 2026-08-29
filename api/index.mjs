@@ -170,11 +170,22 @@ var UpdateUserSchema = z3.object({
   email: z3.string().email().optional(),
   fullName: z3.string().trim().min(2).max(255).optional(),
   phone: z3.string().max(50).optional(),
+  googleWorkspaceEmail: z3.union([z3.string().email(), z3.literal("")]).optional(),
   isActive: z3.boolean().optional()
 });
 var UpdateAuthenticatorSchema = z3.object({
   enabled: z3.boolean()
 });
+var MfaPolicySchema = z3.enum(["DISABLED", "REQUIRED_INTERNAL", "REQUIRED_ALL"]);
+var SecuritySettingsSchema = z3.object({
+  mfaPolicy: MfaPolicySchema
+});
+var mfaPolicyLabels = {
+  DISABLED: "T\u1EAFt \u2014 kh\xF4ng y\xEAu c\u1EA7u m\xE3",
+  REQUIRED_INTERNAL: "B\u1EAFt bu\u1ED9c v\u1EDBi kh\u1ED1i n\u1ED9i b\u1ED9",
+  REQUIRED_ALL: "B\u1EAFt bu\u1ED9c v\u1EDBi to\xE0n b\u1ED9 ng\u01B0\u1EDDi d\xF9ng"
+};
+var mfaPolicyCovers = (policy, portal) => policy === "REQUIRED_ALL" || policy === "REQUIRED_INTERNAL" && portal === "INTERNAL";
 var UserRoleSchema = z3.enum([
   "ADMIN",
   "SUPERVISOR",
@@ -2764,6 +2775,9 @@ function requireAdmin(user) {
     throw new HttpProblem(403, "ADMIN_REQUIRED", "Kh\xF4ng \u0111\u1EE7 quy\u1EC1n qu\u1EA3n tr\u1ECB", "Ch\u1EC9 qu\u1EA3n tr\u1ECB vi\xEAn \u0111\u01B0\u1EE3c truy c\u1EADp t\xE0i nguy\xEAn n\xE0y.");
   }
 }
+function branchScopeTypeForRole(primaryRole) {
+  return primaryRole === "BRANCH_INPUT" ? "DEPARTMENT" : "BRANCH";
+}
 function hasFindingAccess(user, finding) {
   if (!user.isActive) return false;
   if (user.scopes.some((scope) => scope.scopeType === "ALL")) return true;
@@ -2776,8 +2790,11 @@ function hasFindingAccess(user, finding) {
         return normalize(scope.clusterName ?? user.clusterName) === normalize(finding.clusterName);
       case "BRANCH":
         return branchMatches;
-      case "DEPARTMENT":
-        return branchMatches && normalize(scope.departmentName ?? user.department) === normalize(finding.department);
+      case "DEPARTMENT": {
+        if (!branchMatches) return false;
+        if (!normalize(finding.department)) return true;
+        return normalize(scope.departmentName ?? user.department) === normalize(finding.department);
+      }
       default:
         return false;
     }
@@ -2952,7 +2969,7 @@ function verifyTotpCode(secret, submittedCode, timestampMs = Date.now(), window 
   }
   return false;
 }
-function buildOtpAuthUri(secret, accountName, issuer = "AuditBGS") {
+function buildOtpAuthUri(secret, accountName, issuer = "Audit Monitoring") {
   const normalizedSecret = secret.replace(/[=\s-]/g, "").toUpperCase();
   decodeBase32(normalizedSecret);
   const label = `${issuer}:${accountName}`;
@@ -3099,19 +3116,21 @@ function verifyGoogleOidcState({ state, secret, now = Date.now() }) {
   } catch {
     throw new Error("Google OIDC state is invalid.");
   }
-  if (payload.version !== 1 || !Number.isSafeInteger(payload.expiresAt) || payload.expiresAt < now) throw new Error("Google OIDC state is expired or invalid.");
-  return { returnTo: requireSafeReturnTo(payload.returnTo) };
+  if (payload.version !== 1 || !Number.isSafeInteger(payload.expiresAt) || payload.expiresAt < now || typeof payload.nonce !== "string" || payload.nonce.length < 16) throw new Error("Google OIDC state is expired or invalid.");
+  return { returnTo: requireSafeReturnTo(payload.returnTo), nonce: payload.nonce };
 }
 function validateGoogleOidcIdentity({
   payload,
   audience,
-  issuer
+  issuer,
+  expectedNonce
 }) {
   const tokenAudience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
   if (!payload.sub || !payload.email || payload.email_verified !== true) throw new Error("Google OIDC email is not verified.");
   const acceptedIssuers = issuer === "https://accounts.google.com" ? /* @__PURE__ */ new Set(["https://accounts.google.com", "accounts.google.com"]) : /* @__PURE__ */ new Set([issuer]);
   if (!acceptedIssuers.has(payload.iss ?? "")) throw new Error("Google OIDC issuer is invalid.");
   if (!tokenAudience.includes(audience)) throw new Error("Google OIDC audience is invalid.");
+  if (expectedNonce !== void 0 && payload.nonce !== expectedNonce) throw new Error("Google OIDC nonce is invalid.");
   return {
     subject: payload.sub,
     email: payload.email.trim().toLocaleLowerCase("en-US"),
@@ -3147,13 +3166,14 @@ function createAuthorizationUrl({ returnTo }) {
 }
 async function exchangeCode({ code, state }) {
   const configuration = requireConfiguration();
-  const { returnTo } = verifyGoogleOidcState({ state, secret: configuration.stateSecret });
+  const { returnTo, nonce } = verifyGoogleOidcState({ state, secret: configuration.stateSecret });
   const client = clientFor(configuration);
   const { tokens } = await client.getToken(code);
   if (!tokens.id_token) throw new Error("Google OIDC did not return an ID token.");
   const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: configuration.audience });
+  const payload = ticket.getPayload() ?? {};
   return {
-    identity: validateGoogleOidcIdentity({ payload: ticket.getPayload() ?? {}, audience: configuration.audience, issuer: configuration.issuer }),
+    identity: validateGoogleOidcIdentity({ payload, audience: configuration.audience, issuer: configuration.issuer, expectedNonce: nonce }),
     returnTo
   };
 }
@@ -3198,6 +3218,31 @@ var CampaignDocumentImportError = class extends Error {
     this.name = "CampaignDocumentImportError";
   }
 };
+var MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+var MAX_ZIP_ENTRIES = 2e3;
+var MAX_ZIP_UNCOMPRESSED_BYTES = 20 * 1024 * 1024;
+var MAX_ZIP_COMPRESSION_RATIO = 100;
+var MAX_PDF_PAGES = 100;
+var MAX_EXTRACTED_TEXT_BYTES = 5 * 1024 * 1024;
+function assertUploadSize(buffer) {
+  if (buffer.length > MAX_UPLOAD_BYTES) throw new CampaignDocumentImportError("T\u1EC7p t\u1EA3i l\xEAn v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n 25 MB.");
+}
+function assertSafeZip(zip) {
+  const entries = Object.values(zip.files);
+  if (entries.length > MAX_ZIP_ENTRIES) throw new CampaignDocumentImportError("T\u1EC7p n\xE9n ch\u1EE9a qu\xE1 nhi\u1EC1u m\u1EE5c d\u1EEF li\u1EC7u.");
+  let totalUncompressed = 0;
+  for (const entry of entries) {
+    const item = entry;
+    const metadata = item._data;
+    const compressed = metadata?.compressedSize ?? 0;
+    const uncompressed = metadata?.uncompressedSize ?? 0;
+    totalUncompressed += uncompressed;
+    if (!item.dir && compressed > 0 && uncompressed / compressed > MAX_ZIP_COMPRESSION_RATIO) {
+      throw new CampaignDocumentImportError("T\u1EC7p n\xE9n c\xF3 t\u1EF7 l\u1EC7 gi\u1EA3i n\xE9n b\u1EA5t th\u01B0\u1EDDng.");
+    }
+  }
+  if (totalUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES) throw new CampaignDocumentImportError("N\u1ED9i dung gi\u1EA3i n\xE9n v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n an to\xE0n.");
+}
 var labels = {
   code: ["m\xE3 chuy\xEAn \u0111\u1EC1", "m\xE3 k\u1EBF ho\u1EA1ch", "m\xE3 ct"],
   name: ["t\xEAn chuy\xEAn \u0111\u1EC1", "chuy\xEAn \u0111\u1EC1 ki\u1EC3m tra", "t\xEAn k\u1EBF ho\u1EA1ch"],
@@ -3276,20 +3321,27 @@ async function extractDocxLines(buffer) {
   } catch {
     throw new CampaignDocumentImportError("T\u1EC7p DOCX kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng th\u1EC3 m\u1EDF.");
   }
+  assertSafeZip(zip);
   const source = zip.file("word/document.xml");
   if (!source) throw new CampaignDocumentImportError("T\u1EC7p DOCX kh\xF4ng c\xF3 n\u1ED9i dung v\u0103n b\u1EA3n \u0111\u1EC3 tr\xEDch xu\u1EA5t.");
   const xml = await source.async("string");
+  if (Buffer.byteLength(xml, "utf8") > MAX_EXTRACTED_TEXT_BYTES) throw new CampaignDocumentImportError("V\u0103n b\u1EA3n DOCX v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n tr\xEDch xu\u1EA5t.");
   return (xml.match(/<w:p\b[\s\S]*?<\/w:p>/g) ?? []).map((paragraph) => cleanText(decodeXml(paragraph.replace(/<w:tab\s*\/>/g, " ").replace(/<w:t[^>]*>/g, "").replace(/<\/w:t>/g, "").replace(/<[^>]+>/g, " ")))).filter(Boolean);
 }
 async function extractPdfLines(buffer) {
   try {
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+    if (document.numPages > MAX_PDF_PAGES) throw new CampaignDocumentImportError("PDF v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n 100 trang.");
+    let extractedBytes = 0;
     const pages = await Promise.all(Array.from({ length: document.numPages }, async (_, index) => {
       const content = await (await document.getPage(index + 1)).getTextContent();
-      return content.items.map((item) => "str" in item ? item.str : "").join(" ");
+      const text = cleanText(content.items.map((item) => "str" in item ? item.str : "").join(" "));
+      extractedBytes += Buffer.byteLength(text, "utf8");
+      if (extractedBytes > MAX_EXTRACTED_TEXT_BYTES) throw new CampaignDocumentImportError("V\u0103n b\u1EA3n PDF v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n tr\xEDch xu\u1EA5t.");
+      return text;
     }));
-    return pages.map(cleanText).filter(Boolean);
+    return pages.filter(Boolean);
   } catch {
     throw new CampaignDocumentImportError("Kh\xF4ng th\u1EC3 \u0111\u1ECDc v\u0103n b\u1EA3n trong PDF. N\u1EBFu \u0111\xE2y l\xE0 b\u1EA3n scan, h\xE3y d\xF9ng PDF c\xF3 OCR ho\u1EB7c nh\u1EADp th\u1EE7 c\xF4ng.");
   }
@@ -3323,7 +3375,17 @@ async function extractExcelDraft(buffer) {
 }
 async function extractCampaignImportDraft(fileName, buffer) {
   if (!buffer.length) throw new CampaignDocumentImportError("T\u1EC7p t\u1EA3i l\xEAn \u0111ang tr\u1ED1ng.");
+  assertUploadSize(buffer);
   const kind = documentKind(fileName);
+  if (kind === "EXCEL" && fileName.trim().toLowerCase().endsWith(".xlsx")) {
+    try {
+      const zip = await JSZip2.loadAsync(buffer);
+      assertSafeZip(zip);
+    } catch (error) {
+      if (error instanceof CampaignDocumentImportError) throw error;
+      throw new CampaignDocumentImportError("T\u1EC7p XLSX kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng th\u1EC3 m\u1EDF.");
+    }
+  }
   const draft = kind === "EXCEL" ? await extractExcelDraft(buffer) : textDraft(kind === "DOCX" ? await extractDocxLines(buffer) : await extractPdfLines(buffer));
   return { source: { fileName, kind }, draft, warnings: warningsFor(draft) };
 }
@@ -3336,6 +3398,31 @@ var FindingDocumentImportError = class extends Error {
     this.name = "FindingDocumentImportError";
   }
 };
+var MAX_UPLOAD_BYTES2 = 25 * 1024 * 1024;
+var MAX_ZIP_ENTRIES2 = 2e3;
+var MAX_ZIP_UNCOMPRESSED_BYTES2 = 20 * 1024 * 1024;
+var MAX_ZIP_COMPRESSION_RATIO2 = 100;
+var MAX_PDF_PAGES2 = 100;
+var MAX_EXTRACTED_TEXT_BYTES2 = 5 * 1024 * 1024;
+function assertUploadSize2(buffer) {
+  if (buffer.length > MAX_UPLOAD_BYTES2) throw new FindingDocumentImportError("T\u1EC7p t\u1EA3i l\xEAn v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n 25 MB.");
+}
+function assertSafeZip2(zip) {
+  const entries = Object.values(zip.files);
+  if (entries.length > MAX_ZIP_ENTRIES2) throw new FindingDocumentImportError("T\u1EC7p n\xE9n ch\u1EE9a qu\xE1 nhi\u1EC1u m\u1EE5c d\u1EEF li\u1EC7u.");
+  let totalUncompressed = 0;
+  for (const entry of entries) {
+    const item = entry;
+    const metadata = item._data;
+    const compressed = metadata?.compressedSize ?? 0;
+    const uncompressed = metadata?.uncompressedSize ?? 0;
+    totalUncompressed += uncompressed;
+    if (!item.dir && compressed > 0 && uncompressed / compressed > MAX_ZIP_COMPRESSION_RATIO2) {
+      throw new FindingDocumentImportError("T\u1EC7p n\xE9n c\xF3 t\u1EF7 l\u1EC7 gi\u1EA3i n\xE9n b\u1EA5t th\u01B0\u1EDDng.");
+    }
+  }
+  if (totalUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES2) throw new FindingDocumentImportError("N\u1ED9i dung gi\u1EA3i n\xE9n v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n an to\xE0n.");
+}
 var decodeXml2 = (value) => value.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
 var cellText = (xml) => decodeXml2([...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((match) => match[1]).join(" ")).replace(/\s+/g, " ").trim();
 var normalize2 = (value) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
@@ -3351,15 +3438,18 @@ var aliases = {
   description: ["mo ta chi tiet", "chi tiet sai sot", "mo ta"]
 };
 async function parseFindingDocx(buffer) {
+  assertUploadSize2(buffer);
   let zip;
   try {
     zip = await JSZip3.loadAsync(buffer);
   } catch {
     throw new FindingDocumentImportError("T\u1EC7p DOCX kh\xF4ng h\u1EE3p l\u1EC7 ho\u1EB7c kh\xF4ng th\u1EC3 m\u1EDF.");
   }
+  assertSafeZip2(zip);
   const document = zip.file("word/document.xml");
   if (!document) throw new FindingDocumentImportError("T\u1EC7p DOCX kh\xF4ng c\xF3 n\u1ED9i dung \u0111\u1EC3 b\xF3c t\xE1ch.");
   const xml = await document.async("string");
+  if (Buffer.byteLength(xml, "utf8") > MAX_EXTRACTED_TEXT_BYTES2) throw new FindingDocumentImportError("V\u0103n b\u1EA3n DOCX v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n tr\xEDch xu\u1EA5t.");
   const tables = xml.match(/<w:tbl\b[\s\S]*?<\/w:tbl>/g) ?? [];
   for (const table of tables) {
     const rows = (table.match(/<w:tr\b[\s\S]*?<\/w:tr>/g) ?? []).map((row) => (row.match(/<w:tc\b[\s\S]*?<\/w:tc>/g) ?? []).map(cellText));
@@ -3394,13 +3484,19 @@ async function parseFindingDocx(buffer) {
   throw new FindingDocumentImportError("Kh\xF4ng t\xECm th\u1EA5y b\u1EA3ng DOCX c\xF3 \u0111\u1EE7 c\u1ED9t T\xEAn kh\xE1ch h\xE0ng, CIF, M\xE3 chi nh\xE1nh v\xE0 M\xE3 sai s\xF3t.");
 }
 async function parseFindingPdf(buffer) {
+  assertUploadSize2(buffer);
   try {
     const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
     const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+    if (document.numPages > MAX_PDF_PAGES2) throw new FindingDocumentImportError("PDF v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n 100 trang.");
+    let extractedBytes = 0;
     const pages = await Promise.all(Array.from({ length: document.numPages }, async (_, index) => {
       const page = await document.getPage(index + 1);
       const content = await page.getTextContent();
-      return cleanPdfText(content.items.map((item) => "str" in item ? item.str : "").join(" "));
+      const text2 = cleanPdfText(content.items.map((item) => "str" in item ? item.str : "").join(" "));
+      extractedBytes += Buffer.byteLength(text2, "utf8");
+      if (extractedBytes > MAX_EXTRACTED_TEXT_BYTES2) throw new FindingDocumentImportError("V\u0103n b\u1EA3n PDF v\u01B0\u1EE3t qu\xE1 gi\u1EDBi h\u1EA1n tr\xEDch xu\u1EA5t.");
+      return text2;
     }));
     const text = pages.filter(Boolean).join("\n");
     const rows = [];
@@ -3507,6 +3603,21 @@ function createSupabaseAuthAdapter(options) {
         user: response.user
       };
     },
+    async refreshSession(refreshToken) {
+      const response = await request("/auth/v1/token?grant_type=refresh_token", {
+        method: "POST",
+        body: JSON.stringify({ refresh_token: refreshToken })
+      }, publishableKey);
+      return {
+        accessToken: response.access_token,
+        refreshToken: response.refresh_token,
+        expiresIn: response.expires_in,
+        user: response.user
+      };
+    },
+    async signOut(accessToken) {
+      await request("/auth/v1/logout", { method: "POST" }, publishableKey, accessToken);
+    },
     async changePassword(accessToken, password) {
       await request("/auth/v1/user", {
         method: "PUT",
@@ -3596,9 +3707,33 @@ function cookieValue(request, name) {
   for (const part of cookieHeader.split(";")) {
     const separator = part.indexOf("=");
     if (separator < 0) continue;
-    if (part.slice(0, separator).trim() === name) return decodeURIComponent(part.slice(separator + 1).trim());
+    if (part.slice(0, separator).trim() === name) {
+      try {
+        return decodeURIComponent(part.slice(separator + 1).trim());
+      } catch {
+        return void 0;
+      }
+    }
   }
   return void 0;
+}
+var OIDC_STATE_COOKIE = "audit_bgs_oidc_state";
+var OIDC_STATE_TTL_SECONDS = 10 * 60;
+function setOidcStateCookie(reply, state) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  reply.header("set-cookie", `${OIDC_STATE_COOKIE}=${encodeURIComponent(state)}; Path=/api/v1/auth/google; HttpOnly; SameSite=Lax; Max-Age=${OIDC_STATE_TTL_SECONDS}${secure}`);
+}
+function clearOidcStateCookie(reply) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  reply.header("set-cookie", `${OIDC_STATE_COOKIE}=; Path=/api/v1/auth/google; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+}
+function assertOidcStateBound(request, state) {
+  const cookie = cookieValue(request, OIDC_STATE_COOKIE);
+  const expected = Buffer.from(cookie ?? "", "utf8");
+  const received = Buffer.from(state, "utf8");
+  if (!cookie || expected.length !== received.length || !crypto5.timingSafeEqual(expected, received)) {
+    throw new HttpProblem(401, "GOOGLE_OIDC_STATE_MISMATCH", "Phi\xEAn \u0111\u0103ng nh\u1EADp Google kh\xF4ng h\u1EE3p l\u1EC7", "H\xE3y b\u1EAFt \u0111\u1EA7u l\u1EA1i \u0111\u0103ng nh\u1EADp Google trong c\xF9ng tr\xECnh duy\u1EC7t.");
+  }
 }
 async function createAuthenticatedSession(user, reply) {
   const session = authSessionStore.create(user.id);
@@ -3683,7 +3818,11 @@ var orgUnits = [
   { id: "org-dept-635-pgd1", code: "635-PGD-NBH1", name: "PGD Nam Bu\xF4n H\u1ED3 1", type: "DEPARTMENT", parentId: "org-br-635", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
   { id: "org-dept-635-control", code: "635-KSCN", name: "Ph\xF2ng Ki\u1EC3m so\xE1t chi nh\xE1nh", type: "DEPARTMENT", parentId: "org-br-635", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
   { id: "org-dept-428-control", code: "428-KSCN", name: "Ph\xF2ng Ki\u1EC3m so\xE1t chi nh\xE1nh", type: "DEPARTMENT", parentId: "org-br-428", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
-  { id: "org-dept-102-control", code: "102-KSCN", name: "Ph\xF2ng Ki\u1EC3m so\xE1t chi nh\xE1nh", type: "DEPARTMENT", parentId: "org-br-102", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }
+  // Demo hồ sơ find-002 / find-003 name these phòng; without the org units they describe a
+  // department that does not exist, which department-level scoping cannot resolve.
+  { id: "org-dept-428-qlkh2", code: "428-QLKH2", name: "Ph\xF2ng QLKH 2", type: "DEPARTMENT", parentId: "org-br-428", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
+  { id: "org-dept-102-control", code: "102-KSCN", name: "Ph\xF2ng Ki\u1EC3m so\xE1t chi nh\xE1nh", type: "DEPARTMENT", parentId: "org-br-102", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
+  { id: "org-dept-102-qlkh1", code: "102-QLKH1", name: "Ph\xF2ng QLKH 1", type: "DEPARTMENT", parentId: "org-br-102", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() }
 ];
 var appUsers = [
   {
@@ -4255,6 +4394,10 @@ function createDefaultReportCatalogConfiguration() {
   };
 }
 var reportCatalogConfiguration = createDefaultReportCatalogConfiguration();
+function createDefaultSecuritySettings() {
+  return { mfaPolicy: "DISABLED", updatedAt: (/* @__PURE__ */ new Date(0)).toISOString() };
+}
+var securitySettings = createDefaultSecuritySettings();
 var idempotencyRecords = {};
 var findingFollows = [];
 var workspaceAccepted = [];
@@ -4327,6 +4470,7 @@ var hydratedState = await stateRepository.load({
   reportDefinitions,
   dashboardDefinitions,
   reportCatalogConfiguration,
+  securitySettings,
   idempotencyRecords,
   findingFollows,
   workspaceAccepted,
@@ -4339,6 +4483,22 @@ var hydratedState = await stateRepository.load({
   securityEvents,
   loginAttempts
 });
+if (!DEMO_SEED_ENABLED) {
+  const demoUserIds = new Set(DEMO_SEED_IDS.users);
+  const demoOrgUnitIds = new Set(DEMO_SEED_IDS.orgUnits.filter((id) => id !== "org-ho"));
+  const demoCampaignIds = new Set(DEMO_SEED_IDS.campaigns);
+  const demoFindingIds = new Set(DEMO_SEED_IDS.findings);
+  hydratedState.appUsers = hydratedState.appUsers.filter((user) => !demoUserIds.has(user.id));
+  hydratedState.orgUnits = hydratedState.orgUnits.filter((unit) => !demoOrgUnitIds.has(unit.id));
+  hydratedState.auditCampaigns = (hydratedState.auditCampaigns ?? []).filter((campaign) => !demoCampaignIds.has(campaign.id));
+  hydratedState.findings = hydratedState.findings.filter((finding) => !demoFindingIds.has(finding.id));
+  hydratedState.credentials = (hydratedState.credentials ?? []).filter((entry) => !demoUserIds.has(entry.userId));
+  hydratedState.authenticatorCredentials = (hydratedState.authenticatorCredentials ?? []).filter((entry) => !demoUserIds.has(entry.userId));
+  hydratedState.authSessions = (hydratedState.authSessions ?? []).filter((session) => !demoUserIds.has(session.userId));
+  hydratedState.securityEvents = (hydratedState.securityEvents ?? []).filter((event) => !event.actorUserId || !demoUserIds.has(event.actorUserId));
+  hydratedState.workflowEvents = hydratedState.workflowEvents.filter((event) => !demoFindingIds.has(event.findingId));
+  hydratedState.evidences = hydratedState.evidences.filter((evidence) => !demoFindingIds.has(evidence.findingId));
+}
 orgUnits = ensureHeadOfficeOrgUnit(hydratedState.orgUnits);
 appUsers = hydratedState.appUsers;
 if (hydratedState.credentials?.length) credentialDirectory = hydratedState.credentials;
@@ -4373,6 +4533,7 @@ slaExtensions = hydratedState.slaExtensions;
 reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
 dashboardDefinitions = (hydratedState.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
 reportCatalogConfiguration = hydrateReportCatalogConfiguration(hydratedState.reportCatalogConfiguration);
+securitySettings = hydratedState.securitySettings ?? createDefaultSecuritySettings();
 idempotencyRecords = hydratedState.idempotencyRecords ?? {};
 findingFollows = hydratedState.findingFollows ?? [];
 workspaceAccepted = hydratedState.workspaceAccepted ?? [];
@@ -4388,11 +4549,29 @@ function applyAuthenticatorProjection() {
   const configured = new Set(authenticatorCredentials.map((item) => item.userId));
   appUsers = appUsers.map((user) => ({
     ...user,
-    authenticatorRequired: user.authenticatorRequired === true,
+    // Derived from the system policy, never from a per-account flag, so the profile the UI
+    // reads and the check the login performs can never disagree.
+    authenticatorRequired: mfaPolicyCovers(securitySettings.mfaPolicy, user.portal),
     authenticatorConfigured: configured.has(user.id)
   }));
 }
+function applyBranchScopeProjection() {
+  appUsers = appUsers.map((user) => {
+    if (user.portal !== "BRANCH") return user;
+    const expected = branchScopeTypeForRole(user.primaryRole);
+    const needsChange = user.scopes.some((scope) => (scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT") && scope.scopeType !== expected);
+    if (!needsChange) return user;
+    return {
+      ...user,
+      scopes: user.scopes.map((scope) => scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT" ? { ...scope, scopeType: expected, departmentName: scope.departmentName ?? user.department } : scope)
+    };
+  });
+}
+function mfaRequiredFor(user) {
+  return mfaPolicyCovers(securitySettings.mfaPolicy, user.portal);
+}
 applyAuthenticatorProjection();
+applyBranchScopeProjection();
 function googleOAuthStateSecret() {
   const secret = process.env.GOOGLE_OAUTH_STATE_SECRET;
   if (!secret || secret.length < 16) throw new HttpProblem(503, "GOOGLE_OAUTH_NOT_CONFIGURED", "OAuth Google Drive ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh", "Thi\u1EBFu GOOGLE_OAUTH_STATE_SECRET tr\xEAn m\xE1y ch\u1EE7.");
@@ -4554,6 +4733,7 @@ function currentLocalState() {
     reportDefinitions,
     dashboardDefinitions,
     reportCatalogConfiguration,
+    securitySettings,
     idempotencyRecords,
     findingFollows,
     workspaceAccepted,
@@ -4581,6 +4761,7 @@ function restoreDurableLocalState(restored) {
   reportDefinitions = restored.reportDefinitions.map(normalizeReportDefinition);
   dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
   reportCatalogConfiguration = hydrateReportCatalogConfiguration(restored.reportCatalogConfiguration);
+  securitySettings = restored.securitySettings ?? createDefaultSecuritySettings();
   idempotencyRecords = restored.idempotencyRecords ?? {};
   findingFollows = restored.findingFollows ?? [];
   workspaceAccepted = restored.workspaceAccepted ?? [];
@@ -4593,6 +4774,7 @@ function restoreDurableLocalState(restored) {
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
   if (restored.credentials?.length) credentialDirectory = restored.credentials;
   applyAuthenticatorProjection();
+  applyBranchScopeProjection();
   hydrateGoogleDriveOAuthCredential(restored.googleDriveOAuthCredential);
 }
 var runtimeRequestLock = new RuntimeRequestLock();
@@ -4712,7 +4894,7 @@ function synchronizeUserDirectoryModel() {
         user.clusterName = cluster.name;
         user.orgUnitId = department?.id ?? branch.id;
         user.scopes = [{
-          scopeType: "BRANCH",
+          scopeType: branchScopeTypeForRole(user.primaryRole),
           orgUnitId: branch.id,
           orgUnitCode: branch.code,
           clusterName: cluster.name,
@@ -5553,7 +5735,11 @@ app.get("/api/v1/auth/google", async (req, reply) => {
     throw new HttpProblem(404, "OIDC_NOT_ENABLED", "\u0110\u0103ng nh\u1EADp Google ch\u01B0a \u0111\u01B0\u1EE3c b\u1EADt", "M\xE1y ch\u1EE7 hi\u1EC7n kh\xF4ng d\xF9ng Google OIDC.");
   }
   try {
-    return reply.redirect(createAuthorizationUrl({ returnTo: req.query.returnTo ?? "/" }));
+    const authorizationUrl = createAuthorizationUrl({ returnTo: req.query.returnTo ?? "/" });
+    const state = new URL(authorizationUrl).searchParams.get("state");
+    if (!state) throw new Error("Google OIDC state is missing.");
+    setOidcStateCookie(reply, state);
+    return reply.redirect(authorizationUrl);
   } catch {
     throw new HttpProblem(503, "OIDC_NOT_CONFIGURED", "\u0110\u0103ng nh\u1EADp Google ch\u01B0a s\u1EB5n s\xE0ng", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n ho\xE0n t\u1EA5t c\u1EA5u h\xECnh Google OIDC tr\xEAn m\xE1y ch\u1EE7.");
   }
@@ -5562,6 +5748,7 @@ app.get("/api/v1/auth/google/callback", async (req, reply) => {
   if (process.env.AUTH_MODE !== "oidc") throw new HttpProblem(404, "OIDC_NOT_ENABLED", "\u0110\u0103ng nh\u1EADp Google ch\u01B0a \u0111\u01B0\u1EE3c b\u1EADt", "M\xE1y ch\u1EE7 hi\u1EC7n kh\xF4ng d\xF9ng Google OIDC.");
   if (req.query.error) throw new HttpProblem(401, "GOOGLE_OIDC_DENIED", "\u0110\u0103ng nh\u1EADp Google b\u1ECB t\u1EEB ch\u1ED1i", "T\xE0i kho\u1EA3n Google kh\xF4ng ch\u1EA5p thu\u1EADn y\xEAu c\u1EA7u \u0111\u0103ng nh\u1EADp.");
   if (!req.query.code || !req.query.state) throw new HttpProblem(422, "GOOGLE_OIDC_CALLBACK_INVALID", "Callback Google kh\xF4ng h\u1EE3p l\u1EC7", "Google kh\xF4ng tr\u1EA3 authorization code ho\u1EB7c state.");
+  assertOidcStateBound(req, req.query.state);
   let oidc;
   try {
     oidc = await exchangeCode({ code: req.query.code, state: req.query.state });
@@ -5581,12 +5768,16 @@ app.get("/api/v1/auth/google/callback", async (req, reply) => {
     await persistLocalState();
     throw new HttpProblem(403, "GOOGLE_OIDC_USER_NOT_PROVISIONED", "T\xE0i kho\u1EA3n Google ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5p quy\u1EC1n", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n t\u1EA1o user v\xE0 g\xE1n role cho email Google n\xE0y tr\u01B0\u1EDBc.");
   }
+  if (mfaRequiredFor(user)) {
+    throw new HttpProblem(401, "MFA_REQUIRED", "C\u1EA7n m\xE3 Authenticator", "T\xE0i kho\u1EA3n n\xE0y y\xEAu c\u1EA7u Google Authenticator. H\xE3y d\xF9ng lu\u1ED3ng \u0111\u0103ng nh\u1EADp h\u1ED7 tr\u1EE3 MFA ho\u1EB7c t\u1EAFt y\xEAu c\u1EA7u MFA cho \u0111\u0103ng nh\u1EADp Google.");
+  }
   recordUserSecurityEvent(req, user, {
     type: "AUTH_OIDC_LOGIN_SUCCEEDED",
     outcome: "SUCCESS",
     subject: email,
     detail: "\u0110\u0103ng nh\u1EADp b\u1EB1ng Google OIDC."
   });
+  clearOidcStateCookie(reply);
   await createAuthenticatedSession(user, reply);
   return reply.redirect(oidc.returnTo);
 });
@@ -5596,6 +5787,7 @@ app.post("/api/v1/auth/login", async (req, reply) => {
   }
   if (process.env.AUTH_MODE === "supabase") {
     if (!supabaseAuthAdapter) throw new HttpProblem(503, "SUPABASE_AUTH_NOT_CONFIGURED", "Supabase Auth ch\u01B0a s\u1EB5n s\xE0ng", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n c\u1EA5u h\xECnh SUPABASE_URL v\xE0 SUPABASE_PUBLISHABLE_KEY.");
+    assertLoginBurstAllowed(Date.now());
     const credentials2 = LoginSchema.parse(req.body);
     const email = credentials2.username.trim().toLocaleLowerCase("en-US");
     const user2 = appUsers.find((item) => item.isActive && item.email.toLocaleLowerCase("en-US") === email);
@@ -5609,6 +5801,18 @@ app.post("/api/v1/auth/login", async (req, reply) => {
     if (session.user.id !== user2.authUserId) {
       user2.authUserId = session.user.id;
       await persistLocalState();
+    }
+    if (mfaRequiredFor(user2)) {
+      const credential = authenticatorCredentials.find((item) => item.userId === user2.id);
+      const valid = credential && credentials2.mfaCode ? (() => {
+        try {
+          return verifyTotpCode(decryptTotpSecret(credential.encryptedSecret, authenticatorEncryptionKey()), credentials2.mfaCode, Date.now());
+        } catch {
+          return false;
+        }
+      })() : false;
+      await supabaseAuthAdapter.signOut(session.accessToken).catch(() => void 0);
+      if (!valid) throw new HttpProblem(401, "MFA_REQUIRED", "C\u1EA7n m\xE3 Authenticator", "Nh\u1EADp m\xE3 6 ch\u1EEF s\u1ED1 \u0111ang hi\u1EC3n th\u1ECB trong Google Authenticator.");
     }
     recordUserSecurityEvent(req, user2, {
       type: "AUTH_LOGIN_SUCCEEDED",
@@ -5653,10 +5857,10 @@ app.post("/api/v1/auth/login", async (req, reply) => {
     await persistLocalState();
     throw new HttpProblem(401, "INVALID_CREDENTIALS", "\u0110\u0103ng nh\u1EADp kh\xF4ng th\xE0nh c\xF4ng", "T\xE0i kho\u1EA3n ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng.");
   }
-  if (user.authenticatorRequired) {
+  if (mfaRequiredFor(user)) {
     const credential = authenticatorCredentials.find((item) => item.userId === user.id);
     if (!credential) {
-      throw new HttpProblem(503, "MFA_SETUP_REQUIRED", "Ch\u01B0a ho\xE0n t\u1EA5t Authenticator", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n c\u1EA5p l\u1EA1i m\xE3 thi\u1EBFt l\u1EADp Google Authenticator cho t\xE0i kho\u1EA3n n\xE0y.");
+      throw new HttpProblem(503, "MFA_SETUP_REQUIRED", "Ch\u01B0a ho\xE0n t\u1EA5t Authenticator", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n c\u1EA5p m\xE3 thi\u1EBFt l\u1EADp Google Authenticator cho t\xE0i kho\u1EA3n n\xE0y.");
     }
     let secret;
     try {
@@ -5702,6 +5906,8 @@ app.post("/api/v1/auth/login", async (req, reply) => {
 });
 app.post("/api/v1/auth/logout", async (req, reply) => {
   if (process.env.AUTH_MODE === "supabase") {
+    const accessToken = supabaseAccessToken(req);
+    if (accessToken && supabaseAuthAdapter) await supabaseAuthAdapter.signOut(accessToken).catch(() => void 0);
     clearSupabaseSessionCookies(reply);
     return reply.code(204).send();
   }
@@ -5726,13 +5932,52 @@ app.post("/api/v1/auth/logout", async (req, reply) => {
   reply.header("set-cookie", `audit_bgs_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
   return reply.code(204).send();
 });
+app.post("/api/v1/auth/refresh", async (req, reply) => {
+  if (process.env.AUTH_MODE !== "supabase" || !supabaseAuthAdapter) {
+    throw new HttpProblem(404, "SUPABASE_AUTH_NOT_ENABLED", "L\xE0m m\u1EDBi phi\xEAn ch\u01B0a \u0111\u01B0\u1EE3c b\u1EADt", "M\xE1y ch\u1EE7 hi\u1EC7n kh\xF4ng d\xF9ng Supabase Auth.");
+  }
+  const refreshToken = cookieValue(req, "audit_bgs_supabase_refresh");
+  if (!refreshToken) throw new HttpProblem(401, "AUTH_REQUIRED", "Phi\xEAn \u0111\u0103ng nh\u1EADp \u0111\xE3 h\u1EBFt h\u1EA1n", "Vui l\xF2ng \u0111\u0103ng nh\u1EADp l\u1EA1i.");
+  let session;
+  try {
+    session = await supabaseAuthAdapter.refreshSession(refreshToken);
+  } catch {
+    clearSupabaseSessionCookies(reply);
+    throw new HttpProblem(401, "AUTH_REQUIRED", "Phi\xEAn \u0111\u0103ng nh\u1EADp \u0111\xE3 h\u1EBFt h\u1EA1n", "Vui l\xF2ng \u0111\u0103ng nh\u1EADp l\u1EA1i.");
+  }
+  const user = appUsers.find((item) => item.isActive && (item.authUserId === session.user.id || item.email.toLocaleLowerCase("en-US") === session.user.email?.toLocaleLowerCase("en-US")));
+  if (!user) {
+    await supabaseAuthAdapter.signOut(session.accessToken).catch(() => void 0);
+    clearSupabaseSessionCookies(reply);
+    throw new HttpProblem(401, "AUTH_REQUIRED", "T\xE0i kho\u1EA3n kh\xF4ng c\xF2n ho\u1EA1t \u0111\u1ED9ng", "Vui l\xF2ng li\xEAn h\u1EC7 qu\u1EA3n tr\u1ECB vi\xEAn.");
+  }
+  if (user.authUserId !== session.user.id) {
+    user.authUserId = session.user.id;
+    await persistLocalState();
+  }
+  setSupabaseSessionCookies(reply, session.accessToken, session.refreshToken, session.expiresIn);
+  return { user, expiresAt: new Date(Date.now() + session.expiresIn * 1e3).toISOString() };
+});
 app.post("/api/v1/auth/forgot-password", async (req, reply) => {
   const body = z13.object({ email: z13.string().email(), redirectTo: z13.string().url().optional() }).parse(req.body);
+  assertLoginBurstAllowed(Date.now());
   if (process.env.AUTH_MODE !== "supabase" || !supabaseAuthAdapter) {
     return reply.code(204).send();
   }
   const baseUrl = process.env.APP_BASE_URL?.trim() || `${req.protocol}://${req.headers.host ?? "localhost"}`;
-  await supabaseAuthAdapter.sendPasswordReset(body.email.toLocaleLowerCase("en-US"), body.redirectTo ?? `${baseUrl}/reset-password`);
+  const defaultRedirect = `${baseUrl.replace(/\/$/, "")}/reset-password`;
+  let redirectTo = defaultRedirect;
+  if (body.redirectTo) {
+    try {
+      const requested = new URL(body.redirectTo);
+      const allowed = new URL(defaultRedirect);
+      if (requested.origin !== allowed.origin || requested.pathname !== allowed.pathname) throw new Error("unsafe redirect");
+      redirectTo = requested.toString();
+    } catch {
+      throw new HttpProblem(422, "PASSWORD_RESET_REDIRECT_INVALID", "\u0110\u1ECBa ch\u1EC9 kh\xF4i ph\u1EE5c kh\xF4ng h\u1EE3p l\u1EC7", "Li\xEAn k\u1EBFt kh\xF4i ph\u1EE5c ph\u1EA3i tr\u1ECF v\u1EC1 trang reset c\u1EE7a \u1EE9ng d\u1EE5ng.");
+    }
+  }
+  await supabaseAuthAdapter.sendPasswordReset(body.email.toLocaleLowerCase("en-US"), redirectTo);
   return reply.code(204).send();
 });
 app.post("/api/v1/auth/password", async (req) => {
@@ -6093,7 +6338,9 @@ async function createUserAccount(req, body) {
     throw new HttpProblem(422, "BRANCH_ASSIGNMENT_INVALID", "Ph\xE2n c\xF4ng chi nh\xE1nh kh\xF4ng h\u1EE3p l\u1EC7", "Chi nh\xE1nh ho\u1EB7c Ph\xF2ng/PGD kh\xF4ng t\u1ED3n t\u1EA1i trong C\u1EE5m \u0111\u1ECBa b\xE0n \u0111\xE3 c\u1EA5u h\xECnh.");
   }
   const scopes = ["BRANCH_INPUT", "BRANCH_CONTROLLER", "BRANCH_LEADER"].includes(body.primaryRole) ? [{
-    scopeType: "BRANCH",
+    // Capture staff are confined to their Phòng/PGD; reviewers keep the whole branch.
+    // This used to be hard-coded to BRANCH, so departmentName was stored and never enforced.
+    scopeType: branchScopeTypeForRole(body.primaryRole),
     orgUnitId: branch?.id,
     orgUnitCode: branch?.code,
     clusterName: cluster?.name,
@@ -6215,6 +6462,7 @@ app.patch("/api/v1/admin/users/:id", async (req) => {
   if (process.env.AUTH_MODE === "supabase" && supabaseAuthAdapter && user.authUserId) {
     await supabaseAuthAdapter.updateUser(user.authUserId, {
       ...body.email ? { email: body.email.toLocaleLowerCase("en-US"), email_confirm: true } : {},
+      ...body.fullName !== void 0 ? { user_metadata: { full_name: body.fullName } } : {},
       ...body.isActive !== void 0 ? { ban_duration: body.isActive ? "none" : "876000h" } : {}
     });
   }
@@ -6222,6 +6470,9 @@ app.patch("/api/v1/admin/users/:id", async (req) => {
   if (body.username) user.username = body.username.toLocaleLowerCase("vi-VN");
   if (body.fullName !== void 0) user.fullName = body.fullName;
   if (body.phone !== void 0) user.phone = body.phone;
+  if (body.googleWorkspaceEmail !== void 0) {
+    user.googleWorkspaceEmail = body.googleWorkspaceEmail ? body.googleWorkspaceEmail.toLocaleLowerCase("en-US") : void 0;
+  }
   if (body.isActive !== void 0) user.isActive = body.isActive;
   if (body.isActive === false) {
     const revokedSessions = authSessionStore.revokeAllForUser(user.id);
@@ -6250,12 +6501,57 @@ app.delete("/api/v1/admin/users/:id", async (req, reply) => {
   await persistLocalState();
   return reply.code(204).send();
 });
+function securitySettingsResponse() {
+  const configured = new Set(authenticatorCredentials.map((item) => item.userId));
+  const covered = appUsers.filter((user) => user.isActive && mfaPolicyCovers(securitySettings.mfaPolicy, user.portal));
+  return {
+    settings: securitySettings,
+    coveredUserCount: covered.length,
+    pendingEnrolment: covered.filter((user) => !configured.has(user.id)).map((user) => ({ id: user.id, fullName: user.fullName, email: user.email, portal: user.portal })),
+    enrolment: appUsers.filter((user) => user.isActive).map((user) => ({
+      id: user.id,
+      fullName: user.fullName,
+      email: user.email,
+      portal: user.portal,
+      configured: configured.has(user.id),
+      covered: mfaPolicyCovers(securitySettings.mfaPolicy, user.portal)
+    })).sort((a, b) => Number(b.covered) - Number(a.covered) || Number(a.configured) - Number(b.configured) || a.fullName.localeCompare(b.fullName, "vi"))
+  };
+}
+app.get("/api/v1/admin/security-settings", async (req) => {
+  requireAdmin(getCurrentUser(req));
+  return securitySettingsResponse();
+});
+app.put("/api/v1/admin/security-settings", async (req) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = SecuritySettingsSchema.parse(req.body);
+  const previous = securitySettings.mfaPolicy;
+  securitySettings = {
+    mfaPolicy: body.mfaPolicy,
+    updatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    updatedByUserId: actor.id,
+    updatedByName: actor.fullName
+  };
+  applyAuthenticatorProjection();
+  recordUserSecurityEvent(req, actor, {
+    type: "ADMIN_MFA_POLICY_CHANGED",
+    outcome: "SUCCESS",
+    subject: actor.username,
+    detail: `\u0110\u1ED5i ch\xEDnh s\xE1ch Google Authenticator: ${mfaPolicyLabels[previous]} \u2192 ${mfaPolicyLabels[body.mfaPolicy]}.`
+  });
+  await persistLocalState();
+  return securitySettingsResponse();
+});
 app.put("/api/v1/admin/users/:id/authenticator", async (req) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
   const body = UpdateAuthenticatorSchema.parse(req.body);
   const user = appUsers.find((item) => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
+  if (!body.enabled && mfaPolicyCovers(securitySettings.mfaPolicy, user.portal)) {
+    throw new HttpProblem(409, "MFA_REQUIRED_BY_POLICY", "Ch\xEDnh s\xE1ch \u0111ang b\u1EAFt bu\u1ED9c Authenticator", `Kh\xF4ng th\u1EC3 thu h\u1ED3i m\xE3 c\u1EE7a ${user.fullName} khi ch\xEDnh s\xE1ch h\u1EC7 th\u1ED1ng l\xE0 \u201C${mfaPolicyLabels[securitySettings.mfaPolicy]}\u201D. H\xE3y \u0111\u1ED5i ch\xEDnh s\xE1ch tr\u01B0\u1EDBc.`);
+  }
   let setup;
   const existing = authenticatorCredentials.find((item) => item.userId === user.id);
   if (body.enabled) {
@@ -6268,11 +6564,9 @@ app.put("/api/v1/admin/users/:id/authenticator", async (req) => {
       });
       setup = { secret, otpauthUri: buildOtpAuthUri(secret, user.email) };
     }
-    user.authenticatorRequired = true;
     user.authenticatorConfigured = true;
   } else {
     authenticatorCredentials = authenticatorCredentials.filter((item) => item.userId !== user.id);
-    user.authenticatorRequired = false;
     user.authenticatorConfigured = false;
     const revokedSessions = authSessionStore.revokeAllForUser(user.id);
     authSessions = authSessionStore.records();
@@ -6280,7 +6574,7 @@ app.put("/api/v1/admin/users/:id/authenticator", async (req) => {
       type: "ADMIN_AUTHENTICATOR_TOGGLED",
       outcome: "SUCCESS",
       subject: user.username,
-      detail: `T\u1EAFt y\xEAu c\u1EA7u Google Authenticator cho ${user.fullName}; thu h\u1ED3i ${revokedSessions} phi\xEAn.`
+      detail: `Thu h\u1ED3i m\xE3 Google Authenticator c\u1EE7a ${user.fullName}; thu h\u1ED3i ${revokedSessions} phi\xEAn.`
     });
     await persistLocalState();
     return { user };
@@ -6289,7 +6583,7 @@ app.put("/api/v1/admin/users/:id/authenticator", async (req) => {
     type: "ADMIN_AUTHENTICATOR_TOGGLED",
     outcome: "SUCCESS",
     subject: user.username,
-    detail: `B\u1EADt y\xEAu c\u1EA7u Google Authenticator cho ${user.fullName}.`
+    detail: `C\u1EA5p m\xE3 thi\u1EBFt l\u1EADp Google Authenticator cho ${user.fullName}.`
   });
   await persistLocalState();
   return { user, ...setup ? { setup } : {} };
@@ -6323,6 +6617,24 @@ app.post("/api/v1/admin/users/:id/password", async (req) => {
   authSessions = authSessionStore.records();
   await persistLocalState();
   return { user, temporaryPassword };
+});
+app.post("/api/v1/admin/users/:id/password-reset-email", async (req, reply) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const user = appUsers.find((item) => item.id === req.params.id);
+  if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
+  if (process.env.AUTH_MODE !== "supabase" || !supabaseAuthAdapter) {
+    throw new HttpProblem(503, "SUPABASE_AUTH_NOT_CONFIGURED", "Supabase Auth ch\u01B0a s\u1EB5n s\xE0ng", "Ch\u1EC9 c\xF3 th\u1EC3 g\u1EEDi email reset khi Supabase Auth \u0111\xE3 \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh.");
+  }
+  const baseUrl = process.env.APP_BASE_URL?.trim() || `${req.protocol}://${req.headers.host ?? "localhost"}`;
+  await supabaseAuthAdapter.sendPasswordReset(user.email.toLocaleLowerCase("en-US"), `${baseUrl}/reset-password`);
+  recordUserSecurityEvent(req, actor, {
+    type: "ADMIN_USER_PASSWORD_RESET_EMAIL_SENT",
+    outcome: "SUCCESS",
+    subject: user.username,
+    detail: `G\u1EEDi email \u0111\u1EB7t l\u1EA1i m\u1EADt kh\u1EA9u t\u1EDBi ${user.email}.`
+  });
+  return reply.code(204).send();
 });
 app.get("/api/v1/admin/channels", async (req) => {
   requireCatalogManager(getCurrentUser(req));

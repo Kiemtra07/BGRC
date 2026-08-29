@@ -9,6 +9,34 @@ export class CampaignDocumentImportError extends Error {
   }
 }
 
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_ZIP_ENTRIES = 2_000;
+const MAX_ZIP_UNCOMPRESSED_BYTES = 20 * 1024 * 1024;
+const MAX_ZIP_COMPRESSION_RATIO = 100;
+const MAX_PDF_PAGES = 100;
+const MAX_EXTRACTED_TEXT_BYTES = 5 * 1024 * 1024;
+
+function assertUploadSize(buffer: Buffer): void {
+  if (buffer.length > MAX_UPLOAD_BYTES) throw new CampaignDocumentImportError('Tệp tải lên vượt quá giới hạn 25 MB.');
+}
+
+function assertSafeZip(zip: JSZip): void {
+  const entries = Object.values(zip.files);
+  if (entries.length > MAX_ZIP_ENTRIES) throw new CampaignDocumentImportError('Tệp nén chứa quá nhiều mục dữ liệu.');
+  let totalUncompressed = 0;
+  for (const entry of entries) {
+    const item = entry as unknown as { dir?: boolean; _data?: { compressedSize?: number; uncompressedSize?: number } };
+    const metadata = item._data;
+    const compressed = metadata?.compressedSize ?? 0;
+    const uncompressed = metadata?.uncompressedSize ?? 0;
+    totalUncompressed += uncompressed;
+    if (!item.dir && compressed > 0 && uncompressed / compressed > MAX_ZIP_COMPRESSION_RATIO) {
+      throw new CampaignDocumentImportError('Tệp nén có tỷ lệ giải nén bất thường.');
+    }
+  }
+  if (totalUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES) throw new CampaignDocumentImportError('Nội dung giải nén vượt quá giới hạn an toàn.');
+}
+
 type DraftFields = CampaignImportDraft['draft'];
 
 const labels: Record<keyof DraftFields, string[]> = {
@@ -106,9 +134,11 @@ async function extractDocxLines(buffer: Buffer): Promise<string[]> {
   } catch {
     throw new CampaignDocumentImportError('Tệp DOCX không hợp lệ hoặc không thể mở.');
   }
+  assertSafeZip(zip);
   const source = zip.file('word/document.xml');
   if (!source) throw new CampaignDocumentImportError('Tệp DOCX không có nội dung văn bản để trích xuất.');
   const xml = await source.async('string');
+  if (Buffer.byteLength(xml, 'utf8') > MAX_EXTRACTED_TEXT_BYTES) throw new CampaignDocumentImportError('Văn bản DOCX vượt quá giới hạn trích xuất.');
   return (xml.match(/<w:p\b[\s\S]*?<\/w:p>/g) ?? [])
     .map(paragraph => cleanText(decodeXml(paragraph
       .replace(/<w:tab\s*\/>/g, ' ')
@@ -122,11 +152,16 @@ async function extractPdfLines(buffer: Buffer): Promise<string[]> {
   try {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+    if (document.numPages > MAX_PDF_PAGES) throw new CampaignDocumentImportError('PDF vượt quá giới hạn 100 trang.');
+    let extractedBytes = 0;
     const pages = await Promise.all(Array.from({ length: document.numPages }, async (_, index) => {
       const content = await (await document.getPage(index + 1)).getTextContent();
-      return content.items.map(item => 'str' in item ? item.str : '').join(' ');
+      const text = cleanText(content.items.map(item => 'str' in item ? item.str : '').join(' '));
+      extractedBytes += Buffer.byteLength(text, 'utf8');
+      if (extractedBytes > MAX_EXTRACTED_TEXT_BYTES) throw new CampaignDocumentImportError('Văn bản PDF vượt quá giới hạn trích xuất.');
+      return text;
     }));
-    return pages.map(cleanText).filter(Boolean);
+    return pages.filter(Boolean);
   } catch {
     throw new CampaignDocumentImportError('Không thể đọc văn bản trong PDF. Nếu đây là bản scan, hãy dùng PDF có OCR hoặc nhập thủ công.');
   }
@@ -162,7 +197,17 @@ async function extractExcelDraft(buffer: Buffer): Promise<DraftFields> {
 
 export async function extractCampaignImportDraft(fileName: string, buffer: Buffer): Promise<CampaignImportDraft> {
   if (!buffer.length) throw new CampaignDocumentImportError('Tệp tải lên đang trống.');
+  assertUploadSize(buffer);
   const kind = documentKind(fileName);
+  if (kind === 'EXCEL' && fileName.trim().toLowerCase().endsWith('.xlsx')) {
+    try {
+      const zip = await JSZip.loadAsync(buffer);
+      assertSafeZip(zip);
+    } catch (error) {
+      if (error instanceof CampaignDocumentImportError) throw error;
+      throw new CampaignDocumentImportError('Tệp XLSX không hợp lệ hoặc không thể mở.');
+    }
+  }
   const draft = kind === 'EXCEL'
     ? await extractExcelDraft(buffer)
     : textDraft(kind === 'DOCX' ? await extractDocxLines(buffer) : await extractPdfLines(buffer));

@@ -30,7 +30,9 @@ export interface SupabaseAuthSession {
 
 export interface SupabaseAuthAdapter {
   verifyAccessToken(accessToken: string): Promise<SupabaseAuthUser | null>;
+  signOut(accessToken: string): Promise<void>;
   signInWithPassword(email: string, password: string): Promise<SupabaseAuthSession>;
+  refreshSession(refreshToken: string): Promise<SupabaseAuthSession>;
   changePassword(accessToken: string, password: string): Promise<void>;
   createUser(attributes: SupabaseAuthUserAttributes): Promise<SupabaseAuthUser>;
   inviteUser(email: string, options?: { userMetadata?: Record<string, unknown>; redirectTo?: string }): Promise<SupabaseAuthUser>;
@@ -114,6 +116,26 @@ export function createSupabaseAuthAdapter(options: AdapterOptions): SupabaseAuth
         expiresIn: response.expires_in,
         user: response.user,
       };
+    },
+    async refreshSession(refreshToken) {
+      const response = await request<{
+        access_token: string;
+        refresh_token: string;
+        expires_in: number;
+        user: SupabaseAuthUser;
+      }>('/auth/v1/token?grant_type=refresh_token', {
+        method: 'POST',
+        body: JSON.stringify({ refresh_token: refreshToken }),
+      }, publishableKey);
+      return {
+        accessToken: response.access_token,
+        refreshToken: response.refresh_token,
+        expiresIn: response.expires_in,
+        user: response.user,
+      };
+    },
+    async signOut(accessToken) {
+      await request<void>('/auth/v1/logout', { method: 'POST' }, publishableKey, accessToken);
     },
     async changePassword(accessToken, password) {
       await request<void>('/auth/v1/user', {

@@ -78,7 +78,9 @@ describe('Admin user organization management', () => {
       branchName: 'Chi nhánh Nam Buôn Hồ',
       department: 'Phòng QLKH 1',
       primaryRole: 'BRANCH_INPUT',
-      scopes: [{ scopeType: 'BRANCH', orgUnitCode: '635' }],
+      // Capture staff are confined to their own Phòng/PGD. This used to be 'BRANCH', which stored
+      // departmentName and never enforced it, so one phòng could read every phòng in the branch.
+      scopes: [{ scopeType: 'DEPARTMENT', orgUnitCode: '635', departmentName: 'Phòng QLKH 1' }],
     });
   });
 
@@ -145,5 +147,18 @@ describe('Admin user organization management', () => {
     expect(first.json().temporaryPassword).toEqual(expect.any(String));
     expect(duplicate.statusCode).toBe(409);
     expect(duplicate.json()).toMatchObject({ code: 'INTERNAL_TEAM_LEAD_EXISTS' });
+  });
+
+  it('exposes an admin-only password reset email action', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/users/user-internal-officer/password-reset-email',
+      headers: adminHeaders,
+    });
+
+    // The test runtime has no Supabase mail adapter; the route must still exist and fail honestly
+    // instead of silently pretending an email was sent.
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ code: 'SUPABASE_AUTH_NOT_CONFIGURED' });
   });
 });

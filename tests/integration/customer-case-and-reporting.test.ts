@@ -224,10 +224,13 @@ describe('customer case, branch control, import and reporting', () => {
     expect(response.statusCode).toBe(201);
     expect(response.json()).toMatchObject({ customerCount: 1, findingCount: 2, duplicateCount: 0 });
 
+    // Read as kiểm soát chi nhánh: the imported rows sit in PGD Nam Buôn Hồ 1 while
+    // user-branch-635 is scoped to Phòng QLKH 1. This test is about import grouping, and a
+    // reviewer is the role that legitimately sees every phòng of the branch.
     const customerCase = await app.inject({
       method: 'GET',
       url: '/api/v1/customers/CASE-IMPORT-01/case',
-      headers: { 'x-user-id': 'user-branch-635' },
+      headers: { 'x-user-id': 'user-branch-controller-635' },
     });
     const importedFindings = customerCase.json().findings;
     expect(importedFindings).toHaveLength(2);

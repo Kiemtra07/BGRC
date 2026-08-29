@@ -38,6 +38,16 @@ describe('UI and business terminology architecture', () => {
     expect(manager).not.toMatch(/Duyệt cấp cụm|Phê duyệt cụm|Trưởng cụm duyệt/);
   });
 
+  it('uses in-app user profile and password dialogs instead of browser prompts', () => {
+    const manager = read('src/components/admin/UserManager.tsx');
+    expect(manager).toContain('UserProfileEditModal');
+    expect(manager).toContain('UserPasswordModal');
+    expect(manager).toContain('Gửi email reset');
+    expect(manager).toContain('Mật khẩu ban đầu');
+    expect(manager).not.toContain("window.prompt('Họ và tên mới'");
+    expect(manager).toContain('onUserPasswordResetEmail');
+  });
+
   it('uses the required brand navigation color and bundled Roboto font', () => {
     const html = read('index.html');
     expect(read('src/index.css')).toContain('--brand-primary: #006b68');
@@ -198,7 +208,10 @@ describe('UI and business terminology architecture', () => {
     expect(detailSource).not.toContain('aria-modal="true"');
     expect(detailSource).toContain('aria-label="Thanh trượt mã lỗi"');
     expect(detailSource.indexOf('aria-label="Thanh trượt mã lỗi"')).toBeLessThan(detailSource.indexOf('</header>'));
-    expect(detailSource).toContain("xl:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)]");
+    // Evidence left, finding content right — the split must survive on laptops too, so the pair
+    // is pinned at both lg and xl. The content rail was widened 20% (320px -> 384px floor).
+    expect(detailSource).toContain("lg:grid-cols-[minmax(0,1.75fr)_minmax(360px,1fr)]");
+    expect(detailSource).toContain("xl:grid-cols-[minmax(0,2.33fr)_minmax(384px,1fr)]");
     expect(detailSource).toContain('onReview={reviewSubItems}');
     expect(detailSource).not.toContain('Cần ít nhất một tài liệu hợp lệ để đóng toàn bộ mã lỗi');
     expect(detailSource).toContain('Tiếp nhận công việc');
@@ -301,7 +314,7 @@ describe('UI and business terminology architecture', () => {
     const editor = read('src/components/admin/report-types/FormSchemaEditor.tsx');
     const runtimeForm = read('src/components/ingestion/WebFormFindingModal.tsx');
     const layout = read('src/components/reports/ReportFormBlockLayout.tsx');
-    expect(editor).toContain('Thư viện block');
+    expect(editor).toContain('Thư viện khối');
     expect(editor).toContain('Tạo từ Excel mẫu');
     expect(editor).toContain('Khung mẫu báo cáo');
     expect(editor).toContain('buildReportTemplateFromExcelRows');

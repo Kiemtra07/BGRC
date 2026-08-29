@@ -113,18 +113,18 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
     <div className="space-y-6 pb-12">
       
       {/* Top Banner & Quick Action */}
-      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-slate-200 shadow-sm">
+      <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4 bg-white p-6 rounded-2xl border border-rule shadow-panel">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Tổng Quan Khối Kiểm Tra & Giám Sát Nội Bộ
+              Tổng quan Khối Kiểm tra và Giám sát nội bộ
             </h1>
             <span className="px-3 py-1 rounded-full bg-brand-50 text-brand-700 text-xs font-bold border border-brand-200">
               Khối Nội Bộ
             </span>
           </div>
           <p className="text-xs text-slate-500 mt-1">
-            Theo dõi tiến độ xử lý sai sót tín dụng toàn quốc, phê duyệt bỏ lỗi và quản lý kho lưu trữ Google Drive tổng.
+            Theo dõi tiến độ xử lý sai sót tín dụng trên toàn hệ thống, phê duyệt đóng lỗi và quản lý kho Google Drive dùng chung.
           </p>
         </div>
 
@@ -133,31 +133,31 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
           className="inline-flex items-center gap-2 px-5 py-2.5 text-xs font-black text-white bg-brand-500 hover:bg-brand-600 rounded-xl shadow-brand transition transform hover:scale-[1.02] flex-shrink-0"
         >
           <FileSpreadsheet className="w-4 h-4 text-emerald-300" />
-          <span>Upload Lô Lỗi Siêu Tốc (Multi-Excel / Zip)</span>
+          <span>Nhập lô sai sót nhanh (nhiều tệp Excel hoặc ZIP)</span>
         </button>
       </div>
 
       {/* Waiting Internal Review Callout Banner */}
       {waitingInternalReview > 0 && (
-        <div className="p-4 rounded-2xl bg-sky-50 border border-sky-200 flex items-center justify-between">
+        <div className="p-4 rounded-2xl bg-info-surface border border-info-border flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2.5 rounded-xl bg-sky-600 text-white flex-shrink-0">
+            <div className="p-2.5 rounded-xl bg-info text-white flex-shrink-0">
               <ShieldCheck className="w-5 h-5" />
             </div>
             <div>
-              <h4 className="text-xs font-bold text-sky-950">
-                Có {waitingInternalReview} hồ sơ sai sót đã được Cụm Chi Nhánh phê duyệt và đẩy lên chờ Khối Nội Bộ duyệt bỏ lỗi!
+              <h4 className="text-xs font-bold text-info">
+                Có {waitingInternalReview} hồ sơ sai sót đã được cụm chi nhánh phê duyệt và chuyển lên chờ Khối Nội bộ đóng lỗi.
               </h4>
-              <p className="text-[11px] text-sky-700 mt-0.5">
+              <p className="text-[11px] text-info mt-0.5">
                 Vui lòng kiểm tra các tệp đính kèm trên Google Drive và thực hiện phê duyệt.
               </p>
             </div>
           </div>
           <button
             onClick={() => setFilterStatus('SUBMITTED_INTERNAL')}
-            className="px-4 py-1.5 text-xs font-bold text-sky-700 bg-white hover:bg-sky-100 border border-sky-200 rounded-xl transition flex-shrink-0 shadow-sm"
+            className="px-4 py-1.5 text-xs font-bold text-info bg-white hover:bg-info-surface border border-info-border rounded-xl transition flex-shrink-0 shadow-panel"
           >
-            Lọc Xem Ngay
+            Xem hồ sơ cần xử lý
           </button>
         </div>
       )}
@@ -165,7 +165,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
       {/* KPI Cards Row */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <KpiCard
-          title="Tổng Khách Hàng"
+          title="Tổng khách hàng"
           value={totalCustomers}
           subtitle="Hồ sơ được kiểm tra"
           icon={Users}
@@ -175,7 +175,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
           onClick={() => setFilterStatus('ALL')}
         />
         <KpiCard
-          title="Tổng Sai Sót"
+          title="Tổng sai sót"
           value={totalErrors}
           subtitle={`Tỷ lệ xử lý: ${resolutionRate}%`}
           icon={AlertOctagon}
@@ -183,7 +183,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
           iconColor="text-slate-700"
         />
         <KpiCard
-          title="Đã Bỏ Lỗi / Xong"
+          title="Đã đóng lỗi / hoàn tất"
           value={resolvedErrors}
           subtitle="Đã duyệt bỏ khỏi hệ thống"
           icon={CheckCircle2}
@@ -195,19 +195,19 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
           onClick={() => setFilterStatus('WAIVED_RESOLVED')}
         />
         <KpiCard
-          title="Chờ Khối Duyệt"
+          title="Chờ Khối Nội bộ duyệt"
           value={waitingInternalReview}
           subtitle="Cụm đã đẩy duyệt"
           icon={ShieldCheck}
-          iconBgColor="bg-sky-50"
-          iconColor="text-sky-600"
+          iconBgColor="bg-info-surface"
+          iconColor="text-info"
           badgeText="Cần xử lý"
           badgeType="info"
           isActive={filterStatus === 'SUBMITTED_INTERNAL'}
           onClick={() => setFilterStatus('SUBMITTED_INTERNAL')}
         />
         <KpiCard
-          title="Tồn Đọng / Quá Hạn"
+          title="Tồn đọng / quá hạn"
           value={pendingErrors}
           subtitle={`${overdueErrors} lỗi quá hạn SLA`}
           icon={Clock}
@@ -224,11 +224,11 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
         
         {/* Bar Chart: Errors by Group TD01-TD06 */}
-        <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="lg:col-span-7 bg-white p-5 rounded-2xl border border-rule shadow-panel">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-sm font-bold text-slate-900">
-                Phân Bố Sai Sót Theo Nhóm Nghiệp Vụ (TD01 - TD06)
+                 Phân bố sai sót theo nhóm nghiệp vụ (TD01–TD06)
               </h3>
               <p className="text-[11px] text-slate-500">So sánh số lượng phát sinh và tỷ lệ đã giải quyết</p>
             </div>
@@ -250,11 +250,11 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
         </div>
 
         {/* Bar Chart: Errors by Branch */}
-        <div className="lg:col-span-5 bg-white p-5 rounded-2xl border border-slate-200 shadow-sm">
+        <div className="lg:col-span-5 bg-white p-5 rounded-2xl border border-rule shadow-panel">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h3 className="text-sm font-bold text-slate-900">
-                Tiến Độ Xử Lý Theo Chi Nhánh
+                 Tiến độ xử lý theo chi nhánh
               </h3>
               <p className="text-[11px] text-slate-500">Số lỗi phát sinh và số lỗi đã duyệt bỏ</p>
             </div>
@@ -277,7 +277,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
       </div>
 
       {/* Filter & Search Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4 text-xs">
+      <div className="bg-white p-4 rounded-2xl border border-rule shadow-panel flex flex-col md:flex-row items-center justify-between gap-4 text-xs">
         
         {/* Search */}
         <div className="relative w-full md:w-80">
@@ -286,7 +286,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Tìm theo CIF, Tên KH, Chi nhánh, Mã sai sót..."
+            placeholder="Tìm theo CIF, tên khách hàng, chi nhánh hoặc mã sai sót..."
             className="w-full pl-9 pr-4 py-2 text-xs border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
           />
         </div>
@@ -333,8 +333,8 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
       </div>
 
       {/* Main Customers & Errors Table */}
-      <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <div className="px-6 py-4 border-b border-slate-200 bg-slate-50/50 flex items-center justify-between">
+      <div className="bg-white rounded-2xl border border-rule shadow-panel overflow-hidden">
+        <div className="px-6 py-4 border-b border-rule bg-slate-50/50 flex items-center justify-between">
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-bold text-slate-900">
               Danh Sách Hồ Sơ Khách Hàng & Sai Sót ({filteredCustomers.length})
@@ -347,7 +347,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
 
         <div className="overflow-x-auto">
           <table className="w-full text-left text-xs">
-            <thead className="bg-slate-100/70 text-slate-600 font-bold border-b border-slate-200">
+            <thead className="bg-slate-100/70 text-slate-600 font-bold border-b border-rule">
               <tr>
                 <th className="p-3.5">Khách Hàng / CIF</th>
                 <th className="p-3.5">Đơn Vị & Cụm</th>
@@ -407,7 +407,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
                                   isResolved
                                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200 line-through opacity-70'
                                     : isWaiting
-                                    ? 'bg-sky-50 text-sky-700 border-sky-300 ring-1 ring-sky-300'
+                                    ? 'bg-info-surface text-info border-info-border ring-1 ring-sky-300'
                                     : 'bg-red-50 text-red-700 border-red-200'
                                 }`}
                                 title={err.errorTitle}
@@ -438,8 +438,8 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
                             <CheckCircle2 className="w-3 h-3" /> Đã Bỏ Toàn Bộ Lỗi
                           </span>
                         ) : hasWaitingInternal ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-sky-50 text-sky-800 border border-sky-200">
-                            <ShieldCheck className="w-3 h-3 text-sky-600" /> Chờ Khối Duyệt Bỏ Lỗi
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-info-surface text-info border border-info-border">
+                            <ShieldCheck className="w-3 h-3 text-info" /> Chờ Khối Duyệt Bỏ Lỗi
                           </span>
                         ) : (
                           <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[11px] font-bold bg-amber-50 text-amber-800 border border-amber-200">
@@ -452,7 +452,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
                       <td className="p-3.5 text-right">
                         <button
                           onClick={() => onSelectCustomer(cust)}
-                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-xl transition shadow-sm"
+                          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-bold text-brand-700 bg-brand-50 hover:bg-brand-100 border border-brand-200 rounded-xl transition shadow-panel"
                         >
                           <Eye className="w-3.5 h-3.5" />
                           <span>Chi Tiết & Duyệt</span>

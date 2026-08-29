@@ -83,11 +83,11 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
     <div className="space-y-6 pb-12">
       
       {/* Top Branch Header Banner */}
-      <div className="bg-white p-6 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="bg-white p-6 rounded-2xl border border-rule shadow-panel flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
             <h1 className="text-2xl font-black text-slate-900 tracking-tight">
-              Cổng Quản Lý Sai Sót Cụm Chi Nhánh
+              Cổng quản lý sai sót cụm chi nhánh
             </h1>
             <span className="px-3 py-1 rounded-full bg-brand-50 text-brand-700 text-xs font-bold border border-brand-200">
               {currentUser.clusterName || 'Cụm Tây Nguyên'}
@@ -99,7 +99,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
         </div>
 
         {/* Cluster / Branch Selector Bar */}
-        <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-slate-200">
+        <div className="flex items-center gap-2 bg-slate-50 p-1.5 rounded-xl border border-rule">
           <Building2 className="w-4 h-4 text-brand-600 ml-2" />
           <select
             value={selectedBranch}
@@ -132,7 +132,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
         <div className="text-xs text-amber-900 leading-relaxed">
           <p className="font-bold mb-0.5">Quy định lưu trữ & phân quyền Google Drive:</p>
           <p>
-            User Nhập liệu Chi nhánh tải lên hồ sơ sửa lỗi (.pdf, .docx, .xlsx) lên Google Drive tổng. Sau khi nhấn <strong>"Đẩy duyệt"</strong>, hồ sơ sẽ chuyển sang chế độ <strong>Khóa (Read-only)</strong> đối với Chi nhánh để đảm bảo tính toàn vẹn chứng từ. Chỉ Khối Nội Bộ mới có quyền xóa tệp.
+            Người nhập liệu tại chi nhánh tải hồ sơ sửa lỗi (.pdf, .docx, .xlsx) lên Google Drive dùng chung. Sau khi bấm <strong>"Đẩy duyệt"</strong>, hồ sơ sẽ bị khóa; chi nhánh chỉ được xem để bảo đảm chứng từ không bị thay đổi. Chỉ Khối Nội bộ được phép xóa tệp.
           </p>
         </div>
       </div>
@@ -140,7 +140,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
       {/* Branch KPI Cards */}
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
         <KpiCard
-          title="Tổng KH Chi Nhánh"
+          title="Tổng khách hàng của chi nhánh"
           value={branchCustomers.length}
           subtitle={selectedBranch}
           icon={Users}
@@ -150,7 +150,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
           onClick={() => setFilterStatus('ALL')}
         />
         <KpiCard
-          title="Tổng Lỗi Chi Nhánh"
+          title="Tổng sai sót của chi nhánh"
           value={totalBranchErrors}
           subtitle={`${resolvedBranchErrors} lỗi đã hoàn tất`}
           icon={AlertOctagon}
@@ -158,7 +158,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
           iconColor="text-slate-700"
         />
         <KpiCard
-          title="Cần Đính Kèm Hồ Sơ"
+          title="Cần đính kèm hồ sơ"
           value={pendingBranchInput}
           subtitle="Chưa tải tài liệu"
           icon={Clock}
@@ -170,24 +170,24 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
           onClick={() => setFilterStatus('PENDING')}
         />
         <KpiCard
-          title="Chờ Kiểm soát chi nhánh"
+          title="Chờ kiểm soát chi nhánh"
           value={waitingClusterApprove}
           subtitle="Đã nộp hồ sơ"
           icon={Send}
           iconBgColor="bg-amber-50"
           iconColor="text-amber-600"
-          badgeText="Chờ Kiểm soát CN"
+          badgeText="Chờ kiểm soát chi nhánh"
           badgeType="warning"
           isActive={filterStatus === 'SUBMITTED_BRANCH'}
           onClick={() => setFilterStatus('SUBMITTED_BRANCH')}
         />
         <KpiCard
-          title="Đã Gửi Khối Nội Bộ"
+          title="Đã gửi Khối Nội bộ"
           value={waitingInternal}
           subtitle="Chờ duyệt bỏ lỗi"
           icon={CheckCheck}
-          iconBgColor="bg-sky-50"
-          iconColor="text-sky-600"
+          iconBgColor="bg-info-surface"
+          iconColor="text-info"
           badgeText="Chờ Khối"
           badgeType="info"
           isActive={filterStatus === 'SUBMITTED_INTERNAL'}
@@ -196,14 +196,14 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
       </div>
 
       {/* Search & Filter Bar */}
-      <div className="bg-white p-4 rounded-2xl border border-slate-200 shadow-sm flex flex-col md:flex-row items-center justify-between gap-4 text-xs">
+      <div className="bg-white p-4 rounded-2xl border border-rule shadow-panel flex flex-col md:flex-row items-center justify-between gap-4 text-xs">
         <div className="relative w-full md:w-80">
           <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Tìm theo CIF, Tên Khách Hàng, Mã lỗi..."
+            placeholder="Tìm theo CIF, tên khách hàng hoặc mã lỗi..."
             className="w-full pl-9 pr-4 py-2 text-xs border border-slate-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-brand-500/20 focus:border-brand-500"
           />
         </div>
@@ -229,7 +229,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
           </button>
           <button
             onClick={() => setFilterStatus('SUBMITTED_INTERNAL')}
-            className={`px-3 py-1.5 rounded-xl font-bold transition ${filterStatus === 'SUBMITTED_INTERNAL' ? 'bg-sky-500 text-white' : 'bg-sky-50 text-sky-700'}`}
+            className={`px-3 py-1.5 rounded-xl font-bold transition ${filterStatus === 'SUBMITTED_INTERNAL' ? 'bg-info-surface0 text-white' : 'bg-info-surface text-info'}`}
           >
             Đã Gửi Khối ({waitingInternal})
           </button>
@@ -239,7 +239,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
       {/* Customer & Error Grid */}
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
         {displayedCustomers.length === 0 ? (
-          <div className="col-span-3 bg-white rounded-2xl border border-slate-200 p-12 text-center text-slate-500 text-xs">
+          <div className="col-span-3 bg-white rounded-2xl border border-rule p-12 text-center text-slate-500 text-xs">
             Không có hồ sơ nào thuộc điều kiện lọc.
           </div>
         ) : (
@@ -253,7 +253,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
             return (
               <div
                 key={cust.id}
-                className="bg-white rounded-2xl border border-slate-200 p-5 shadow-sm hover:border-brand-400 hover:shadow-md transition flex flex-col justify-between"
+                className="bg-white rounded-2xl border border-rule p-5 shadow-panel hover:border-brand-400 hover:shadow-md transition flex flex-col justify-between"
               >
                 <div>
                   {/* Card Header */}
@@ -275,7 +275,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
                         Chờ Kiểm soát chi nhánh
                       </span>
                     ) : hasWaitingInternal ? (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-sky-100 text-sky-800 border border-sky-200">
+                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-info-surface text-info border border-info-border">
                         Chờ Khối Duyệt
                       </span>
                     ) : (
@@ -303,16 +303,16 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
 
                   {/* Errors Badges */}
                   <div className="mt-3">
-                    <span className="text-[10px] font-bold text-slate-400 uppercase block mb-1">
+                    <span className="text-[10px] font-bold text-slate-400 block mb-1">
                       Danh sách sai sót ({cust.errors.length}):
                     </span>
                     <div className="space-y-1.5">
                       {cust.errors.map(err => (
                         <div
                           key={err.id}
-                          className="flex items-center justify-between p-1.5 rounded-lg bg-slate-50 border border-slate-200 text-xs"
+                          className="flex items-center justify-between p-1.5 rounded-lg bg-slate-50 border border-rule text-xs"
                         >
-                          <span className="font-mono font-bold text-brand-700 bg-white px-1.5 py-0.5 rounded border border-slate-200 text-[10px]">
+                          <span className="font-mono font-bold text-brand-700 bg-white px-1.5 py-0.5 rounded border border-rule text-[10px]">
                             {err.errorCode}
                           </span>
                           <span className="text-[11px] text-slate-700 truncate max-w-[150px]" title={err.errorTitle}>
@@ -331,13 +331,13 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
                 <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between">
                   <div className="flex items-center gap-1 text-[11px] text-slate-500">
                     <HardDrive className="w-3.5 h-3.5 text-brand-600" />
-                    <span>{driveCount} file Drive</span>
+                    <span>{driveCount} tệp trên Drive</span>
                   </div>
                   <button
                     onClick={() => onSelectCustomer(cust)}
                     className="inline-flex items-center gap-1.5 px-3.5 py-1.5 text-xs font-bold text-white bg-brand-500 hover:bg-brand-600 rounded-xl shadow-brand transition transform hover:scale-[1.02]"
                   >
-                    <span>Xử Lý Hồ Sơ</span>
+                    <span>Xử lý hồ sơ</span>
                     <ArrowRight className="w-3.5 h-3.5" />
                   </button>
                 </div>

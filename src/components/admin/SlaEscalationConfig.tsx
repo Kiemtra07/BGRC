@@ -9,7 +9,7 @@ const slaPreview = [
 
 export const SlaEscalationConfig: React.FC = () => (
   <div className="space-y-6">
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="rounded-2xl border border-rule bg-white p-5 shadow-panel">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <h3 className="text-base font-bold text-slate-900">Chính sách SLA và cảnh báo</h3>
@@ -25,15 +25,15 @@ export const SlaEscalationConfig: React.FC = () => (
     </section>
 
     <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <section className="rounded-2xl border border-rule bg-white p-5 shadow-panel sm:p-6">
         <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900">
-          <Clock className="h-4 w-4 text-[#006b68]" />
+          <Clock className="h-4 w-4 text-brand-600" />
           Thời hạn xử lý dự kiến
         </h4>
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
           {slaPreview.map(item => (
             <article key={item.label} className={`rounded-xl border p-4 ${item.tone}`}>
-              <p className="text-[11px] font-bold uppercase tracking-wide">{item.label}</p>
+              <p className="text-[11px] font-bold">{item.label}</p>
               <p className="mt-2 text-2xl font-extrabold">{item.days}</p>
               <p className="text-[11px]">ngày làm việc</p>
             </article>
@@ -41,9 +41,9 @@ export const SlaEscalationConfig: React.FC = () => (
         </div>
       </section>
 
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:p-6">
+      <section className="rounded-2xl border border-rule bg-white p-5 shadow-panel sm:p-6">
         <h4 className="flex items-center gap-2 text-sm font-bold text-slate-900">
-          <Mail className="h-4 w-4 text-[#006b68]" />
+          <Mail className="h-4 w-4 text-brand-600" />
           Luồng cảnh báo dự kiến
         </h4>
         <dl className="mt-4 space-y-4 text-xs">

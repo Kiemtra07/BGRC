@@ -75,7 +75,7 @@ export function verifyTotpCode(secret: string, submittedCode: string, timestampM
   return false;
 }
 
-export function buildOtpAuthUri(secret: string, accountName: string, issuer = 'AuditBGS'): string {
+export function buildOtpAuthUri(secret: string, accountName: string, issuer = 'Audit Monitoring'): string {
   const normalizedSecret = secret.replace(/[=\s-]/g, '').toUpperCase();
   decodeBase32(normalizedSecret);
   const label = `${issuer}:${accountName}`;

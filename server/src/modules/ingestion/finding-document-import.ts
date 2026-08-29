@@ -20,6 +20,34 @@ export class FindingDocumentImportError extends Error {
   }
 }
 
+const MAX_UPLOAD_BYTES = 25 * 1024 * 1024;
+const MAX_ZIP_ENTRIES = 2_000;
+const MAX_ZIP_UNCOMPRESSED_BYTES = 20 * 1024 * 1024;
+const MAX_ZIP_COMPRESSION_RATIO = 100;
+const MAX_PDF_PAGES = 100;
+const MAX_EXTRACTED_TEXT_BYTES = 5 * 1024 * 1024;
+
+function assertUploadSize(buffer: Buffer): void {
+  if (buffer.length > MAX_UPLOAD_BYTES) throw new FindingDocumentImportError('Tệp tải lên vượt quá giới hạn 25 MB.');
+}
+
+function assertSafeZip(zip: JSZip): void {
+  const entries = Object.values(zip.files);
+  if (entries.length > MAX_ZIP_ENTRIES) throw new FindingDocumentImportError('Tệp nén chứa quá nhiều mục dữ liệu.');
+  let totalUncompressed = 0;
+  for (const entry of entries) {
+    const item = entry as unknown as { dir?: boolean; _data?: { compressedSize?: number; uncompressedSize?: number } };
+    const metadata = item._data;
+    const compressed = metadata?.compressedSize ?? 0;
+    const uncompressed = metadata?.uncompressedSize ?? 0;
+    totalUncompressed += uncompressed;
+    if (!item.dir && compressed > 0 && uncompressed / compressed > MAX_ZIP_COMPRESSION_RATIO) {
+      throw new FindingDocumentImportError('Tệp nén có tỷ lệ giải nén bất thường.');
+    }
+  }
+  if (totalUncompressed > MAX_ZIP_UNCOMPRESSED_BYTES) throw new FindingDocumentImportError('Nội dung giải nén vượt quá giới hạn an toàn.');
+}
+
 const decodeXml = (value: string): string => value
   .replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>')
   .replace(/&quot;/g, '"').replace(/&apos;/g, "'");
@@ -43,15 +71,18 @@ const aliases: Record<string, string[]> = {
 };
 
 export async function parseFindingDocx(buffer: Buffer): Promise<FindingDocumentRow[]> {
+  assertUploadSize(buffer);
   let zip: JSZip;
   try {
     zip = await JSZip.loadAsync(buffer);
   } catch {
     throw new FindingDocumentImportError('Tệp DOCX không hợp lệ hoặc không thể mở.');
   }
+  assertSafeZip(zip);
   const document = zip.file('word/document.xml');
   if (!document) throw new FindingDocumentImportError('Tệp DOCX không có nội dung để bóc tách.');
   const xml = await document.async('string');
+  if (Buffer.byteLength(xml, 'utf8') > MAX_EXTRACTED_TEXT_BYTES) throw new FindingDocumentImportError('Văn bản DOCX vượt quá giới hạn trích xuất.');
   const tables = xml.match(/<w:tbl\b[\s\S]*?<\/w:tbl>/g) ?? [];
   for (const table of tables) {
     const rows = (table.match(/<w:tr\b[\s\S]*?<\/w:tr>/g) ?? [])
@@ -93,13 +124,19 @@ export async function parseFindingDocx(buffer: Buffer): Promise<FindingDocumentR
  * PDFs return a clear validation error and can still be uploaded as evidence after manual entry.
  */
 export async function parseFindingPdf(buffer: Buffer): Promise<FindingDocumentRow[]> {
+  assertUploadSize(buffer);
   try {
     const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
     const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+    if (document.numPages > MAX_PDF_PAGES) throw new FindingDocumentImportError('PDF vượt quá giới hạn 100 trang.');
+    let extractedBytes = 0;
     const pages = await Promise.all(Array.from({ length: document.numPages }, async (_, index) => {
       const page = await document.getPage(index + 1);
       const content = await page.getTextContent();
-      return cleanPdfText(content.items.map(item => 'str' in item ? item.str : '').join(' '));
+      const text = cleanPdfText(content.items.map(item => 'str' in item ? item.str : '').join(' '));
+      extractedBytes += Buffer.byteLength(text, 'utf8');
+      if (extractedBytes > MAX_EXTRACTED_TEXT_BYTES) throw new FindingDocumentImportError('Văn bản PDF vượt quá giới hạn trích xuất.');
+      return text;
     }));
     const text = pages.filter(Boolean).join('\n');
     const rows: FindingDocumentRow[] = [];

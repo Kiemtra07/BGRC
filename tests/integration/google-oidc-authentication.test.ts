@@ -47,12 +47,36 @@ describe('Google OIDC authentication', () => {
   });
 
   it('creates the normal AuditBGS session for a provisioned Google email', async () => {
-    const response = await app.inject({ method: 'GET', url: '/api/v1/auth/google/callback?code=google-code&state=signed-state' });
+    const start = await app.inject({ method: 'GET', url: '/api/v1/auth/google?returnTo=/' });
+    const stateCookie = start.cookies.find(cookie => cookie.name === 'audit_bgs_oidc_state');
+    expect(stateCookie?.value).toBeTruthy();
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/google/callback?code=google-code&state=signed-state',
+      headers: { cookie: `audit_bgs_oidc_state=${stateCookie?.value}` },
+    });
 
     expect(response.statusCode).toBe(302);
     expect(response.headers.location).toBe('/');
     expect(oidc.exchangeCode).toHaveBeenCalledWith(expect.objectContaining({ code: 'google-code', state: 'signed-state' }));
     expect(response.cookies.find(cookie => cookie.name === 'audit_bgs_session')?.httpOnly).toBe(true);
+    expect(response.cookies.find(cookie => cookie.name === 'audit_bgs_oidc_state')?.maxAge).toBe(0);
+  });
+
+  it('rejects a callback when the browser state cookie is missing or mismatched', async () => {
+    const missing = await app.inject({ method: 'GET', url: '/api/v1/auth/google/callback?code=google-code&state=signed-state' });
+    expect(missing.statusCode).toBe(401);
+    expect(missing.json().code).toBe('GOOGLE_OIDC_STATE_MISMATCH');
+
+    const mismatched = await app.inject({
+      method: 'GET',
+      url: '/api/v1/auth/google/callback?code=google-code&state=signed-state',
+      headers: { cookie: 'audit_bgs_oidc_state=other-state' },
+    });
+    expect(mismatched.statusCode).toBe(401);
+    expect(mismatched.json().code).toBe('GOOGLE_OIDC_STATE_MISMATCH');
+    expect(oidc.exchangeCode).not.toHaveBeenCalled();
   });
 
   it('does not accept password login when Google OIDC mode is active', async () => {

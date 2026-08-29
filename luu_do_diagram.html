@@ -65,7 +65,7 @@
 <body>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2560 1800" role="img" aria-labelledby="diagramTitle diagramDesc">
   <title id="diagramTitle">Lưu đồ vận hành chi tiết hệ thống Audit BGS</title>
-  <desc id="diagramDesc">Luồng nghiệp vụ AuditBGS từ chuyên đề và loại báo cáo, nhập dữ liệu, chi nhánh khắc phục, kiểm soát chi nhánh, phê duyệt HT, cùng nhánh trả về, SLA, kho minh chứng và Audit Trail.</desc>
+  <desc id="diagramDesc">Luồng nghiệp vụ AuditBGS từ chuyên đề và loại báo cáo, nhập dữ liệu, chi nhánh khắc phục, kiểm soát chi nhánh, lãnh đạo chi nhánh theo tuyến, phê duyệt HT, cùng nhánh trả về, SLA, kho minh chứng và Audit Trail.</desc>
   <defs>
     <marker id="arrowBlue" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="10" markerHeight="10" orient="auto-start-reverse">
       <path d="M 0 0 L 12 6 L 0 12 z" fill="#2563eb"/>
@@ -91,7 +91,7 @@
   <text x="75" y="67" text-anchor="middle" font-size="20" font-weight="900" fill="#ffffff">BGS</text>
   <text x="128" y="42" class="eyebrow">AUDIT BGS SYSTEM</text>
   <text x="128" y="82" class="title">LƯU ĐỒ VẬN HÀNH CHI TIẾT - QUY TRÌNH KHẮC PHỤC &amp; PHÊ DUYỆT BỎ LỖI</text>
-  <text x="128" y="108" class="subtitle">Luồng gọn 1 cấp hoặc luồng kiểm soát 2 cấp • Có vòng trả về • SLA chạy song song</text>
+  <text x="128" y="108" class="subtitle">Luồng gọn 1 cấp • Luồng kiểm soát 2 cấp • Luồng có lãnh đạo 3 cấp • Dấu sao có thể chèn bước lãnh đạo</text>
 
   <g transform="translate(1970 32)">
     <rect x="0" y="0" width="168" height="34" rx="17" fill="#ecfdf5" stroke="#6ee7b7"/>
@@ -123,7 +123,7 @@
   <circle cx="1474" cy="192" r="17" fill="#d97706"/><text x="1474" y="198" text-anchor="middle" font-size="14" font-weight="900" fill="#fff">4</text>
   <text x="1500" y="190" class="lane-title">KIỂM SOÁT CHI NHÁNH</text><text x="1500" y="211" class="lane-subtitle">BRANCH CONTROLLER</text>
   <circle cx="1902" cy="192" r="17" fill="#7c3aed"/><text x="1902" y="198" text-anchor="middle" font-size="14" font-weight="900" fill="#fff">5</text>
-  <text x="1928" y="190" class="lane-title">PHÊ DUYỆT HT</text><text x="1928" y="211" class="lane-subtitle">INTERNAL APPROVER • SUPERVISOR</text>
+  <text x="1928" y="190" class="lane-title">TUYẾN PHÊ DUYỆT CẤP 2</text><text x="1928" y="211" class="lane-subtitle">BRANCH LEADER • INTERNAL APPROVER</text>
 
   <!-- Arrows rendered beneath nodes -->
   <g fill="none" stroke-linecap="round" stroke-linejoin="round">
@@ -143,8 +143,11 @@
     <path d="M1380 995 L1810 995 L1810 510 L1900 510" stroke="#059669" stroke-width="4" stroke-dasharray="10 8" marker-end="url(#arrowGreen)"/>
     <path d="M1646 650 L1646 1110 L948 1110 L948 515 L1010 515" stroke="#e11d48" stroke-width="5" marker-end="url(#arrowRed)"/>
     <path d="M1776 725 L1856 725 L1856 540 L1900 540" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
+    <path d="M1776 700 L1856 700 L1856 355 L1900 355" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
+    <path d="M2180 420 L2180 480" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
     <path d="M2180 600 L2180 658" stroke="#2563eb" stroke-width="5" marker-end="url(#arrowBlue)"/>
     <path d="M2070 735 L1840 735 L1840 1190 L926 1190 L926 530 L1010 530" stroke="#e11d48" stroke-width="5" marker-end="url(#arrowRed)"/>
+    <path d="M1900 355 L1818 355 L1818 1220 L926 1220 L926 530 L1010 530" stroke="#e11d48" stroke-width="4" marker-end="url(#arrowRed)"/>
     <path d="M2180 812 L2180 894" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
     <path d="M2180 994 L2180 1040" stroke="#059669" stroke-width="5" marker-end="url(#arrowGreen)"/>
   </g>
@@ -158,9 +161,11 @@
     <rect x="966" y="775" width="114" height="28" rx="8" fill="#fff1f2"/><text x="1023" y="794" text-anchor="middle" class="arrow-label">Thiếu hồ sơ</text>
     <rect x="1208" y="875" width="62" height="28" rx="8" fill="#ecfdf5"/><text x="1239" y="894" text-anchor="middle" class="arrow-label">Đủ</text>
     <rect x="1436" y="935" width="168" height="28" rx="8" fill="#eff6ff"/><text x="1520" y="954" text-anchor="middle" class="arrow-label">SUBMITTED_BRANCH</text>
-    <rect x="1642" y="968" width="154" height="28" rx="8" fill="#ecfdf5"/><text x="1719" y="987" text-anchor="middle" class="arrow-label">ONE_TIER → HT</text>
+    <rect x="1620" y="968" width="192" height="28" rx="8" fill="#ecfdf5"/><text x="1716" y="987" text-anchor="middle" class="arrow-label">ONE_TIER → HT</text>
+    <rect x="1640" y="382" width="280" height="28" rx="8" fill="#ecfdf5"/><text x="1780" y="401" text-anchor="middle" class="arrow-label">THREE_TIER / DẤU SAO → LÃNH ĐẠO</text>
     <rect x="1200" y="1080" width="320" height="28" rx="8" fill="#fff1f2"/><text x="1360" y="1099" text-anchor="middle" class="arrow-label">Kiểm soát trả về: Chi nhánh bổ sung và nộp lại</text>
-    <rect x="1780" y="690" width="164" height="28" rx="8" fill="#ecfdf5"/><text x="1862" y="709" text-anchor="middle" class="arrow-label">SUBMITTED_INTERNAL</text>
+    <rect x="1780" y="690" width="196" height="28" rx="8" fill="#ecfdf5"/><text x="1878" y="709" text-anchor="middle" class="arrow-label">TWO_TIER → SUBMITTED_INTERNAL</text>
+    <rect x="1750" y="428" width="228" height="28" rx="8" fill="#ecfdf5"/><text x="1864" y="447" text-anchor="middle" class="arrow-label">Lãnh đạo duyệt → Nội bộ</text>
     <rect x="1200" y="1160" width="440" height="28" rx="8" fill="#fff1f2"/><text x="1420" y="1179" text-anchor="middle" class="arrow-label">Phê duyệt HT trả về: Chi nhánh nộp lại theo luồng đã ghim</text>
     <rect x="2194" y="844" width="92" height="28" rx="8" fill="#ecfdf5"/><text x="2240" y="863" text-anchor="middle" class="arrow-label">Phê duyệt</text>
   </g>
@@ -201,19 +206,22 @@
   <polygon points="1195,748 1292,807 1195,866 1098,807" fill="#fffbeb" stroke="#f59e0b" stroke-width="3" filter="url(#softShadow)"/>
   <foreignObject x="1122" y="770" width="146" height="75"><div xmlns="http://www.w3.org/1999/xhtml" class="decision"><strong>Hồ sơ đủ?</strong><span>File + giải trình</span></div></foreignObject>
   <foreignObject x="1010" y="918" width="370" height="100">
-    <div xmlns="http://www.w3.org/1999/xhtml" class="card teal"><div class="card-head"><div class="step-no">8</div><div><div class="card-title">Gửi duyệt theo cấu hình</div><div class="card-role">Chi nhánh · 1 hoặc 2 cấp</div></div></div><span class="status">SUBMITTED_BRANCH / INTERNAL</span></div>
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card teal"><div class="card-head"><div class="step-no">8</div><div><div class="card-title">Gửi duyệt theo cấu hình</div><div class="card-role">Chi nhánh · 1, 2 hoặc 3 cấp</div></div></div><span class="status">SUBMITTED_BRANCH / INTERNAL</span></div>
   </foreignObject>
 
   <polygon points="1646,650 1776,725 1646,800 1516,725" fill="#fffbeb" stroke="#f59e0b" stroke-width="3" filter="url(#softShadow)"/>
   <foreignObject x="1550" y="678" width="192" height="100"><div xmlns="http://www.w3.org/1999/xhtml" class="decision"><strong>Kiểm soát đồng ý?</strong><span>Kiểm tra đủ từng ý, tài liệu và giải trình; trả về phải có lý do</span></div></foreignObject>
 
+  <foreignObject x="1900" y="270" width="560" height="150">
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card purple"><div class="card-head"><div class="step-no purple">9</div><div><div class="card-title">Lãnh đạo chi nhánh</div><div class="card-role">Chỉ có ở THREE_TIER hoặc TWO_TIER + dấu sao</div></div></div><ul><li>Kiểm tra lần cuối ở cấp chi nhánh trước khi chuyển Hội sở.</li><li>Đồng ý → <b>SUBMITTED_INTERNAL</b>; trả → <b>REJECTED</b>.</li></ul></div>
+  </foreignObject>
   <foreignObject x="1900" y="480" width="560" height="120">
-    <div xmlns="http://www.w3.org/1999/xhtml" class="card purple"><div class="card-head"><div class="step-no purple">9</div><div><div class="card-title">Phê duyệt HT</div><div class="card-role">Internal Approver / Supervisor</div></div></div><ul><li>Đối chiếu sai sót, tài liệu, kết quả kiểm soát và quy định.</li><li>Đóng lỗi hoặc trả chi nhánh bổ sung.</li></ul></div>
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card purple"><div class="card-head"><div class="step-no purple">10</div><div><div class="card-title">Phê duyệt HT</div><div class="card-role">Internal Approver / Supervisor</div></div></div><ul><li>Đối chiếu sai sót, tài liệu, kết quả kiểm soát và quy định.</li><li>Đóng lỗi hoặc trả chi nhánh bổ sung.</li></ul></div>
   </foreignObject>
   <polygon points="2180,658 2290,735 2180,812 2070,735" fill="#f5f3ff" stroke="#8b5cf6" stroke-width="3" filter="url(#softShadow)"/>
   <foreignObject x="2100" y="686" width="160" height="100"><div xmlns="http://www.w3.org/1999/xhtml" class="decision"><strong>Đủ điều kiện bỏ lỗi?</strong><span>Lãnh đạo phê duyệt cuối</span></div></foreignObject>
   <foreignObject x="1950" y="894" width="460" height="100">
-    <div xmlns="http://www.w3.org/1999/xhtml" class="card purple"><div class="card-head"><div class="step-no purple">10</div><div><div class="card-title">Phê duyệt bỏ lỗi &amp; đóng hồ sơ</div><div class="card-role">Final Approver</div></div></div><span class="status">WAIVED_RESOLVED</span></div>
+    <div xmlns="http://www.w3.org/1999/xhtml" class="card purple"><div class="card-head"><div class="step-no purple">11</div><div><div class="card-title">Phê duyệt bỏ lỗi &amp; đóng hồ sơ</div><div class="card-role">Final Approver</div></div></div><span class="status">WAIVED_RESOLVED</span></div>
   </foreignObject>
   <rect x="2080" y="1040" width="200" height="58" rx="29" fill="#059669" filter="url(#softShadow)"/>
   <text x="2180" y="1076" text-anchor="middle" font-size="16" font-weight="900" fill="#ffffff">HOÀN TẤT</text>

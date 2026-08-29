@@ -88,6 +88,11 @@ import {
   AuthSessionRecord,
   UpdateAuthenticatorSchema,
   UpdateAuthenticatorResponse,
+  SecuritySettings,
+  SecuritySettingsResponse,
+  SecuritySettingsSchema,
+  mfaPolicyCovers,
+  mfaPolicyLabels,
   SetWorkspacePrioritySchema,
   AuditCampaign,
   CreateAuditCampaignSchema,
@@ -113,6 +118,7 @@ import {
 } from './http/content-disposition';
 import { FullReportExport, renderReportHtml, renderReportXlsx } from './report-export';
 import {
+  branchScopeTypeForRole,
   hasFindingAccess,
   requireAdmin,
   requireRoles,
@@ -218,9 +224,34 @@ function cookieValue(request: FastifyRequest, name: string): string | undefined 
   for (const part of cookieHeader.split(';')) {
     const separator = part.indexOf('=');
     if (separator < 0) continue;
-    if (part.slice(0, separator).trim() === name) return decodeURIComponent(part.slice(separator + 1).trim());
+    if (part.slice(0, separator).trim() === name) {
+      try { return decodeURIComponent(part.slice(separator + 1).trim()); }
+      catch { return undefined; }
+    }
   }
   return undefined;
+}
+
+const OIDC_STATE_COOKIE = 'audit_bgs_oidc_state';
+const OIDC_STATE_TTL_SECONDS = 10 * 60;
+
+function setOidcStateCookie(reply: { header(name: string, value: string): unknown }, state: string): void {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  reply.header('set-cookie', `${OIDC_STATE_COOKIE}=${encodeURIComponent(state)}; Path=/api/v1/auth/google; HttpOnly; SameSite=Lax; Max-Age=${OIDC_STATE_TTL_SECONDS}${secure}`);
+}
+
+function clearOidcStateCookie(reply: { header(name: string, value: string): unknown }): void {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  reply.header('set-cookie', `${OIDC_STATE_COOKIE}=; Path=/api/v1/auth/google; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+}
+
+function assertOidcStateBound(request: FastifyRequest, state: string): void {
+  const cookie = cookieValue(request, OIDC_STATE_COOKIE);
+  const expected = Buffer.from(cookie ?? '', 'utf8');
+  const received = Buffer.from(state, 'utf8');
+  if (!cookie || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
+    throw new HttpProblem(401, 'GOOGLE_OIDC_STATE_MISMATCH', 'Phiên đăng nhập Google không hợp lệ', 'Hãy bắt đầu lại đăng nhập Google trong cùng trình duyệt.');
+  }
 }
 
 async function createAuthenticatedSession(user: UserProfile, reply: { header(name: string, value: string): unknown }): Promise<string> {
@@ -330,7 +361,11 @@ let orgUnits: OrgUnit[] = [
   { id: 'org-dept-635-pgd1', code: '635-PGD-NBH1', name: 'PGD Nam Buôn Hồ 1', type: 'DEPARTMENT', parentId: 'org-br-635', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
   { id: 'org-dept-635-control', code: '635-KSCN', name: 'Phòng Kiểm soát chi nhánh', type: 'DEPARTMENT', parentId: 'org-br-635', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
   { id: 'org-dept-428-control', code: '428-KSCN', name: 'Phòng Kiểm soát chi nhánh', type: 'DEPARTMENT', parentId: 'org-br-428', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  // Demo hồ sơ find-002 / find-003 name these phòng; without the org units they describe a
+  // department that does not exist, which department-level scoping cannot resolve.
+  { id: 'org-dept-428-qlkh2', code: '428-QLKH2', name: 'Phòng QLKH 2', type: 'DEPARTMENT', parentId: 'org-br-428', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
   { id: 'org-dept-102-control', code: '102-KSCN', name: 'Phòng Kiểm soát chi nhánh', type: 'DEPARTMENT', parentId: 'org-br-102', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  { id: 'org-dept-102-qlkh1', code: '102-QLKH1', name: 'Phòng QLKH 1', type: 'DEPARTMENT', parentId: 'org-br-102', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
 ];
 
 /**
@@ -938,6 +973,16 @@ function createDefaultReportCatalogConfiguration(): ReportCatalogConfiguration {
 
 let reportCatalogConfiguration = createDefaultReportCatalogConfiguration();
 
+/**
+ * System-wide security policy. MFA is deliberately not a per-account preference: the account
+ * that opts out is the one an attacker picks. Enrolment stays per user because TOTP needs one
+ * secret per person, but the requirement is decided here.
+ */
+function createDefaultSecuritySettings(): SecuritySettings {
+  return { mfaPolicy: 'DISABLED', updatedAt: new Date(0).toISOString() };
+}
+let securitySettings: SecuritySettings = createDefaultSecuritySettings();
+
 interface IdempotencyEntry {
   requestHash: string;
   response: unknown;
@@ -1007,7 +1052,9 @@ type SecurityEventType =
   | 'ADMIN_USER_DELETED'
   | 'ADMIN_USER_IMPORT_COMMITTED'
   | 'ADMIN_USER_PASSWORD_RESET'
+  | 'ADMIN_USER_PASSWORD_RESET_EMAIL_SENT'
   | 'ADMIN_AUTHENTICATOR_TOGGLED'
+  | 'ADMIN_MFA_POLICY_CHANGED'
   | 'ADMIN_GOOGLE_DRIVE_CONNECTED'
   | 'DATA_REPORT_EXPORTED'
   | 'DATA_EVIDENCE_DOWNLOADED';
@@ -1056,6 +1103,7 @@ interface LocalAppState {
   reportDefinitions: ReportDefinition[];
   dashboardDefinitions: DashboardDefinition[];
   reportCatalogConfiguration: ReportCatalogConfiguration;
+  securitySettings?: SecuritySettings;
   idempotencyRecords: Record<string, IdempotencyEntry>;
   findingFollows: FindingFollow[];
   workspaceAccepted: WorkspaceTargetRecord[];
@@ -1162,12 +1210,31 @@ const stateRepository = createStateRepository<LocalAppState>({
 
 const hydratedState = await stateRepository.load({
   orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
-  importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
+  importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows,
   workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
   credentials: credentialDirectory,
   authenticatorCredentials,
   googleDriveOAuthCredential, securityEvents, loginAttempts,
 });
+// A production process can be started against an older local snapshot that still contains
+// records from the opt-in demo seed. Never rehydrate those fabricated identities or business
+// records when demo seeding is disabled; the structural head-office root is kept separately.
+if (!DEMO_SEED_ENABLED) {
+  const demoUserIds = new Set(DEMO_SEED_IDS.users);
+  const demoOrgUnitIds = new Set(DEMO_SEED_IDS.orgUnits.filter(id => id !== 'org-ho'));
+  const demoCampaignIds = new Set(DEMO_SEED_IDS.campaigns);
+  const demoFindingIds = new Set(DEMO_SEED_IDS.findings);
+  hydratedState.appUsers = hydratedState.appUsers.filter(user => !demoUserIds.has(user.id));
+  hydratedState.orgUnits = hydratedState.orgUnits.filter(unit => !demoOrgUnitIds.has(unit.id));
+  hydratedState.auditCampaigns = (hydratedState.auditCampaigns ?? []).filter(campaign => !demoCampaignIds.has(campaign.id));
+  hydratedState.findings = hydratedState.findings.filter(finding => !demoFindingIds.has(finding.id));
+  hydratedState.credentials = (hydratedState.credentials ?? []).filter(entry => !demoUserIds.has(entry.userId));
+  hydratedState.authenticatorCredentials = (hydratedState.authenticatorCredentials ?? []).filter(entry => !demoUserIds.has(entry.userId));
+  hydratedState.authSessions = (hydratedState.authSessions ?? []).filter(session => !demoUserIds.has(session.userId));
+  hydratedState.securityEvents = (hydratedState.securityEvents ?? []).filter(event => !event.actorUserId || !demoUserIds.has(event.actorUserId));
+  hydratedState.workflowEvents = hydratedState.workflowEvents.filter(event => !demoFindingIds.has(event.findingId));
+  hydratedState.evidences = hydratedState.evidences.filter(evidence => !demoFindingIds.has(evidence.findingId));
+}
 orgUnits = ensureHeadOfficeOrgUnit(hydratedState.orgUnits);
 // Older production snapshots may predate the organization baseline and contain no root at all.
 // Restore only the structural head office; real admins can then add clusters, branches and
@@ -1207,6 +1274,7 @@ slaExtensions = hydratedState.slaExtensions;
 reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
 dashboardDefinitions = (hydratedState.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
 reportCatalogConfiguration = hydrateReportCatalogConfiguration(hydratedState.reportCatalogConfiguration);
+securitySettings = hydratedState.securitySettings ?? createDefaultSecuritySettings();
 idempotencyRecords = hydratedState.idempotencyRecords ?? {};
 findingFollows = hydratedState.findingFollows ?? [];
 workspaceAccepted = hydratedState.workspaceAccepted ?? [];
@@ -1223,12 +1291,54 @@ function applyAuthenticatorProjection(): void {
   const configured = new Set(authenticatorCredentials.map(item => item.userId));
   appUsers = appUsers.map(user => ({
     ...user,
-    authenticatorRequired: user.authenticatorRequired === true,
+    // Derived from the system policy, never from a per-account flag, so the profile the UI
+    // reads and the check the login performs can never disagree.
+    authenticatorRequired: mfaPolicyCovers(securitySettings.mfaPolicy, user.portal),
     authenticatorConfigured: configured.has(user.id),
   }));
 }
 
+/**
+ * Branch scope is derived from the role, every boot.
+ *
+ * Accounts created before department scoping existed were all stored as `BRANCH`, which let a
+ * cán bộ of one phòng read every phòng in the branch. Deriving instead of migrating once keeps
+ * the stored data and the rule from drifting apart, and no UI sets scopeType by hand for it to
+ * overwrite.
+ */
+function applyBranchScopeProjection(): void {
+  appUsers = appUsers.map(user => {
+    if (user.portal !== 'BRANCH') return user;
+    const expected = branchScopeTypeForRole(user.primaryRole);
+    const needsChange = user.scopes.some(scope => (
+      (scope.scopeType === 'BRANCH' || scope.scopeType === 'DEPARTMENT') && scope.scopeType !== expected
+    ));
+    if (!needsChange) return user;
+    return {
+      ...user,
+      scopes: user.scopes.map(scope => (
+        scope.scopeType === 'BRANCH' || scope.scopeType === 'DEPARTMENT'
+          ? { ...scope, scopeType: expected, departmentName: scope.departmentName ?? user.department }
+          : scope
+      )),
+    };
+  });
+}
+
+/**
+ * Does this account have to present a TOTP code? The system policy decides, and only the policy.
+ *
+ * Holding a secret must NOT by itself demand a code: that is the per-account MFA this system
+ * deliberately moved away from, and it makes the requirement depend on the order an admin
+ * happened to click rather than on a stated rule. Enrolment answers "can this person satisfy
+ * the requirement", never "is there one".
+ */
+function mfaRequiredFor(user: UserProfile): boolean {
+  return mfaPolicyCovers(securitySettings.mfaPolicy, user.portal);
+}
+
 applyAuthenticatorProjection();
+applyBranchScopeProjection();
 
 function googleOAuthStateSecret(): string {
   const secret = process.env.GOOGLE_OAUTH_STATE_SECRET;
@@ -1419,7 +1529,7 @@ function backfillFindingSpecialCase(): boolean {
 function currentLocalState(): LocalAppState {
   return {
     orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
-    importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, idempotencyRecords, findingFollows,
+    importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows,
     workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
     credentials: credentialDirectory,
     authenticatorCredentials,
@@ -1442,6 +1552,7 @@ function restoreDurableLocalState(restored: LocalAppState): void {
   reportDefinitions = restored.reportDefinitions.map(normalizeReportDefinition);
   dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
   reportCatalogConfiguration = hydrateReportCatalogConfiguration(restored.reportCatalogConfiguration);
+  securitySettings = restored.securitySettings ?? createDefaultSecuritySettings();
   idempotencyRecords = restored.idempotencyRecords ?? {};
   findingFollows = restored.findingFollows ?? [];
   workspaceAccepted = restored.workspaceAccepted ?? [];
@@ -1454,6 +1565,7 @@ function restoreDurableLocalState(restored: LocalAppState): void {
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
   if (restored.credentials?.length) credentialDirectory = restored.credentials;
   applyAuthenticatorProjection();
+  applyBranchScopeProjection();
   hydrateGoogleDriveOAuthCredential(restored.googleDriveOAuthCredential);
 }
 
@@ -1591,7 +1703,7 @@ function synchronizeUserDirectoryModel(): boolean {
         user.clusterName = cluster.name;
         user.orgUnitId = department?.id ?? branch.id;
         user.scopes = [{
-          scopeType: 'BRANCH',
+          scopeType: branchScopeTypeForRole(user.primaryRole),
           orgUnitId: branch.id,
           orgUnitCode: branch.code,
           clusterName: cluster.name,
@@ -2602,7 +2714,11 @@ app.get('/api/v1/auth/google', async (req: FastifyRequest<{ Querystring: { retur
     throw new HttpProblem(404, 'OIDC_NOT_ENABLED', 'Đăng nhập Google chưa được bật', 'Máy chủ hiện không dùng Google OIDC.');
   }
   try {
-    return reply.redirect(createAuthorizationUrl({ returnTo: req.query.returnTo ?? '/' }));
+    const authorizationUrl = createAuthorizationUrl({ returnTo: req.query.returnTo ?? '/' });
+    const state = new URL(authorizationUrl).searchParams.get('state');
+    if (!state) throw new Error('Google OIDC state is missing.');
+    setOidcStateCookie(reply, state);
+    return reply.redirect(authorizationUrl);
   } catch {
     throw new HttpProblem(503, 'OIDC_NOT_CONFIGURED', 'Đăng nhập Google chưa sẵn sàng', 'Quản trị viên cần hoàn tất cấu hình Google OIDC trên máy chủ.');
   }
@@ -2614,6 +2730,7 @@ app.get('/api/v1/auth/google/callback', async (req: FastifyRequest<{
   if (process.env.AUTH_MODE !== 'oidc') throw new HttpProblem(404, 'OIDC_NOT_ENABLED', 'Đăng nhập Google chưa được bật', 'Máy chủ hiện không dùng Google OIDC.');
   if (req.query.error) throw new HttpProblem(401, 'GOOGLE_OIDC_DENIED', 'Đăng nhập Google bị từ chối', 'Tài khoản Google không chấp thuận yêu cầu đăng nhập.');
   if (!req.query.code || !req.query.state) throw new HttpProblem(422, 'GOOGLE_OIDC_CALLBACK_INVALID', 'Callback Google không hợp lệ', 'Google không trả authorization code hoặc state.');
+  assertOidcStateBound(req, req.query.state);
 
   let oidc: Awaited<ReturnType<typeof exchangeCode>>;
   try {
@@ -2635,12 +2752,16 @@ app.get('/api/v1/auth/google/callback', async (req: FastifyRequest<{
     await persistLocalState();
     throw new HttpProblem(403, 'GOOGLE_OIDC_USER_NOT_PROVISIONED', 'Tài khoản Google chưa được cấp quyền', 'Quản trị viên cần tạo user và gán role cho email Google này trước.');
   }
+  if (mfaRequiredFor(user)) {
+    throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Tài khoản này yêu cầu Google Authenticator. Hãy dùng luồng đăng nhập hỗ trợ MFA hoặc tắt yêu cầu MFA cho đăng nhập Google.');
+  }
   recordUserSecurityEvent(req, user, {
     type: 'AUTH_OIDC_LOGIN_SUCCEEDED',
     outcome: 'SUCCESS',
     subject: email,
     detail: 'Đăng nhập bằng Google OIDC.',
   });
+  clearOidcStateCookie(reply);
   await createAuthenticatedSession(user, reply);
   return reply.redirect(oidc.returnTo);
 });
@@ -2652,6 +2773,7 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   }
   if (process.env.AUTH_MODE === 'supabase') {
     if (!supabaseAuthAdapter) throw new HttpProblem(503, 'SUPABASE_AUTH_NOT_CONFIGURED', 'Supabase Auth chưa sẵn sàng', 'Quản trị viên cần cấu hình SUPABASE_URL và SUPABASE_PUBLISHABLE_KEY.');
+    assertLoginBurstAllowed(Date.now());
     const credentials = LoginSchema.parse(req.body);
     const email = credentials.username.trim().toLocaleLowerCase('en-US');
     const user = appUsers.find(item => item.isActive && item.email.toLocaleLowerCase('en-US') === email);
@@ -2665,6 +2787,17 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
     if (session.user.id !== user.authUserId) {
       user.authUserId = session.user.id;
       await persistLocalState();
+    }
+    if (mfaRequiredFor(user)) {
+      const credential = authenticatorCredentials.find(item => item.userId === user.id);
+      const valid = credential && credentials.mfaCode
+        ? (() => {
+          try { return verifyTotpCode(decryptTotpSecret(credential.encryptedSecret, authenticatorEncryptionKey()), credentials.mfaCode, Date.now()); }
+          catch { return false; }
+        })()
+        : false;
+      await supabaseAuthAdapter.signOut(session.accessToken).catch(() => undefined);
+      if (!valid) throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator.');
     }
     recordUserSecurityEvent(req, user, {
       type: 'AUTH_LOGIN_SUCCEEDED',
@@ -2717,10 +2850,10 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
     throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
   }
 
-  if (user.authenticatorRequired) {
+  if (mfaRequiredFor(user)) {
     const credential = authenticatorCredentials.find(item => item.userId === user.id);
     if (!credential) {
-      throw new HttpProblem(503, 'MFA_SETUP_REQUIRED', 'Chưa hoàn tất Authenticator', 'Quản trị viên cần cấp lại mã thiết lập Google Authenticator cho tài khoản này.');
+      throw new HttpProblem(503, 'MFA_SETUP_REQUIRED', 'Chưa hoàn tất Authenticator', 'Quản trị viên cần cấp mã thiết lập Google Authenticator cho tài khoản này.');
     }
     let secret: string;
     try {
@@ -2770,6 +2903,8 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
 
 app.post('/api/v1/auth/logout', async (req, reply) => {
   if (process.env.AUTH_MODE === 'supabase') {
+    const accessToken = supabaseAccessToken(req);
+    if (accessToken && supabaseAuthAdapter) await supabaseAuthAdapter.signOut(accessToken).catch(() => undefined);
     clearSupabaseSessionCookies(reply);
     return reply.code(204).send();
   }
@@ -2795,14 +2930,55 @@ app.post('/api/v1/auth/logout', async (req, reply) => {
   return reply.code(204).send();
 });
 
+app.post('/api/v1/auth/refresh', async (req, reply) => {
+  if (process.env.AUTH_MODE !== 'supabase' || !supabaseAuthAdapter) {
+    throw new HttpProblem(404, 'SUPABASE_AUTH_NOT_ENABLED', 'Làm mới phiên chưa được bật', 'Máy chủ hiện không dùng Supabase Auth.');
+  }
+  const refreshToken = cookieValue(req, 'audit_bgs_supabase_refresh');
+  if (!refreshToken) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Phiên đăng nhập đã hết hạn', 'Vui lòng đăng nhập lại.');
+  let session: Awaited<ReturnType<SupabaseAuthAdapter['refreshSession']>>;
+  try {
+    session = await supabaseAuthAdapter.refreshSession(refreshToken);
+  } catch {
+    clearSupabaseSessionCookies(reply);
+    throw new HttpProblem(401, 'AUTH_REQUIRED', 'Phiên đăng nhập đã hết hạn', 'Vui lòng đăng nhập lại.');
+  }
+  const user = appUsers.find(item => item.isActive && (item.authUserId === session.user.id
+    || item.email.toLocaleLowerCase('en-US') === session.user.email?.toLocaleLowerCase('en-US')));
+  if (!user) {
+    await supabaseAuthAdapter.signOut(session.accessToken).catch(() => undefined);
+    clearSupabaseSessionCookies(reply);
+    throw new HttpProblem(401, 'AUTH_REQUIRED', 'Tài khoản không còn hoạt động', 'Vui lòng liên hệ quản trị viên.');
+  }
+  if (user.authUserId !== session.user.id) {
+    user.authUserId = session.user.id;
+    await persistLocalState();
+  }
+  setSupabaseSessionCookies(reply, session.accessToken, session.refreshToken, session.expiresIn);
+  return { user, expiresAt: new Date(Date.now() + session.expiresIn * 1000).toISOString() };
+});
+
 app.post('/api/v1/auth/forgot-password', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
   const body = z.object({ email: z.string().email(), redirectTo: z.string().url().optional() }).parse(req.body);
+  assertLoginBurstAllowed(Date.now());
   if (process.env.AUTH_MODE !== 'supabase' || !supabaseAuthAdapter) {
     // Do not disclose whether an account exists in legacy mode.
     return reply.code(204).send();
   }
   const baseUrl = process.env.APP_BASE_URL?.trim() || `${req.protocol}://${req.headers.host ?? 'localhost'}`;
-  await supabaseAuthAdapter.sendPasswordReset(body.email.toLocaleLowerCase('en-US'), body.redirectTo ?? `${baseUrl}/reset-password`);
+  const defaultRedirect = `${baseUrl.replace(/\/$/, '')}/reset-password`;
+  let redirectTo = defaultRedirect;
+  if (body.redirectTo) {
+    try {
+      const requested = new URL(body.redirectTo);
+      const allowed = new URL(defaultRedirect);
+      if (requested.origin !== allowed.origin || requested.pathname !== allowed.pathname) throw new Error('unsafe redirect');
+      redirectTo = requested.toString();
+    } catch {
+      throw new HttpProblem(422, 'PASSWORD_RESET_REDIRECT_INVALID', 'Địa chỉ khôi phục không hợp lệ', 'Liên kết khôi phục phải trỏ về trang reset của ứng dụng.');
+    }
+  }
+  await supabaseAuthAdapter.sendPasswordReset(body.email.toLocaleLowerCase('en-US'), redirectTo);
   return reply.code(204).send();
 });
 
@@ -3212,7 +3388,9 @@ async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Prom
 
   const scopes: UserProfile['scopes'] = ['BRANCH_INPUT', 'BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(body.primaryRole)
       ? [{
-          scopeType: 'BRANCH',
+          // Capture staff are confined to their Phòng/PGD; reviewers keep the whole branch.
+          // This used to be hard-coded to BRANCH, so departmentName was stored and never enforced.
+          scopeType: branchScopeTypeForRole(body.primaryRole),
           orgUnitId: branch?.id,
           orgUnitCode: branch?.code,
           clusterName: cluster?.name,
@@ -3345,6 +3523,7 @@ app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: 
   if (process.env.AUTH_MODE === 'supabase' && supabaseAuthAdapter && user.authUserId) {
     await supabaseAuthAdapter.updateUser(user.authUserId, {
       ...(body.email ? { email: body.email.toLocaleLowerCase('en-US'), email_confirm: true } : {}),
+      ...(body.fullName !== undefined ? { user_metadata: { full_name: body.fullName } } : {}),
       ...(body.isActive !== undefined ? { ban_duration: body.isActive ? 'none' : '876000h' } : {}),
     });
   }
@@ -3352,6 +3531,9 @@ app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: 
   if (body.username) user.username = body.username.toLocaleLowerCase('vi-VN');
   if (body.fullName !== undefined) user.fullName = body.fullName;
   if (body.phone !== undefined) user.phone = body.phone;
+  if (body.googleWorkspaceEmail !== undefined) {
+    user.googleWorkspaceEmail = body.googleWorkspaceEmail ? body.googleWorkspaceEmail.toLocaleLowerCase('en-US') : undefined;
+  }
   if (body.isActive !== undefined) user.isActive = body.isActive;
   if (body.isActive === false) {
     const revokedSessions = authSessionStore.revokeAllForUser(user.id);
@@ -3382,13 +3564,73 @@ app.delete('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id:
   return reply.code(204).send();
 });
 
-/** Bật/tắt bắt buộc Google Authenticator. Secret chỉ trả về đúng một lần khi bật lần đầu. */
+/** Chính sách bảo mật chung: quyết định ai phải nhập mã Google Authenticator khi đăng nhập. */
+function securitySettingsResponse(): SecuritySettingsResponse {
+  const configured = new Set(authenticatorCredentials.map(item => item.userId));
+  const covered = appUsers.filter(user => user.isActive && mfaPolicyCovers(securitySettings.mfaPolicy, user.portal));
+  return {
+    settings: securitySettings,
+    coveredUserCount: covered.length,
+    pendingEnrolment: covered
+      .filter(user => !configured.has(user.id))
+      .map(user => ({ id: user.id, fullName: user.fullName, email: user.email, portal: user.portal })),
+    enrolment: appUsers
+      .filter(user => user.isActive)
+      .map(user => ({
+        id: user.id,
+        fullName: user.fullName,
+        email: user.email,
+        portal: user.portal,
+        configured: configured.has(user.id),
+        covered: mfaPolicyCovers(securitySettings.mfaPolicy, user.portal),
+      }))
+      .sort((a, b) => Number(b.covered) - Number(a.covered) || Number(a.configured) - Number(b.configured) || a.fullName.localeCompare(b.fullName, 'vi')),
+  };
+}
+
+app.get('/api/v1/admin/security-settings', async (req) => {
+  requireAdmin(getCurrentUser(req));
+  return securitySettingsResponse();
+});
+
+app.put('/api/v1/admin/security-settings', async (req: FastifyRequest<{ Body: unknown }>) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = SecuritySettingsSchema.parse(req.body);
+  const previous = securitySettings.mfaPolicy;
+  securitySettings = {
+    mfaPolicy: body.mfaPolicy,
+    updatedAt: new Date().toISOString(),
+    updatedByUserId: actor.id,
+    updatedByName: actor.fullName,
+  };
+  applyAuthenticatorProjection();
+  recordUserSecurityEvent(req, actor, {
+    type: 'ADMIN_MFA_POLICY_CHANGED',
+    outcome: 'SUCCESS',
+    subject: actor.username,
+    detail: `Đổi chính sách Google Authenticator: ${mfaPolicyLabels[previous]} → ${mfaPolicyLabels[body.mfaPolicy]}.`,
+  });
+  await persistLocalState();
+  return securitySettingsResponse();
+});
+
+/**
+ * Cấp hoặc thu hồi mã thiết lập Google Authenticator cho một tài khoản.
+ * Việc *bắt buộc* nhập mã do chính sách chung quyết định; endpoint này chỉ lo phần ghi danh,
+ * vì mỗi người cần một secret riêng để quét QR. Secret chỉ trả về đúng một lần.
+ */
 app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
   const body = UpdateAuthenticatorSchema.parse(req.body);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
+  // Revoking the secret of an account the policy still covers would lock that person out at the
+  // next login with no way back in, so refuse instead of creating the dead end.
+  if (!body.enabled && mfaPolicyCovers(securitySettings.mfaPolicy, user.portal)) {
+    throw new HttpProblem(409, 'MFA_REQUIRED_BY_POLICY', 'Chính sách đang bắt buộc Authenticator', `Không thể thu hồi mã của ${user.fullName} khi chính sách hệ thống là “${mfaPolicyLabels[securitySettings.mfaPolicy]}”. Hãy đổi chính sách trước.`);
+  }
 
   let setup: UpdateAuthenticatorResponse['setup'];
   const existing = authenticatorCredentials.find(item => item.userId === user.id);
@@ -3402,11 +3644,9 @@ app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Pa
       });
       setup = { secret, otpauthUri: buildOtpAuthUri(secret, user.email) };
     }
-    user.authenticatorRequired = true;
     user.authenticatorConfigured = true;
   } else {
     authenticatorCredentials = authenticatorCredentials.filter(item => item.userId !== user.id);
-    user.authenticatorRequired = false;
     user.authenticatorConfigured = false;
     const revokedSessions = authSessionStore.revokeAllForUser(user.id);
     authSessions = authSessionStore.records();
@@ -3414,7 +3654,7 @@ app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Pa
       type: 'ADMIN_AUTHENTICATOR_TOGGLED',
       outcome: 'SUCCESS',
       subject: user.username,
-      detail: `Tắt yêu cầu Google Authenticator cho ${user.fullName}; thu hồi ${revokedSessions} phiên.`,
+      detail: `Thu hồi mã Google Authenticator của ${user.fullName}; thu hồi ${revokedSessions} phiên.`,
     });
     await persistLocalState();
     return { user } satisfies UpdateAuthenticatorResponse;
@@ -3424,7 +3664,7 @@ app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Pa
     type: 'ADMIN_AUTHENTICATOR_TOGGLED',
     outcome: 'SUCCESS',
     subject: user.username,
-    detail: `Bật yêu cầu Google Authenticator cho ${user.fullName}.`,
+    detail: `Cấp mã thiết lập Google Authenticator cho ${user.fullName}.`,
   });
   await persistLocalState();
   return { user, ...(setup ? { setup } : {}) } satisfies UpdateAuthenticatorResponse;
@@ -3462,6 +3702,26 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
   authSessions = authSessionStore.records();
   await persistLocalState();
   return { user, temporaryPassword } satisfies CreatedUserResponse;
+});
+
+/** Gửi email đặt lại mật khẩu qua Supabase Auth cho đúng email của tài khoản. */
+app.post('/api/v1/admin/users/:id/password-reset-email', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const user = appUsers.find(item => item.id === req.params.id);
+  if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
+  if (process.env.AUTH_MODE !== 'supabase' || !supabaseAuthAdapter) {
+    throw new HttpProblem(503, 'SUPABASE_AUTH_NOT_CONFIGURED', 'Supabase Auth chưa sẵn sàng', 'Chỉ có thể gửi email reset khi Supabase Auth đã được cấu hình.');
+  }
+  const baseUrl = process.env.APP_BASE_URL?.trim() || `${req.protocol}://${req.headers.host ?? 'localhost'}`;
+  await supabaseAuthAdapter.sendPasswordReset(user.email.toLocaleLowerCase('en-US'), `${baseUrl}/reset-password`);
+  recordUserSecurityEvent(req, actor, {
+    type: 'ADMIN_USER_PASSWORD_RESET_EMAIL_SENT',
+    outcome: 'SUCCESS',
+    subject: user.username,
+    detail: `Gửi email đặt lại mật khẩu tới ${user.email}.`,
+  });
+  return reply.code(204).send();
 });
 
 // Admin: Channels

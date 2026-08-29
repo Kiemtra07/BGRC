@@ -3,7 +3,14 @@ import { app } from '../../server/src/app';
 
 const adminHeaders = { 'x-user-id': 'user-admin' };
 
-async function createBranchUser(role: 'BRANCH_INPUT' | 'BRANCH_CONTROLLER', branchCode: string, email: string): Promise<string> {
+// Capture staff are scoped to their own Phòng/PGD, so a BRANCH_INPUT driving a hồ sơ has to sit
+// in that hồ sơ's phòng. Reviewers keep whole-branch scope and can stay in Phòng Kiểm soát.
+async function createBranchUser(
+  role: 'BRANCH_INPUT' | 'BRANCH_CONTROLLER',
+  branchCode: string,
+  email: string,
+  department = 'Phòng Kiểm soát chi nhánh',
+): Promise<string> {
   const response = await app.inject({
     method: 'POST',
     url: '/api/v1/admin/users',
@@ -16,7 +23,7 @@ async function createBranchUser(role: 'BRANCH_INPUT' | 'BRANCH_CONTROLLER', bran
       primaryRole: role,
       branchCode,
       branchName: 'Chi nhánh Bình Tây Sài Gòn',
-      department: 'Phòng Kiểm soát chi nhánh',
+      department,
       isActive: true,
     },
   });
@@ -84,7 +91,7 @@ describe('automatic approval routing + special-case flag', () => {
   });
 
   it('star ON inserts a mandatory Lãnh đạo chi nhánh approval step before Hội sở; star OFF skips it', async () => {
-    const branchInput = await createBranchUser('BRANCH_INPUT', '428', 'route.input.428@bank.com.vn');
+    const branchInput = await createBranchUser('BRANCH_INPUT', '428', 'route.input.428@bank.com.vn', 'Phòng QLKH 2');
     const branchController = await createBranchUser('BRANCH_CONTROLLER', '428', 'route.controller.428@bank.com.vn');
 
     // find-002 is SUBMITTED_BRANCH v2 with an available evidence. Return it so the branch can re-drive it.

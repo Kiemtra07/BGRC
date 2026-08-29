@@ -8,12 +8,14 @@ import {
   ArrowLeft,
   Database,
   ClipboardCheck,
+  ShieldCheck,
 } from 'lucide-react';
 import { AuditCampaign, BulkUserImportDTO, BulkUserImportResult, BulkOrgUnitImportDTO, BulkOrgUnitImportResult, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, UpdateUserDTO } from '../../../shared/contracts';
 import { DynamicChannelManager } from './DynamicChannelManager';
 import { OrganizationManager } from './OrganizationManager';
 import { UserManager } from './UserManager';
 import { ButtonPermissionMatrix } from './ButtonPermissionMatrix';
+import { SecuritySettingsPanel } from './SecuritySettingsPanel';
 import { AuditTrailViewer } from './AuditTrailViewer';
 import { ReportCatalogManager } from './ReportCatalogManager';
 import { CampaignManager } from './campaigns/CampaignManager';
@@ -33,7 +35,8 @@ interface Props {
   onAuthenticatorChange: (id: string, data: UpdateAuthenticatorDTO) => Promise<UpdateAuthenticatorResponse>;
   onUserUpdated: (id: string, data: UpdateUserDTO) => Promise<UserProfile>;
   onUserDeleted: (id: string) => Promise<void>;
-  onUserPasswordReset: (id: string) => Promise<CreatedUserResponse>;
+  onUserPasswordReset: (id: string, data?: import('../../../shared/contracts').ResetUserPasswordDTO) => Promise<CreatedUserResponse>;
+  onUserPasswordResetEmail?: (id: string) => Promise<void>;
   onChannelCreated: (channel: Partial<CreateReportChannelDTO>) => Promise<void>;
   onChannelUpdated: (id: string, channel: UpdateReportChannelDTO) => Promise<void>;
   onChannelDeleted: (id: string) => Promise<void>;
@@ -45,7 +48,7 @@ interface Props {
   onBackToPortal?: () => void;
 }
 
-type AdminTab = 'CAMPAIGNS' | 'CHANNELS' | 'REPORT_CATALOG' | 'ORGANIZATION' | 'USERS' | 'PERMISSIONS' | 'AUDIT_LOG';
+type AdminTab = 'CAMPAIGNS' | 'CHANNELS' | 'REPORT_CATALOG' | 'ORGANIZATION' | 'USERS' | 'PERMISSIONS' | 'SECURITY' | 'AUDIT_LOG';
 
 export const AdminPortal: React.FC<Props> = ({
   isSystemAdmin,
@@ -63,6 +66,7 @@ export const AdminPortal: React.FC<Props> = ({
   onUserUpdated,
   onUserDeleted,
   onUserPasswordReset,
+  onUserPasswordResetEmail,
   onChannelCreated,
   onChannelUpdated,
   onChannelDeleted,
@@ -82,28 +86,25 @@ export const AdminPortal: React.FC<Props> = ({
     { id: 'ORGANIZATION', label: 'Đơn vị', icon: Building2, adminOnly: true },
     { id: 'USERS', label: 'Người dùng', icon: Users, adminOnly: true },
     { id: 'PERMISSIONS', label: 'Quyền thao tác', icon: Sliders },
+    { id: 'SECURITY', label: 'Bảo mật', icon: ShieldCheck, adminOnly: true },
     { id: 'AUDIT_LOG', label: 'Nhật ký', icon: History, adminOnly: true },
   ];
   const tabs = allTabs.filter(tab => isSystemAdmin || !tab.adminOnly);
 
   return (
     <div className="min-w-0 max-w-full space-y-6">
-      {/* Top Banner */}
-      <div className="bg-[#006b68] rounded-2xl p-6 text-white shadow-xl flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
-          <div className="flex items-center gap-2 mb-2">
-            <span className="px-2.5 py-0.5 bg-white/10 text-white border border-white/25 rounded-full text-[11px] font-bold uppercase tracking-wider">
-              AUDIT BGS
-            </span>
-          </div>
-          <h2 className="text-xl font-extrabold text-white">Quản trị</h2>
-          <p className="text-xs text-white/80 mt-1">Loại báo cáo, trường dữ liệu, người dùng và quyền hệ thống.</p>
+      {/* Page header. The app bar directly above is already brand-coloured and already says
+          AUDIT MONITORING, so a second coloured slab repeating both only pushed the tabs off-screen. */}
+      <div className="flex flex-wrap items-end justify-between gap-3 border-b border-rule pb-4">
+        <div className="min-w-0">
+          <h2 className="text-lg font-black tracking-tight text-slate-900">Quản trị</h2>
+          <p className="mt-0.5 text-xs text-slate-500">Loại báo cáo, trường dữ liệu, người dùng và quyền hệ thống.</p>
         </div>
 
         {onBackToPortal && (
           <button
             onClick={onBackToPortal}
-            className="px-4 py-2 bg-white/10 hover:bg-white/20 text-white rounded-xl text-xs font-bold border border-white/20 flex items-center gap-2 transition-all self-start md:self-auto"
+            className="inline-flex min-h-10 shrink-0 items-center gap-2 rounded-xl border border-rule bg-white px-3.5 text-xs font-bold text-slate-700 shadow-panel transition-colors hover:border-brand-300 hover:text-brand-600"
           >
             <ArrowLeft className="w-4 h-4" />
             <span>Về hồ sơ</span>
@@ -111,8 +112,9 @@ export const AdminPortal: React.FC<Props> = ({
         )}
       </div>
 
-      {/* Navigation Tabs */}
-      <div className="flex min-w-0 max-w-full items-center gap-2 overflow-x-auto border-b border-slate-200 pb-2">
+      {/* Navigation Tabs — an underline rail reads as navigation; a row of filled pills reads as
+          five equally urgent actions. */}
+      <div className="-mt-2 flex min-w-0 max-w-full items-center gap-1 overflow-x-auto border-b border-rule">
         {tabs.map(tab => {
           const Icon = tab.icon;
           const isActive = activeTab === tab.id;
@@ -120,10 +122,13 @@ export const AdminPortal: React.FC<Props> = ({
             <button
               key={tab.id}
               onClick={() => setActiveTab(tab.id)}
-              className={`px-4 py-2.5 rounded-xl text-xs font-bold whitespace-nowrap flex items-center gap-2 transition-all ${isActive ? 'bg-[#006b68] text-white shadow-md shadow-[#006b68]/20' : 'bg-white text-slate-600 hover:bg-slate-100 border border-slate-200'}`}
+              aria-current={isActive ? 'page' : undefined}
+              className={`relative flex shrink-0 items-center gap-2 whitespace-nowrap px-3.5 py-2.5 text-xs font-bold transition-colors ${isActive ? 'text-brand-600' : 'text-slate-500 hover:text-slate-800'}`}
             >
-              <Icon className={`w-4 h-4 ${isActive ? 'text-white' : 'text-slate-500'}`} />
+              <Icon className={`w-4 h-4 ${isActive ? 'text-brand-500' : 'text-slate-400'}`} />
               <span>{tab.label}</span>
+              {/* The required brand navigation colour, carried by the active-tab indicator. */}
+              <span aria-hidden className={`absolute inset-x-1 -bottom-px h-0.5 rounded-full ${isActive ? 'bg-[#006b68]' : 'bg-transparent'}`} />
             </button>
           );
         })}
@@ -145,11 +150,15 @@ export const AdminPortal: React.FC<Props> = ({
         )}
 
         {activeTab === 'USERS' && (
-          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} onUserUpdated={onUserUpdated} onUserDeleted={onUserDeleted} onUserPasswordReset={onUserPasswordReset} />
+          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} onUserUpdated={onUserUpdated} onUserDeleted={onUserDeleted} onUserPasswordReset={onUserPasswordReset} onUserPasswordResetEmail={onUserPasswordResetEmail} />
         )}
 
         {activeTab === 'PERMISSIONS' && (
           <ButtonPermissionMatrix />
+        )}
+
+        {activeTab === 'SECURITY' && (
+          <SecuritySettingsPanel />
         )}
 
         {activeTab === 'AUDIT_LOG' && (

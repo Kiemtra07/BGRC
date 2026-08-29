@@ -84,11 +84,11 @@ export const ExcelTemplateImporterModal: React.FC<Props> = ({ isOpen, onClose, o
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-2xl shadow-2xl border border-rule w-full max-w-3xl overflow-hidden flex flex-col max-h-[90vh]">
         {/* Header */}
         <div className="px-6 py-4 bg-gradient-to-r from-slate-900 via-sky-900 to-indigo-950 text-white flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="p-2 bg-white/10 rounded-xl"><FileSpreadsheet className="w-5 h-5 text-sky-400" /></div>
+            <div className="p-2 bg-white/10 rounded-xl"><FileSpreadsheet className="w-5 h-5 text-info" /></div>
             <h3 className="font-bold text-lg">Tạo loại báo cáo</h3>
           </div>
           <button onClick={onClose} aria-label="Đóng" className="p-1 text-slate-400 hover:text-white rounded-lg transition-colors">
@@ -100,13 +100,13 @@ export const ExcelTemplateImporterModal: React.FC<Props> = ({ isOpen, onClose, o
         <div className="p-6 overflow-y-auto space-y-5 flex-1">
           {step === 'UPLOAD' && (
             <div className="space-y-4">
-              <label className="border-2 border-dashed border-sky-300 hover:border-sky-500 rounded-2xl p-10 flex flex-col items-center justify-center cursor-pointer bg-sky-50/50 hover:bg-sky-50 transition-all text-center group">
+              <label className="border-2 border-dashed border-info-border hover:border-info-border rounded-2xl p-10 flex flex-col items-center justify-center cursor-pointer bg-info-surface/50 hover:bg-info-surface transition-all text-center group">
                 <input type="file" accept=".xlsx, .xls" onChange={handleFileUpload} className="hidden" />
-                <div className="w-16 h-16 bg-sky-100 group-hover:bg-sky-200 text-sky-600 rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110">
+                <div className="w-16 h-16 bg-info-surface group-hover:bg-info-border text-info rounded-2xl flex items-center justify-center mb-4 transition-transform group-hover:scale-110">
                   <UploadCloud className="w-8 h-8" />
                 </div>
                 <span className="font-bold text-slate-800 text-base mb-1">
-                  Chọn file Excel
+                  Chọn tệp Excel
                 </span>
                 <span className="text-xs text-slate-500 max-w-sm">
                   Định dạng .xlsx hoặc .xls
@@ -131,7 +131,7 @@ export const ExcelTemplateImporterModal: React.FC<Props> = ({ isOpen, onClose, o
                     type="text" 
                     value={channelCode} 
                     onChange={e => setChannelCode(e.target.value)}
-                    className="w-full px-3 py-2 border rounded-lg text-xs font-mono bg-slate-50 uppercase font-semibold"
+                    className="w-full px-3 py-2 border rounded-lg text-xs font-mono bg-slate-50 font-semibold"
                   />
                 </div>
                 <div>
@@ -167,10 +167,10 @@ export const ExcelTemplateImporterModal: React.FC<Props> = ({ isOpen, onClose, o
                   </span>
                   <span className="text-[11px] text-slate-500 font-mono">{file?.name}</span>
                 </div>
-                <div className="flex flex-wrap gap-1.5 p-3 bg-slate-50 rounded-xl border border-slate-200 max-h-36 overflow-y-auto">
+                <div className="flex flex-wrap gap-1.5 p-3 bg-slate-50 rounded-xl border border-rule max-h-36 overflow-y-auto">
                   {detectedHeaders.map((header, idx) => (
-                    <span key={idx} className="px-2.5 py-1 bg-white text-slate-700 border border-slate-200 rounded-md text-[11px] font-semibold flex items-center gap-1">
-                      <span className="w-1.5 h-1.5 rounded-full bg-sky-500"></span>
+                    <span key={idx} className="px-2.5 py-1 bg-white text-slate-700 border border-rule rounded-md text-[11px] font-semibold flex items-center gap-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-info-surface0"></span>
                       {header}
                     </span>
                   ))}
@@ -181,7 +181,7 @@ export const ExcelTemplateImporterModal: React.FC<Props> = ({ isOpen, onClose, o
         </div>
 
         {/* Footer */}
-        <div className="px-6 py-4 bg-slate-50 border-t border-slate-200">
+        <div className="px-6 py-4 bg-slate-50 border-t border-rule">
           {submitError && <div role="alert" className="mb-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{submitError}</div>}
           <div className="flex justify-end gap-3">
             <button onClick={onClose} className="px-4 py-2 text-xs font-bold text-slate-600 hover:bg-slate-200 rounded-xl transition-colors">

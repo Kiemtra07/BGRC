@@ -70,7 +70,9 @@ describe('local credential authentication', () => {
     expect(response.statusCode).toBe(401);
   });
 
-  it('logs in by email and requires the Google Authenticator token when an admin enables it', async () => {
+  // Whether a code is demanded is a system policy, not a per-account flag. Issuing a secret alone
+  // must never start demanding one, otherwise the requirement depends on click order.
+  it('demands the Google Authenticator token only while the system policy covers the account', async () => {
     const enable = await app.inject({
       method: 'PUT',
       url: '/api/v1/admin/users/user-branch-635/authenticator',
@@ -81,6 +83,20 @@ describe('local credential authentication', () => {
     const setup = enable.json().setup;
     expect(setup.secret).toMatch(/^[A-Z2-7]+$/);
     expect(setup.otpauthUri).toContain('otpauth://totp/');
+
+    // Holding a secret while the policy is off must not block a normal login.
+    const policyOff = await app.inject({
+      method: 'POST', url: '/api/v1/auth/login',
+      payload: { username: 'cbht635@bidv.com.vn', password: 'BranchInput@2026' },
+    });
+    expect(policyOff.statusCode).toBe(200);
+
+    const setPolicy = await app.inject({
+      method: 'PUT', url: '/api/v1/admin/security-settings',
+      headers: { 'x-user-id': 'user-admin' },
+      payload: { mfaPolicy: 'REQUIRED_ALL' },
+    });
+    expect(setPolicy.statusCode).toBe(200);
 
     const missingToken = await app.inject({
       method: 'POST', url: '/api/v1/auth/login',
@@ -96,6 +112,22 @@ describe('local credential authentication', () => {
     });
     expect(login.statusCode).toBe(200);
     expect(login.json().user.email).toBe('cbht635@bidv.com.vn');
+
+    // Revoking a secret the policy still requires would lock the account out, so it is refused.
+    const refused = await app.inject({
+      method: 'PUT',
+      url: '/api/v1/admin/users/user-branch-635/authenticator',
+      headers: { 'x-user-id': 'user-admin' },
+      payload: { enabled: false },
+    });
+    expect(refused.statusCode).toBe(409);
+
+    const clearPolicy = await app.inject({
+      method: 'PUT', url: '/api/v1/admin/security-settings',
+      headers: { 'x-user-id': 'user-admin' },
+      payload: { mfaPolicy: 'DISABLED' },
+    });
+    expect(clearPolicy.statusCode).toBe(200);
 
     const disable = await app.inject({
       method: 'PUT',

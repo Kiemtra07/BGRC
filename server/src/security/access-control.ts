@@ -34,6 +34,17 @@ export function requireAdmin(user: UserProfile): void {
   }
 }
 
+/**
+ * Which data scope a role gets inside its branch.
+ *
+ * Capture staff are confined to their own Phòng/PGD. Kiểm soát and Lãnh đạo chi nhánh must keep
+ * the whole branch: their job is to review hồ sơ from every phòng, and a department-limited
+ * reviewer simply could not approve most of the queue.
+ */
+export function branchScopeTypeForRole(primaryRole: UserRole): 'BRANCH' | 'DEPARTMENT' {
+  return primaryRole === 'BRANCH_INPUT' ? 'DEPARTMENT' : 'BRANCH';
+}
+
 export function hasFindingAccess(user: UserProfile, finding: Finding): boolean {
   if (!user.isActive) return false;
   if (user.scopes.some(scope => scope.scopeType === 'ALL')) return true;
@@ -50,11 +61,14 @@ export function hasFindingAccess(user: UserProfile, finding: Finding): boolean {
         return normalize(scope.clusterName ?? user.clusterName) === normalize(finding.clusterName);
       case 'BRANCH':
         return branchMatches;
-      case 'DEPARTMENT':
-        return (
-          branchMatches &&
-          normalize(scope.departmentName ?? user.department) === normalize(finding.department)
-        );
+      case 'DEPARTMENT': {
+        if (!branchMatches) return false;
+        // A hồ sơ that carries no phòng belongs to the branch as a whole. Hiding it from every
+        // department-scoped officer would make it invisible to the branch entirely — the work
+        // would silently disappear instead of merely being scoped.
+        if (!normalize(finding.department)) return true;
+        return normalize(scope.departmentName ?? user.department) === normalize(finding.department);
+      }
       default:
         return false;
     }

@@ -26,7 +26,7 @@ describe('Google Authenticator TOTP', () => {
 
   it('creates a Google Authenticator provisioning URI', () => {
     const uri = buildOtpAuthUri('JBSWY3DPEHPK3PXP', 'admin@example.com');
-    expect(uri).toBe('otpauth://totp/AuditBGS%3Aadmin%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=AuditBGS&algorithm=SHA1&digits=6&period=30');
+    expect(uri).toBe('otpauth://totp/Audit%20Monitoring%3Aadmin%40example.com?secret=JBSWY3DPEHPK3PXP&issuer=Audit%20Monitoring&algorithm=SHA1&digits=6&period=30');
   });
 
   it('encrypts and decrypts a secret without storing it in plaintext', () => {

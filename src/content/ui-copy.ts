@@ -62,7 +62,9 @@ export const securityEventLabels: Record<string, string> = {
   AUTH_OIDC_LOGIN_REJECTED: 'Từ chối đăng nhập Google',
   ADMIN_USER_CREATED: 'Cấp tài khoản',
   ADMIN_USER_PASSWORD_RESET: 'Đặt lại mật khẩu',
-  ADMIN_GOOGLE_DRIVE_CONNECTED: 'Đấu nối Google Drive',
+  ADMIN_AUTHENTICATOR_TOGGLED: 'Cấp/thu hồi mã Authenticator',
+  ADMIN_MFA_POLICY_CHANGED: 'Đổi chính sách Authenticator',
+  ADMIN_GOOGLE_DRIVE_CONNECTED: 'Kết nối Google Drive',
   DATA_REPORT_EXPORTED: 'Xuất báo cáo',
   DATA_EVIDENCE_DOWNLOADED: 'Tải minh chứng',
 };

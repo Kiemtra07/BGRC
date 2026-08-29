@@ -18,7 +18,7 @@ describe('evidence lifecycle API', () => {
           roles: ['BRANCH_INPUT'],
           primaryRole: 'BRANCH_INPUT',
           branchCode: '428',
-          department: 'Phòng Kiểm soát chi nhánh',
+          department: 'Phòng QLKH 2',
           isActive: true,
         },
       }),

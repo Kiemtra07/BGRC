@@ -30,7 +30,7 @@ export const ApprovalRouteStepper: React.FC<Props> = ({ findingId, refreshToken 
   }, [findingId, refreshToken]);
 
   if (loading && !route) {
-    return <div className="flex items-center gap-2 rounded-2xl border border-slate-200 bg-white p-4 text-xs font-semibold text-slate-500" role="status" data-testid="approval-route-stepper">
+    return <div className="flex items-center gap-2 rounded-2xl border border-rule bg-white p-4 text-xs font-semibold text-slate-500" role="status" data-testid="approval-route-stepper">
       <Loader2 className="h-4 w-4 animate-spin" />Đang tải tuyến duyệt…
     </div>;
   }
@@ -41,9 +41,9 @@ export const ApprovalRouteStepper: React.FC<Props> = ({ findingId, refreshToken 
   const total = route.steps.length;
   const currentStep = route.currentStepIndex >= 0 ? route.steps[route.currentStepIndex] : undefined;
 
-  return <section data-testid="approval-route-stepper" className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm" aria-label="Tuyến duyệt hồ sơ">
+  return <section data-testid="approval-route-stepper" className="rounded-2xl border border-rule bg-white p-4 shadow-panel" aria-label="Tuyến duyệt hồ sơ">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-      <h3 className="text-xs font-black uppercase tracking-wide text-slate-800">Tuyến duyệt</h3>
+      <h3 className="text-xs font-black text-slate-800">Tuyến duyệt</h3>
       <span className="text-[11px] font-semibold text-slate-500">
         {route.isClosed ? 'Đã hoàn tất' : currentStep ? `Bước ${route.currentStepIndex + 1}/${total}` : 'Chưa xác định'}
       </span>
@@ -53,12 +53,12 @@ export const ApprovalRouteStepper: React.FC<Props> = ({ findingId, refreshToken 
       <CornerUpLeft className="h-3.5 w-3.5 shrink-0" />Đã chuyển trả từ {route.returnedFromStageName}.
     </p>}
 
-    <div data-testid="approval-route-step" className="rounded-xl border border-[#006b68]/30 bg-teal-50/60 px-3 py-3" aria-live="polite">
+    <div data-testid="approval-route-step" className="rounded-xl border border-brand-500/30 bg-brand-50/60 px-3 py-3" aria-live="polite">
       {route.isClosed ? <>
         <p className="text-xs font-bold text-slate-900">Đã hoàn tất tuyến duyệt</p>
         <p className="mt-1 text-[11px] text-slate-600">Không còn bước chờ xử lý.</p>
       </> : currentStep ? <>
-        <p className="text-[10px] font-black uppercase tracking-wide text-[#006b68]">{currentStep.stageName}</p>
+        <p className="text-[10px] font-black text-brand-600">{currentStep.stageName}</p>
         <p className="mt-1 text-xs font-bold text-slate-900">{currentStep.assigneeName || 'Chưa phân công người duyệt'}</p>
       </> : <p className="text-xs font-semibold text-slate-600">Chưa xác định vị trí xử lý hiện tại.</p>}
     </div>

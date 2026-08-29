@@ -59,7 +59,7 @@ export const AuditTrailViewer: React.FC = () => {
 
   const clearTestAuditEvents = async (): Promise<void> => {
     const confirmed = window.confirm(
-      'Xóa toàn bộ nhật ký thử nghiệm của môi trường local/test? Thao tác này không thể hoàn tác.',
+      'Xóa toàn bộ nhật ký thử nghiệm trên máy hoặc trong môi trường kiểm thử? Thao tác này không thể hoàn tác.',
     );
     if (!confirmed) return;
 
@@ -94,7 +94,7 @@ export const AuditTrailViewer: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+      <section className="rounded-2xl border border-rule bg-white p-5 shadow-panel">
         <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
           <h3 className="text-base font-bold text-slate-900">Nhật ký xử lý</h3>
         </div>
@@ -109,7 +109,7 @@ export const AuditTrailViewer: React.FC = () => {
             placeholder="Tìm theo sự kiện, người thao tác, CIF, mã lỗi..."
             value={searchTerm}
             onChange={event => setSearchTerm(event.target.value)}
-            className="w-full rounded-xl border border-slate-200 bg-white py-2.5 pl-10 pr-4 text-xs font-medium outline-none transition focus:border-[#006b68] focus:ring-2 focus:ring-[#006b68]/20"
+            className="w-full rounded-xl border border-rule bg-white py-2.5 pl-10 pr-4 text-xs font-medium outline-none transition focus:border-brand-500 focus:ring-2 focus:ring-brand-500/20"
           />
         </label>
         <div className="flex flex-wrap items-center gap-2">
@@ -117,7 +117,7 @@ export const AuditTrailViewer: React.FC = () => {
             type="button"
             onClick={() => void downloadAuditEvents()}
             disabled={isDownloading || isClearing}
-            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-[#006b68]/30 bg-white px-4 py-2 text-xs font-bold text-[#006b68] transition hover:bg-[#006b68]/5 disabled:cursor-wait disabled:opacity-60"
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-brand-500/30 bg-white px-4 py-2 text-xs font-bold text-brand-600 transition hover:bg-brand-500/5 disabled:cursor-wait disabled:opacity-60"
           >
             <Download className={`h-4 w-4 ${isDownloading ? 'animate-pulse' : ''}`} />
             Tải CSV
@@ -126,7 +126,7 @@ export const AuditTrailViewer: React.FC = () => {
             type="button"
             onClick={() => void clearTestAuditEvents()}
             disabled={isClearing || isDownloading}
-            title="Chỉ dùng cho dữ liệu thử nghiệm local/test"
+            title="Chỉ dùng cho dữ liệu thử nghiệm trên máy hoặc trong môi trường kiểm thử"
             className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl border border-red-200 bg-white px-4 py-2 text-xs font-bold text-red-700 transition hover:bg-red-50 disabled:cursor-wait disabled:opacity-60"
           >
             <Trash2 className={`h-4 w-4 ${isClearing ? 'animate-pulse' : ''}`} />
@@ -136,7 +136,7 @@ export const AuditTrailViewer: React.FC = () => {
             type="button"
             onClick={() => void loadAuditEvents()}
             disabled={isLoading || isClearing || isDownloading}
-            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 py-2 text-xs font-bold text-white transition hover:bg-[#005a58] disabled:cursor-wait disabled:opacity-60"
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-2 text-xs font-bold text-white transition hover:bg-brand-600 disabled:cursor-wait disabled:opacity-60"
           >
             <RefreshCw className={`h-4 w-4 ${isLoading ? 'animate-spin' : ''}`} />
             Làm mới
@@ -160,7 +160,7 @@ export const AuditTrailViewer: React.FC = () => {
         </div>
       )}
 
-      <section className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm">
+      <section className="overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
         {isLoading && logs.length === 0 ? (
           <div className="flex min-h-48 items-center justify-center gap-2 text-xs font-medium text-slate-500">
             <RefreshCw className="h-4 w-4 animate-spin" />
@@ -181,7 +181,7 @@ export const AuditTrailViewer: React.FC = () => {
                     <time className="text-right font-mono text-[10px] text-slate-500">{formatTimestamp(log.timestamp)}</time>
                   </div>
                   <div>
-                    <p className="text-sm font-bold text-[#006b68]">{log.targetEntity}</p>
+                    <p className="text-sm font-bold text-brand-600">{log.targetEntity}</p>
                     <p className="mt-1 text-xs leading-5 text-slate-600">{log.details}</p>
                   </div>
                   <p className="text-[11px] text-slate-500">
@@ -193,7 +193,7 @@ export const AuditTrailViewer: React.FC = () => {
 
             <div className="hidden overflow-x-auto md:block">
               <table className="min-w-[960px] w-full text-left text-xs">
-                <thead className="border-b border-slate-200 bg-slate-50 text-slate-700">
+                <thead className="border-b border-rule bg-slate-50 text-slate-700">
                   <tr>
                     <th className="px-5 py-3.5 font-bold">Thời gian</th>
                     <th className="px-5 py-3.5 font-bold">Sự kiện</th>
@@ -213,7 +213,7 @@ export const AuditTrailViewer: React.FC = () => {
                         <div className="font-bold text-slate-900">{log.actorName}</div>
                         <div className="mt-0.5 text-[10px] text-slate-400">{roleLabel(log.actorRole)}</div>
                       </td>
-                      <td className="px-5 py-3.5 font-bold text-[#006b68]">{log.targetEntity}</td>
+                      <td className="px-5 py-3.5 font-bold text-brand-600">{log.targetEntity}</td>
                       <td className="max-w-md px-5 py-3.5 leading-5 text-slate-600">{log.details}</td>
                     </tr>
                   ))}

@@ -16,6 +16,7 @@ export interface GoogleOidcTokenPayload {
   iss?: string;
   aud?: string | string[];
   name?: string;
+  nonce?: string;
 }
 
 function base64Url(value: Buffer | string): string {
@@ -71,7 +72,7 @@ export function createGoogleOidcState({ secret, returnTo, now = Date.now() }: { 
   return `${encodedPayload}.${base64Url(signature)}`;
 }
 
-export function verifyGoogleOidcState({ state, secret, now = Date.now() }: { state: string; secret: string; now?: number }): { returnTo: string } {
+export function verifyGoogleOidcState({ state, secret, now = Date.now() }: { state: string; secret: string; now?: number }): { returnTo: string; nonce: string } {
   requireSecret(secret);
   const [encodedPayload, encodedSignature, ...extra] = state.split('.');
   if (!encodedPayload || !encodedSignature || extra.length) throw new Error('Google OIDC state is invalid.');
@@ -81,18 +82,20 @@ export function verifyGoogleOidcState({ state, secret, now = Date.now() }: { sta
   let payload: GoogleOidcStatePayload;
   try { payload = JSON.parse(decodeBase64Url(encodedPayload).toString('utf8')) as GoogleOidcStatePayload; }
   catch { throw new Error('Google OIDC state is invalid.'); }
-  if (payload.version !== 1 || !Number.isSafeInteger(payload.expiresAt) || payload.expiresAt < now) throw new Error('Google OIDC state is expired or invalid.');
-  return { returnTo: requireSafeReturnTo(payload.returnTo) };
+  if (payload.version !== 1 || !Number.isSafeInteger(payload.expiresAt) || payload.expiresAt < now || typeof payload.nonce !== 'string' || payload.nonce.length < 16) throw new Error('Google OIDC state is expired or invalid.');
+  return { returnTo: requireSafeReturnTo(payload.returnTo), nonce: payload.nonce };
 }
 
 export function validateGoogleOidcIdentity({
   payload,
   audience,
   issuer,
+  expectedNonce,
 }: {
   payload: GoogleOidcTokenPayload;
   audience: string;
   issuer: string;
+  expectedNonce?: string;
 }): { subject: string; email: string; fullName: string } {
   const tokenAudience = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
   if (!payload.sub || !payload.email || payload.email_verified !== true) throw new Error('Google OIDC email is not verified.');
@@ -101,6 +104,7 @@ export function validateGoogleOidcIdentity({
     : new Set([issuer]);
   if (!acceptedIssuers.has(payload.iss ?? '')) throw new Error('Google OIDC issuer is invalid.');
   if (!tokenAudience.includes(audience)) throw new Error('Google OIDC audience is invalid.');
+  if (expectedNonce !== undefined && payload.nonce !== expectedNonce) throw new Error('Google OIDC nonce is invalid.');
   return {
     subject: payload.sub,
     email: payload.email.trim().toLocaleLowerCase('en-US'),

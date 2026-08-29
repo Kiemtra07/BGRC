@@ -10,7 +10,7 @@ import {
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest, ReportDrillRequest, ReportDrillResult,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness, CreateReportSpreadsheetDTO, ReportSpreadsheetResult,
   ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO, CreatedUserResponse, ResetUserPasswordDTO,
-  BulkUserImportDTO, BulkUserImportResult, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse,
+  BulkUserImportDTO, BulkUserImportResult, SecuritySettingsDTO, SecuritySettingsResponse, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse,
   LoginDTO, LoginResponse,
   AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UpdateUserDTO,
   BulkOrgUnitImportDTO, BulkOrgUnitImportResult,
@@ -180,8 +180,17 @@ class ApiService {
   public resetUserPassword(id: string, data: ResetUserPasswordDTO = {}): Promise<CreatedUserResponse> {
     return this.request(`/admin/users/${id}/password`, { method: 'POST', body: JSON.stringify(data) });
   }
+  public sendUserPasswordResetEmail(id: string): Promise<void> {
+    return this.request(`/admin/users/${id}/password-reset-email`, { method: 'POST' });
+  }
   public updateUserAuthenticator(id: string, data: UpdateAuthenticatorDTO): Promise<UpdateAuthenticatorResponse> {
     return this.request(`/admin/users/${id}/authenticator`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+  public getSecuritySettings(): Promise<SecuritySettingsResponse> {
+    return this.request('/admin/security-settings');
+  }
+  public updateSecuritySettings(data: SecuritySettingsDTO): Promise<SecuritySettingsResponse> {
+    return this.request('/admin/security-settings', { method: 'PUT', body: JSON.stringify(data) });
   }
   public changePassword(data: { currentPassword?: string; password: string }): Promise<{ user: UserProfile }> {
     return this.request('/auth/password', { method: 'POST', body: JSON.stringify(data) });
@@ -314,7 +323,7 @@ class ApiService {
         headers: { 'Content-Type': file.type, 'Content-Range': `bytes 0-${file.size - 1}/${file.size}` },
         body: file,
       });
-      if (!uploaded.ok) throw new Error(`Google Drive upload failed: HTTP ${uploaded.status}`);
+      if (!uploaded.ok) throw new Error(`Không thể tải tệp lên Google Drive (HTTP ${uploaded.status}).`);
       return this.request(`/findings/${id}/evidence/complete`, {
         method: 'POST',
         body: JSON.stringify({ driveFileId: session.driveFileId, fileName: session.fileName, mimeType: session.mimeType, fileSize: session.fileSize, sha256Checksum: session.sha256Checksum }),

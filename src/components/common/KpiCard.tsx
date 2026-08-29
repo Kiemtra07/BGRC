@@ -35,9 +35,9 @@ export const KpiCard: React.FC<KpiCardProps> = ({
       case 'success':
         return 'bg-emerald-100 text-emerald-800 border-emerald-200';
       case 'info':
-        return 'bg-sky-100 text-sky-800 border-sky-200';
+        return 'bg-info-surface text-info border-info-border';
       default:
-        return 'bg-slate-100 text-slate-700 border-slate-200';
+        return 'bg-slate-100 text-slate-700 border-rule';
     }
   };
 
@@ -47,12 +47,12 @@ export const KpiCard: React.FC<KpiCardProps> = ({
       className={`relative overflow-hidden rounded-xl bg-white p-5 border transition-all duration-200 ${
         isActive
           ? 'border-brand-500 ring-2 ring-brand-500/20 shadow-brand-lg'
-          : 'border-slate-200 hover:border-brand-300 hover:shadow-md'
+          : 'border-rule hover:border-brand-300 hover:shadow-md'
       } ${onClick ? 'cursor-pointer' : ''}`}
     >
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0 pr-3">
-          <p className="text-xs font-semibold text-slate-500 tracking-wide uppercase truncate">
+          <p className="text-xs font-semibold text-slate-500 truncate">
             {title}
           </p>
           <div className="mt-2 flex items-baseline gap-2">

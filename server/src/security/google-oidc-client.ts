@@ -47,13 +47,14 @@ export async function exchangeCode({ code, state }: { code: string; state: strin
   returnTo: string;
 }> {
   const configuration = requireConfiguration();
-  const { returnTo } = verifyGoogleOidcState({ state, secret: configuration.stateSecret });
+  const { returnTo, nonce } = verifyGoogleOidcState({ state, secret: configuration.stateSecret });
   const client = clientFor(configuration);
   const { tokens } = await client.getToken(code);
   if (!tokens.id_token) throw new Error('Google OIDC did not return an ID token.');
   const ticket = await client.verifyIdToken({ idToken: tokens.id_token, audience: configuration.audience });
+  const payload = ticket.getPayload() ?? {};
   return {
-    identity: validateGoogleOidcIdentity({ payload: ticket.getPayload() ?? {}, audience: configuration.audience, issuer: configuration.issuer }),
+    identity: validateGoogleOidcIdentity({ payload, audience: configuration.audience, issuer: configuration.issuer, expectedNonce: nonce }),
     returnTo,
   };
 }

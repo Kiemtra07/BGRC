@@ -141,15 +141,15 @@ export const ReportFormBlockLayout: React.FC<Props> = ({
     ];
     const columns = ordered.length ? ordered : schema.fields;
     if (!columns.length) return null;
-    return <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+    return <div className="overflow-x-auto rounded-lg border border-rule bg-white">
       <table className="min-w-full border-collapse text-left text-xs">
         <thead><tr>{columns.map(field => (
-          <th key={field.fieldKey} className={`min-w-[160px] border-b border-r border-slate-200 bg-slate-100 px-3 py-2 text-slate-700 ${field.isEmphasized ? 'font-black' : 'font-bold'}`}>
+          <th key={field.fieldKey} className={`min-w-[160px] border-b border-r border-rule bg-slate-100 px-3 py-2 text-slate-700 ${field.isEmphasized ? 'font-black' : 'font-bold'}`}>
             {field.label}{field.isRequired && <span className="text-red-600"> *</span>}
           </th>
         ))}</tr></thead>
         <tbody><tr>{columns.map(field => (
-          <td key={field.fieldKey} className="border-r border-slate-200 p-2 align-top">
+          <td key={field.fieldKey} className="border-r border-rule p-2 align-top">
             {renderGridCell(field)}
             {field.helpText && <span className="mt-1 block text-[10px] text-slate-500">{field.helpText}</span>}
           </td>
@@ -172,13 +172,13 @@ export const ReportFormBlockLayout: React.FC<Props> = ({
     {template.blocks.map(block => {
       if (block.type === 'SECTION') {
         // Level 1, styled like the "A. THÀNH PHẦN" bar of a CoPlus inspection record.
-        return <h5 key={block.id} className={`${REPORT_FORM_WIDTH_CLASS.FULL} -mx-3 mt-1 flex items-center gap-2 border-y border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-black uppercase tracking-wide text-[#006b68] first:mt-0`}>
+        return <h5 key={block.id} className={`${REPORT_FORM_WIDTH_CLASS.FULL} -mx-3 mt-1 flex items-center gap-2 border-y border-rule bg-slate-50 px-3 py-2 text-[11px] font-black text-brand-600 first:mt-0`}>
           <span className="tabular-nums">{headingNumbers[block.id]}</span>{block.title}
         </h5>;
       }
       if (block.type === 'SUBSECTION') {
         // Level 2, styled like "I. THÔNG TIN CHUNG VỀ KHÁCH HÀNG".
-        return <h6 key={block.id} className={`${REPORT_FORM_WIDTH_CLASS.FULL} mt-1 flex items-center gap-2 border-b border-slate-300 pb-1.5 text-[11px] font-extrabold uppercase tracking-wide text-slate-800`}>
+        return <h6 key={block.id} className={`${REPORT_FORM_WIDTH_CLASS.FULL} mt-1 flex items-center gap-2 border-b border-slate-300 pb-1.5 text-[11px] font-extrabold text-slate-800`}>
           <span className="tabular-nums">{headingNumbers[block.id]}</span>{block.title}
         </h6>;
       }
@@ -200,8 +200,8 @@ export const ReportFormBlockLayout: React.FC<Props> = ({
           const content = renderOnce(key, 'HALF');
           return content ? <React.Fragment key={key}>{content}</React.Fragment> : null;
         }).filter(Boolean);
-        return <div key={block.id} className={`${REPORT_FORM_WIDTH_CLASS.FULL} rounded-md border border-slate-200 bg-white p-3`}>
-          <h5 className="mb-3 text-[11px] font-extrabold text-[#006b68]">{block.title}</h5>
+        return <div key={block.id} className={`${REPORT_FORM_WIDTH_CLASS.FULL} rounded-md border border-rule bg-white p-3`}>
+          <h5 className="mb-3 text-[11px] font-extrabold text-brand-600">{block.title}</h5>
           {children.length
             ? <div className="grid grid-cols-1 gap-3 sm:grid-cols-6">{children}</div>
             : <ReportFormEmptyState />}

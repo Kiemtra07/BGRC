@@ -170,11 +170,11 @@ export const WebFormFindingModal: React.FC<Props> = ({
       setErrorCode(first.errorCode);
       setErrorTitle(first.errorTitle);
       setDescription(first.description);
-      setFormError(`Đã bóc tách ${rows.length} hồ sơ từ ${file.name}. Kiểm tra chuyên đề/chi nhánh rồi bấm Tạo hồ sơ.`);
+      setFormError(`Đã tách ${rows.length} hồ sơ từ ${file.name}. Kiểm tra chuyên đề và chi nhánh rồi bấm Tạo hồ sơ.`);
     } catch (error) {
       setImportedRows([]);
       setImportFileName('');
-      setFormError(error instanceof Error ? error.message : 'Không thể bóc tách tệp tiểu biên bản.');
+      setFormError(error instanceof Error ? error.message : 'Không thể đọc và tách dữ liệu từ tiểu biên bản.');
     } finally {
       setImportBusy(false);
     }
@@ -237,10 +237,10 @@ export const WebFormFindingModal: React.FC<Props> = ({
   };
 
   const renderCustomControl = (field: DynamicFieldDefinition) => field.dataType === 'file'
-    ? <span className="block rounded-lg border border-slate-200 bg-white px-3 py-2 font-normal text-slate-500">Tải tệp tại hồ sơ sau khi tạo.</span>
-    : field.dataType === 'select' ? <select required={field.isRequired} value={String(customPayload[field.fieldKey] ?? '')} onChange={event => setCustomPayload(previous => ({ ...previous, [field.fieldKey]: event.target.value }))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"><option value="">Chọn...</option>{field.dropdownOptions?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
-      : field.dataType === 'textarea' ? <textarea required={field.isRequired} rows={3} value={String(customPayload[field.fieldKey] ?? '')} onChange={event => setCustomPayload(previous => ({ ...previous, [field.fieldKey]: event.target.value }))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs" />
-        : <input required={field.isRequired} type={field.dataType === 'number' || field.dataType === 'currency' ? 'number' : field.dataType === 'date' ? 'date' : 'text'} value={String(customPayload[field.fieldKey] ?? '')} onChange={event => setCustomPayload(previous => ({ ...previous, [field.fieldKey]: field.dataType === 'number' || field.dataType === 'currency' ? Number(event.target.value) : event.target.value }))} className="w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs" />;
+    ? <span className="block rounded-lg border border-rule bg-white px-3 py-2 font-normal text-slate-500">Tải tệp tại hồ sơ sau khi tạo.</span>
+    : field.dataType === 'select' ? <select required={field.isRequired} value={String(customPayload[field.fieldKey] ?? '')} onChange={event => setCustomPayload(previous => ({ ...previous, [field.fieldKey]: event.target.value }))} className="w-full rounded-lg border border-rule bg-white px-3 py-2 text-xs"><option value="">Chọn...</option>{field.dropdownOptions?.map(option => <option key={option.value} value={option.value}>{option.label}</option>)}</select>
+      : field.dataType === 'textarea' ? <textarea required={field.isRequired} rows={3} value={String(customPayload[field.fieldKey] ?? '')} onChange={event => setCustomPayload(previous => ({ ...previous, [field.fieldKey]: event.target.value }))} className="w-full rounded-lg border border-rule bg-white px-3 py-2 text-xs" />
+        : <input required={field.isRequired} type={field.dataType === 'number' || field.dataType === 'currency' ? 'number' : field.dataType === 'date' ? 'date' : 'text'} value={String(customPayload[field.fieldKey] ?? '')} onChange={event => setCustomPayload(previous => ({ ...previous, [field.fieldKey]: field.dataType === 'number' || field.dataType === 'currency' ? Number(event.target.value) : event.target.value }))} className="w-full rounded-lg border border-rule bg-white px-3 py-2 text-xs" />;
 
   const renderCustomField = (field: DynamicFieldDefinition, width: ReportFormBlockWidth = 'HALF') => {
     const span = field.dataType === 'textarea' ? REPORT_FORM_WIDTH_CLASS.FULL : REPORT_FORM_WIDTH_CLASS[width];
@@ -256,8 +256,8 @@ export const WebFormFindingModal: React.FC<Props> = ({
   const presentationMode = formTemplate?.presentationMode ?? 'CASE_REVIEW';
   const allowEvidenceAttachments = formTemplate?.allowEvidenceAttachments ?? true;
   const hasCampaignBlock = formTemplate?.blocks.some(block => block.type === 'CAMPAIGN_CONTEXT') ?? false;
-  const renderCampaignContext = () => <section className={`rounded-xl border border-teal-200 bg-teal-50 p-3 ${REPORT_FORM_WIDTH_CLASS.FULL}`}>
-    <label className="text-xs font-black text-[#006b68]">Chuyên đề áp dụng<select value={effectiveCampaignId} onChange={event => setCampaignId(event.target.value)} required className="mt-1.5 min-h-10 w-full rounded-lg border border-teal-200 bg-white px-3 text-xs font-semibold text-slate-800"><option value="">Chọn chuyên đề</option>{eligibleCampaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.code} · {campaign.name}</option>)}</select></label>
+  const renderCampaignContext = () => <section className={`rounded-xl border border-brand-200 bg-brand-50 p-3 ${REPORT_FORM_WIDTH_CLASS.FULL}`}>
+    <label className="text-xs font-black text-brand-600">Chuyên đề áp dụng<select value={effectiveCampaignId} onChange={event => setCampaignId(event.target.value)} required className="mt-1.5 min-h-10 w-full rounded-lg border border-brand-200 bg-white px-3 text-xs font-semibold text-slate-800"><option value="">Chọn chuyên đề</option>{eligibleCampaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.code} · {campaign.name}</option>)}</select></label>
     {selectedCampaign && <dl className="mt-3 grid gap-2 text-[11px] text-slate-700 sm:grid-cols-3"><div><dt className="font-bold text-slate-500">Quyết định</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.decisionNo}</dd></div><div><dt className="font-bold text-slate-500">Thời gian</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.startDate} – {selectedCampaign.endDate}</dd></div><div><dt className="font-bold text-slate-500">Phạm vi</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.branchCodes.length} chi nhánh</dd></div></dl>}
     {!eligibleCampaigns.length && <p className="mt-2 text-[11px] font-semibold text-red-700">Không có chuyên đề phù hợp loại báo cáo và chi nhánh đã chọn.</p>}
   </section>;
@@ -266,10 +266,10 @@ export const WebFormFindingModal: React.FC<Props> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-900/80 backdrop-blur-sm animate-fade-in">
-      <div className="bg-white rounded-2xl shadow-2xl border border-slate-200 w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
+      <div className="bg-white rounded-2xl shadow-2xl border border-rule w-full max-w-2xl overflow-hidden flex flex-col max-h-[90vh]">
         <div className="px-6 py-4 bg-slate-900 text-white flex items-center justify-between">
           <div className="flex items-center gap-2">
-            <ShieldAlert className="w-5 h-5 text-sky-400" />
+            <ShieldAlert className="w-5 h-5 text-info" />
             <h3 className="font-bold text-base">Tạo hồ sơ sai sót</h3>
           </div>
           <button onClick={onClose} className="text-slate-400 hover:text-white">
@@ -278,19 +278,19 @@ export const WebFormFindingModal: React.FC<Props> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-4 flex-1">
-          <section className="rounded-xl border border-dashed border-teal-300 bg-teal-50/60 p-3" aria-label="Tách hồ sơ từ tiểu biên bản">
+          <section className="rounded-xl border border-dashed border-brand-300 bg-brand-50/60 p-3" aria-label="Tách hồ sơ từ tiểu biên bản">
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
-                <p className="text-xs font-black text-[#006b68]">Tách hồ sơ từ tiểu biên bản</p>
+                <p className="text-xs font-black text-brand-600">Tách hồ sơ từ tiểu biên bản</p>
                 <p className="mt-1 text-[11px] text-slate-600">Tải .xlsx, .xls, .docx hoặc PDF có OCR để tự tách nhiều mã sai sót. Vẫn có thể nhập tay bên dưới.</p>
               </div>
-              <label className="inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg bg-[#006b68] px-3 py-2 text-[11px] font-bold text-white hover:bg-[#005b59]">
+              <label className="inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-[11px] font-bold text-white hover:bg-brand-600">
                 {importBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : /\.(docx|pdf)$/i.test(importFileName) ? <FileText className="h-4 w-4" /> : <FileSpreadsheet className="h-4 w-4" />}
-                {importBusy ? 'Đang bóc tách...' : 'Chọn tệp'}
+                {importBusy ? 'Đang đọc và tách dữ liệu...' : 'Chọn tệp'}
                 <input type="file" accept=".xlsx,.xls,.docx,.pdf" className="hidden" onChange={handleSourceUpload} disabled={importBusy} />
               </label>
             </div>
-            {importFileName && importedRows.length > 0 && <p className="mt-2 text-[11px] font-semibold text-teal-800">{importFileName} · {importedRows.length} hồ sơ đã sẵn sàng tạo.</p>}
+            {importFileName && importedRows.length > 0 && <p className="mt-2 text-[11px] font-semibold text-brand-700">{importFileName} · {importedRows.length} hồ sơ đã sẵn sàng tạo.</p>}
           </section>
           {!hasCampaignBlock && renderCampaignContext()}
           <div>
@@ -395,37 +395,37 @@ export const WebFormFindingModal: React.FC<Props> = ({
 
           {/* Grading and provenance the đoàn kiểm tra assigned in CoPlus, kept with the finding so a
               sai sót lifted from a Tiểu biên bản arrives here complete. */}
-          <fieldset className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <legend className="px-1 text-[11px] font-black uppercase tracking-wide text-[#006b68]">Nguồn kiểm tra và mức độ</legend>
+          <fieldset className="rounded-xl border border-rule bg-slate-50 p-4">
+            <legend className="px-1 text-[11px] font-black text-brand-600">Nguồn kiểm tra và mức độ</legend>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-6">
               <label className={REPORT_FORM_WIDTH_CLASS.THIRD}>
                 <ReportFieldLabel label="Loại nghiệp vụ" required />
-                <select value={businessLine} onChange={e => setBusinessLine(e.target.value as BusinessLine)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+                <select value={businessLine} onChange={e => setBusinessLine(e.target.value as BusinessLine)} className="mt-1 w-full rounded-lg border border-rule bg-white px-3 py-2 text-xs">
                   {BUSINESS_LINES.map(line => <option key={line} value={line}>{businessLineLabels[line]}</option>)}
                 </select>
               </label>
               <label className={REPORT_FORM_WIDTH_CLASS.THIRD}>
                 <ReportFieldLabel label="Mức độ rủi ro" required />
-                <select value={riskLevel} onChange={e => setRiskLevel(e.target.value as RiskLevel)} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs">
+                <select value={riskLevel} onChange={e => setRiskLevel(e.target.value as RiskLevel)} className="mt-1 w-full rounded-lg border border-rule bg-white px-3 py-2 text-xs">
                   {RISK_LEVELS.map(level => <option key={level} value={level}>{riskLevelLabels[level]}</option>)}
                 </select>
               </label>
               <label className={REPORT_FORM_WIDTH_CLASS.THIRD}>
                 <ReportFieldLabel label="Mã tiểu biên bản nguồn" />
-                <input value={sourceRecordCode} onChange={e => setSourceRecordCode(e.target.value)} placeholder="117.TBBTD.2026.2" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs" />
+                <input value={sourceRecordCode} onChange={e => setSourceRecordCode(e.target.value)} placeholder="117.TBBTD.2026.2" className="mt-1 w-full rounded-lg border border-rule bg-white px-3 py-2 font-mono text-xs" />
               </label>
               <label className={REPORT_FORM_WIDTH_CLASS.THIRD}>
                 <ReportFieldLabel label="Đề xuất xử phạt" />
-                <input value={penaltyProposalCode} onChange={e => setPenaltyProposalCode(e.target.value)} placeholder="1.1.2" className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 font-mono text-xs" />
+                <input value={penaltyProposalCode} onChange={e => setPenaltyProposalCode(e.target.value)} placeholder="1.1.2" className="mt-1 w-full rounded-lg border border-rule bg-white px-3 py-2 font-mono text-xs" />
               </label>
               <label className={REPORT_FORM_WIDTH_CLASS.HALF}>
                 <ReportFieldLabel label="Văn bản dẫn chiếu" />
-                <input value={referenceDocument} onChange={e => setReferenceDocument(e.target.value)} placeholder="Văn bản quy định..." className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs" />
+                <input value={referenceDocument} onChange={e => setReferenceDocument(e.target.value)} placeholder="Văn bản quy định..." className="mt-1 w-full rounded-lg border border-rule bg-white px-3 py-2 text-xs" />
               </label>
             </div>
           </fieldset>
 
-          {schemaConfig && formTemplate && (customFields.length > 0 || hasCampaignBlock) && <div className="rounded-xl border border-slate-200 bg-slate-50 p-4" data-presentation-mode={presentationMode}>
+          {schemaConfig && formTemplate && (customFields.length > 0 || hasCampaignBlock) && <div className="rounded-xl border border-rule bg-slate-50 p-4" data-presentation-mode={presentationMode}>
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 className="text-xs font-extrabold text-slate-800">{formTemplate.name}</h4><span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">{presentationMode === 'EXCEL_GRID' ? 'Nhập theo bảng' : presentationMode === 'FORM_ONLY' ? 'Nhập theo form' : 'Hồ sơ kiểm soát'}</span></div>
             <ReportFormBlockLayout
               schema={schemaConfig}
@@ -462,7 +462,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
             <button
               type="submit"
               disabled={importBusy}
-              className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-md shadow-sky-500/20"
+              className="px-5 py-2 text-xs font-bold text-white bg-brand-500 hover:bg-brand-600 rounded-lg shadow-md shadow-sky-500/20"
             >
               {importBusy ? 'Đang tạo...' : importedRows.length ? `Tạo ${importedRows.length} hồ sơ` : 'Tạo hồ sơ'}
             </button>

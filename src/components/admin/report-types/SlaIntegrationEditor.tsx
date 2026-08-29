@@ -37,7 +37,7 @@ export const SlaIntegrationEditor: React.FC<Props> = ({ sla, integration, readin
       const columns = [...baseColumns, ...fields.map(field => ({ key: field.fieldKey, label: field.label }))]
         .filter((column, index, all) => all.findIndex(item => item.key === column.key) === index);
       const result = await api.createReportSpreadsheet({
-        reportName: reportName.trim() || 'Báo cáo AuditBGS',
+        reportName: reportName.trim() || 'Báo cáo Audit Monitoring',
         sheetName: integration.googleSheets.sheetName,
         columns,
       });
@@ -62,15 +62,15 @@ export const SlaIntegrationEditor: React.FC<Props> = ({ sla, integration, readin
           ['defaultDays', 'Mặc định (ngày)'], ['highRiskDays', 'Rủi ro cao'], ['mediumRiskDays', 'Rủi ro trung bình'],
           ['lowRiskDays', 'Rủi ro thấp'], ['escalationAfterDaysOverdue', 'Nâng cảnh báo sau'],
         ] as const).map(([key, label]) => <label key={key} className="text-xs font-bold text-slate-700">{label}
-          <input type="number" min={key === 'escalationAfterDaysOverdue' ? 0 : 1} value={sla[key]} onChange={event => onSlaChange({ ...sla, [key]: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+          <input type="number" min={key === 'escalationAfterDaysOverdue' ? 0 : 1} value={sla[key]} onChange={event => onSlaChange({ ...sla, [key]: Number(event.target.value) })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" />
         </label>)}
         <label className="text-xs font-bold text-slate-700">Nhắc trước hạn
-          <input value={sla.reminderDaysBefore.join(', ')} onChange={event => onSlaChange({ ...sla, reminderDaysBefore: event.target.value.split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value >= 0) })} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" placeholder="3, 1" />
+          <input value={sla.reminderDaysBefore.join(', ')} onChange={event => onSlaChange({ ...sla, reminderDaysBefore: event.target.value.split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value >= 0) })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" placeholder="3, 1" />
         </label>
       </div>
     </section>
 
-    <section className="rounded-xl border border-slate-200 p-4">
+    <section className="rounded-xl border border-rule p-4">
       <div className="flex items-center justify-between gap-3">
         <div><h4 className="text-sm font-bold text-slate-900">Google Sheets</h4><p className="text-xs text-slate-500">Đẩy dữ liệu hồ sơ sang bảng đã chọn.</p></div>
         <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700"><input type="checkbox" checked={integration.googleSheets.enabled} onChange={event => onIntegrationChange({ ...integration, googleSheets: { ...integration.googleSheets, enabled: event.target.checked } })} /> Bật</label>
@@ -79,27 +79,27 @@ export const SlaIntegrationEditor: React.FC<Props> = ({ sla, integration, readin
         <div className="md:col-span-2">
           <span className="text-xs font-bold text-slate-700">Google Sheet của loại báo cáo</span>
           <div className="mt-1 flex flex-col gap-2 sm:flex-row">
-            <input aria-label="Spreadsheet ID" readOnly value={integration.googleSheets.spreadsheetId ?? ''} className="min-h-10 min-w-0 flex-1 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600" placeholder="ID được điền tự động sau khi tạo" />
-            <button type="button" disabled={creatingSheet} onClick={() => void createGoogleSheet()} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-[#006b68] px-3 text-xs font-bold text-white hover:bg-[#005956] disabled:opacity-60">
+            <input aria-label="Mã Google Sheet" readOnly value={integration.googleSheets.spreadsheetId ?? ''} className="min-h-10 min-w-0 flex-1 rounded-lg border border-rule bg-slate-50 px-3 py-2 font-mono text-xs text-slate-600" placeholder="Mã sẽ được điền sau khi tạo" />
+            <button type="button" disabled={creatingSheet} onClick={() => void createGoogleSheet()} className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg bg-brand-500 px-3 text-xs font-bold text-white hover:bg-brand-600 disabled:opacity-60">
               {creatingSheet ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}Tạo Google Sheet
             </button>
           </div>
-          <p className="mt-1 text-[11px] text-slate-500">Hệ thống tạo cột từ mẫu form và tự lưu Spreadsheet ID.</p>
+          <p className="mt-1 text-[11px] text-slate-500">Hệ thống tạo cột theo mẫu nhập và tự lưu mã Google Sheet.</p>
         </div>
         <label className="text-xs font-bold text-slate-700">Tên sheet
-          <input value={integration.googleSheets.sheetName} onChange={event => onIntegrationChange({ ...integration, googleSheets: { ...integration.googleSheets, sheetName: event.target.value } })} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" />
+          <input value={integration.googleSheets.sheetName} onChange={event => onIntegrationChange({ ...integration, googleSheets: { ...integration.googleSheets, sheetName: event.target.value } })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" />
         </label>
         <label className="text-xs font-bold text-slate-700">Cách đồng bộ
-          <select value={integration.googleSheets.syncMode} onChange={event => onIntegrationChange({ ...integration, googleSheets: { ...integration.googleSheets, syncMode: event.target.value as 'APPEND' | 'UPSERT' } })} className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs"><option value="APPEND">Thêm dòng mới</option><option value="UPSERT">Cập nhật theo mã hồ sơ</option></select>
+          <select value={integration.googleSheets.syncMode} onChange={event => onIntegrationChange({ ...integration, googleSheets: { ...integration.googleSheets, syncMode: event.target.value as 'APPEND' | 'UPSERT' } })} className="mt-1 w-full rounded-lg border border-rule bg-white px-3 py-2 text-xs"><option value="APPEND">Thêm dòng mới</option><option value="UPSERT">Cập nhật theo mã hồ sơ</option></select>
         </label>
-        {spreadsheetUrl && <a href={spreadsheetUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-slate-200 px-3 text-xs font-bold text-[#006b68] hover:bg-teal-50"><ExternalLink className="h-4 w-4" />Mở Google Sheet</a>}
+        {spreadsheetUrl && <a href={spreadsheetUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-10 items-center justify-center gap-2 rounded-lg border border-rule px-3 text-xs font-bold text-brand-600 hover:bg-brand-50"><ExternalLink className="h-4 w-4" />Mở Google Sheet</a>}
       </div>}
       {sheetError && <div role="alert" className="mt-3 rounded-lg bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{sheetError}</div>}
-      {sheetNotice && <div role="status" className="mt-3 rounded-lg bg-teal-50 px-3 py-2 text-xs font-semibold text-[#006b68]">{sheetNotice}</div>}
+      {sheetNotice && <div role="status" className="mt-3 rounded-lg bg-brand-50 px-3 py-2 text-xs font-semibold text-brand-600">{sheetNotice}</div>}
       {readiness && integration.googleSheets.enabled && <Readiness item={readiness.googleSheets} />}
     </section>
 
-    <section className="rounded-xl border border-slate-200 p-4">
+    <section className="rounded-xl border border-rule p-4">
       <div className="flex items-center justify-between gap-3">
         <div><h4 className="text-sm font-bold text-slate-900">Email tự động</h4><p className="text-xs text-slate-500">Gửi theo mốc luồng và SLA.</p></div>
         <label className="inline-flex items-center gap-2 text-xs font-bold text-slate-700"><input type="checkbox" checked={integration.email.enabled} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, enabled: event.target.checked } })} /> Bật</label>
@@ -109,11 +109,11 @@ export const SlaIntegrationEditor: React.FC<Props> = ({ sla, integration, readin
           {([['sendOnSubmission', 'Khi chuyển duyệt'], ['sendBeforeDeadline', 'Trước hạn'], ['sendWhenOverdue', 'Khi quá hạn']] as const).map(([key, label]) => <label key={key} className="inline-flex items-center gap-2"><input type="checkbox" checked={integration.email[key]} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, [key]: event.target.checked } })} /> {label}</label>)}
         </div>
         <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
-          <label className="text-xs font-bold text-slate-700">Giờ gửi<input type="time" value={integration.email.sendTime} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, sendTime: event.target.value } })} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" /></label>
-          <label className="text-xs font-bold text-slate-700 md:col-span-2">Tiêu đề<input value={integration.email.subjectTemplate} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, subjectTemplate: event.target.value } })} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" /></label>
+          <label className="text-xs font-bold text-slate-700">Giờ gửi<input type="time" value={integration.email.sendTime} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, sendTime: event.target.value } })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" /></label>
+          <label className="text-xs font-bold text-slate-700 md:col-span-2">Tiêu đề<input value={integration.email.subjectTemplate} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, subjectTemplate: event.target.value } })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" /></label>
         </div>
         <div className="flex flex-wrap gap-3">{roleOptions.map(role => <label key={role.value} className="inline-flex items-center gap-2 rounded-lg bg-slate-50 px-3 py-2 text-xs font-semibold"><input type="checkbox" checked={integration.email.recipientRoles.includes(role.value)} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, recipientRoles: event.target.checked ? [...integration.email.recipientRoles, role.value] : integration.email.recipientRoles.filter(item => item !== role.value) } })} />{role.label}</label>)}</div>
-        <label className="block text-xs font-bold text-slate-700">Email nhận thêm, phân cách bằng dấu phẩy<input value={integration.email.additionalRecipients.join(', ')} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, additionalRecipients: event.target.value.split(',').map(value => value.trim()).filter(Boolean) } })} className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-xs" /></label>
+        <label className="block text-xs font-bold text-slate-700">Email nhận thêm, phân cách bằng dấu phẩy<input value={integration.email.additionalRecipients.join(', ')} onChange={event => onIntegrationChange({ ...integration, email: { ...integration.email, additionalRecipients: event.target.value.split(',').map(value => value.trim()).filter(Boolean) } })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" /></label>
       </div>}
       {readiness && integration.email.enabled && <Readiness item={readiness.email} />}
     </section>

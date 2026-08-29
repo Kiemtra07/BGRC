@@ -2,18 +2,65 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ---------------------------------------------------------------------------
+   Design tokens.
+   The brand hue carries identity and navigation only. Operational meaning —
+   how late a hồ sơ is, where it sits in the approval route — is carried by the
+   status ramp below, so a screen full of teal never hides an overdue finding.
+   --------------------------------------------------------------------------- */
 :root {
   --brand-primary: #006b68;
   --brand-primary-hover: #005250;
   --brand-surface: #f0f7f7;
   --brand-border: #d4e8e7;
+
+  /* Status ramp: text / surface / border, each pair ≥ 4.5:1 at 10-12px. */
+  --status-risk-text: #b42318;
+  --status-risk-surface: #fef3f2;
+  --status-risk-border: #fecdca;
+  --status-risk-solid: #d92d20;
+
+  --status-warn-text: #b54708;
+  --status-warn-surface: #fffaeb;
+  --status-warn-border: #fedf89;
+
+  --status-ok-text: #067647;
+  --status-ok-surface: #ecfdf3;
+  --status-ok-border: #abefc6;
+
+  --status-info-text: #175cd3;
+  --status-info-surface: #eff8ff;
+  --status-info-border: #b2ddff;
+
+  --status-idle-text: #475467;
+  --status-idle-surface: #f8fafc;
+  --status-idle-border: #e2e8f0;
+
+  /* Page chrome. */
+  --app-canvas: #f1f5f5;
+  --app-rule: #e3ebeb;
 }
 
 body {
   font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', Oxygen, Ubuntu, Cantarell, sans-serif;
   color: #1e293b;
-  background-color: #f8fafc;
+  background-color: var(--app-canvas);
   overflow-x: hidden;
+}
+
+/* Counts, CIF, mã lỗi and dates all sit in columns; proportional digits make
+   them jitter between rows. */
+table,
+[data-numeric] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Keyboard users get one consistent ring instead of each component inventing
+   its own (or losing it to a `outline-none` further down the tree). */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--brand-primary);
+  outline-offset: 2px;
+  border-radius: 6px;
 }
 
 /* Custom scrollbars */
@@ -29,54 +76,32 @@ body {
   border-radius: 9999px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #006b68;
-}
-
-/* Subtle glassmorphism and modern cards */
-.glass-card {
-  background: rgba(255, 255, 255, 0.95);
-  backdrop-filter: blur(12px);
-  border: 1px solid rgba(226, 232, 240, 0.8);
+  background: var(--brand-primary);
 }
 
 .brand-gradient {
   background: linear-gradient(135deg, #006b68 0%, #004a48 100%);
 }
 
-.brand-gradient-light {
-  background: linear-gradient(135deg, #f0f9f9 0%, #e6f3f2 100%);
+/* The overdue count is the one number that may move on its own. It fades in
+   once when it changes rather than pulsing forever — a permanently animating
+   badge stops reading as an alert after the first minute. */
+@keyframes risk-attention {
+  from { opacity: 0; transform: translateY(-2px); }
+  to { opacity: 1; transform: none; }
 }
 
-.badge-pending {
-  background-color: #fee2e2;
-  color: #991b1b;
-  border: 1px solid #fecaca;
+.risk-attention {
+  animation: risk-attention 240ms ease-out;
 }
 
-.badge-review {
-  background-color: #fef3c7;
-  color: #92400e;
-  border: 1px solid #fde68a;
-}
-
-.badge-internal {
-  background-color: #e0f2fe;
-  color: #0369a1;
-  border: 1px solid #bae6fd;
-}
-
-.badge-resolved {
-  background-color: #d1fae5;
-  color: #065f46;
-  border: 1px solid #a7f3d0;
-}
-
-/* Pulse animation for urgent deadlines */
-@keyframes urgent-pulse {
-  0%, 100% { opacity: 1; transform: scale(1); }
-  50% { opacity: 0.85; transform: scale(1.02); }
-}
-
-.urgent-badge {
-  animation: urgent-pulse 2s infinite ease-in-out;
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

@@ -81,6 +81,7 @@ export const UpdateUserSchema = z.object({
   email: z.string().email().optional(),
   fullName: z.string().trim().min(2).max(255).optional(),
   phone: z.string().max(50).optional(),
+  googleWorkspaceEmail: z.union([z.string().email(), z.literal('')]).optional(),
   isActive: z.boolean().optional(),
 });
 export type UpdateUserDTO = z.infer<typeof UpdateUserSchema>;
@@ -99,6 +100,61 @@ export interface UpdateAuthenticatorResponse {
   user: UserProfile;
   setup?: AuthenticatorSetup;
 }
+
+/**
+ * Whether Google Authenticator is demanded at login is a system-wide policy, not a
+ * per-account preference: an account that opts out is exactly the account an attacker
+ * picks. Enrolment stays per user because TOTP needs one secret per person, but the
+ * *requirement* comes from here.
+ */
+export const MfaPolicySchema = z.enum(['DISABLED', 'REQUIRED_INTERNAL', 'REQUIRED_ALL']);
+export type MfaPolicy = z.infer<typeof MfaPolicySchema>;
+
+export const SecuritySettingsSchema = z.object({
+  mfaPolicy: MfaPolicySchema,
+});
+export type SecuritySettingsDTO = z.infer<typeof SecuritySettingsSchema>;
+
+export interface SecuritySettings {
+  mfaPolicy: MfaPolicy;
+  updatedAt: string;
+  updatedByUserId?: string;
+  updatedByName?: string;
+}
+
+export interface MfaEnrolmentRow {
+  id: string;
+  fullName: string;
+  email: string;
+  portal: PortalType;
+  /** True once a TOTP secret exists for the account. */
+  configured: boolean;
+  /** True when the current policy demands a code from this account. */
+  covered: boolean;
+}
+
+/**
+ * Policy plus the enrolment picture it creates. Issuing and revoking codes lives on this one
+ * screen, so it needs both who is still missing a code and who already has one.
+ */
+export interface SecuritySettingsResponse {
+  settings: SecuritySettings;
+  /** Active accounts the policy covers that have no authenticator secret yet. */
+  pendingEnrolment: Array<{ id: string; fullName: string; email: string; portal: PortalType }>;
+  coveredUserCount: number;
+  /** Every active account, with its enrolment and coverage state. */
+  enrolment: MfaEnrolmentRow[];
+}
+
+export const mfaPolicyLabels: Record<MfaPolicy, string> = {
+  DISABLED: 'Tắt — không yêu cầu mã',
+  REQUIRED_INTERNAL: 'Bắt buộc với khối nội bộ',
+  REQUIRED_ALL: 'Bắt buộc với toàn bộ người dùng',
+};
+
+/** Single source of truth for "does this account have to enter a code", used by server and UI. */
+export const mfaPolicyCovers = (policy: MfaPolicy, portal: PortalType): boolean =>
+  policy === 'REQUIRED_ALL' || (policy === 'REQUIRED_INTERNAL' && portal === 'INTERNAL');
 
 const UserRoleSchema = z.enum([
   'ADMIN',

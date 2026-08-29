@@ -11,8 +11,9 @@ describe('Google OIDC security helpers', () => {
   it('signs a short-lived login state and restores a safe in-app path', () => {
     const state = createGoogleOidcState({ secret: stateSecret, returnTo: '/reports', now: 1_000 });
 
-    expect(verifyGoogleOidcState({ state, secret: stateSecret, now: 1_000 + 9 * 60_000 }))
-      .toEqual({ returnTo: '/reports' });
+    const verified = verifyGoogleOidcState({ state, secret: stateSecret, now: 1_000 + 9 * 60_000 });
+    expect(verified.returnTo).toBe('/reports');
+    expect(verified.nonce).toMatch(/^[0-9a-f-]{36}$/);
   });
 
   it('rejects a tampered, expired, or external login callback path', () => {
@@ -51,7 +52,7 @@ describe('Google OIDC security helpers', () => {
   it('keeps ordinary in-app paths, including query and fragment, usable after login', () => {
     for (const returnTo of ['/', '/reports', '/findings/find-1?tab=evidence#top']) {
       const state = createGoogleOidcState({ secret: stateSecret, returnTo, now: 1_000 });
-      expect(verifyGoogleOidcState({ state, secret: stateSecret, now: 1_000 })).toEqual({ returnTo });
+      expect(verifyGoogleOidcState({ state, secret: stateSecret, now: 1_000 }).returnTo).toBe(returnTo);
     }
   });
 
@@ -74,5 +75,15 @@ describe('Google OIDC security helpers', () => {
       audience: 'client-id.apps.googleusercontent.com',
       issuer: 'https://accounts.google.com',
     })).toThrow(/email/i);
+  });
+
+  it('rejects a Google identity whose nonce does not match the signed state', () => {
+    expect(() => validateGoogleOidcIdentity({
+      payload: {
+        sub: 'google-subject-123', email: 'admin@example.com', email_verified: true,
+        iss: 'https://accounts.google.com', aud: 'client-id.apps.googleusercontent.com', nonce: 'wrong',
+      },
+      audience: 'client-id.apps.googleusercontent.com', issuer: 'https://accounts.google.com', expectedNonce: 'expected',
+    })).toThrow(/nonce/i);
   });
 });

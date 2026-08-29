@@ -38,8 +38,8 @@ export const WorkflowConfigEditor: React.FC<Props> = ({ channelId, value, onChan
         ['ONE_TIER', 'Luồng gọn', 'Chi nhánh → Phê duyệt HT'],
       ] as const).map(([type, title, description]) => {
         const active = value.workflowType === type;
-        return <button key={type} type="button" onClick={() => onChange(createWorkflowConfig(channelId, type))} className={`rounded-xl border p-4 text-left transition ${active ? 'border-[#006b68] bg-teal-50 ring-1 ring-[#006b68]' : 'border-slate-200 bg-white hover:border-slate-300'}`}>
-          <div className="flex items-center justify-between gap-3"><span className="text-sm font-bold text-slate-900">{title}</span>{active && <CheckCircle2 className="h-4 w-4 text-[#006b68]" />}</div>
+        return <button key={type} type="button" onClick={() => onChange(createWorkflowConfig(channelId, type))} className={`rounded-xl border p-4 text-left transition ${active ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-rule bg-white hover:border-slate-300'}`}>
+          <div className="flex items-center justify-between gap-3"><span className="text-sm font-bold text-slate-900">{title}</span>{active && <CheckCircle2 className="h-4 w-4 text-brand-600" />}</div>
           <p className="mt-1 text-xs text-slate-600">{description}</p>
         </button>;
       })}
@@ -53,15 +53,15 @@ export const WorkflowConfigEditor: React.FC<Props> = ({ channelId, value, onChan
           {index === starInsertIndex && <>
             <ArrowRight className="mx-auto hidden h-4 w-4 shrink-0 self-center text-slate-400 lg:block" />
             <div data-testid="workflow-stage-conditional" className="flex-1 rounded-xl border border-dashed border-amber-300 bg-amber-50 p-4">
-              <span className="inline-flex items-center gap-1 text-[10px] font-bold uppercase tracking-wide text-amber-700"><Star className="h-3 w-3 fill-amber-500 text-amber-500" />Bước có điều kiện</span>
+              <span className="inline-flex items-center gap-1 text-[10px] font-bold text-amber-700"><Star className="h-3 w-3 fill-amber-500 text-amber-500" />Bước có điều kiện</span>
               <p className="mt-2 text-sm font-bold text-slate-900">Lãnh đạo chi nhánh</p>
               <p className="mt-2 text-[11px] text-amber-800">Chỉ chèn vào tuyến khi hồ sơ được gắn dấu sao.</p>
             </div>
           </>}
           {index > 0 && <ArrowRight className="mx-auto hidden h-4 w-4 shrink-0 self-center text-slate-400 lg:block" />}
-          <div className="flex-1 rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <span className="text-[10px] font-bold uppercase tracking-wide text-[#006b68]">Bước {index + 1}</span>
-            <input aria-label={`Tên bước ${index + 1}`} value={stage.stageName} onChange={event => renameStage(index, event.target.value)} className="mt-2 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-bold" />
+          <div className="flex-1 rounded-xl border border-rule bg-slate-50 p-4">
+            <span className="text-[10px] font-bold text-brand-600">Bước {index + 1}</span>
+            <input aria-label={`Tên bước ${index + 1}`} value={stage.stageName} onChange={event => renameStage(index, event.target.value)} className="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2 text-sm font-bold" />
             <p className="mt-2 text-[11px] text-slate-500">{roleSummary(stage.allowedRoles)}</p>
           </div>
         </React.Fragment>
