@@ -10,7 +10,7 @@ const CalendarDateSchema = z.string()
   }, 'Ngày lịch không hợp lệ');
 
 export type ImportBatchStatus = 'STAGING' | 'VALIDATING' | 'VALIDATED_WITH_ERRORS' | 'READY_TO_COMMIT' | 'COMMITTED' | 'FAILED';
-export type FindingImportSourceType = 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'API_BULK' | 'WEB_FORM';
+export type FindingImportSourceType = 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'PDF' | 'API_BULK' | 'WEB_FORM';
 
 export interface StagingValidationError {
   rowNumber: number;
@@ -89,7 +89,7 @@ export type WebFormFindingDTO = z.infer<typeof WebFormFindingSchema>;
 
 export const BulkFindingImportSchema = z.object({
   sourceFileName: z.string().trim().min(1).max(255),
-  sourceType: z.enum(['XLSX', 'ZIP_XLSX', 'CLIPBOARD', 'DOCX', 'API_BULK', 'WEB_FORM']).default('API_BULK'),
+  sourceType: z.enum(['XLSX', 'ZIP_XLSX', 'CLIPBOARD', 'DOCX', 'PDF', 'API_BULK', 'WEB_FORM']).default('API_BULK'),
   rows: z.array(WebFormFindingSchema).min(1).max(5000),
 }).superRefine((value, context) => {
   if (value.sourceType !== 'API_BULK' && value.rows.some(row => !row.campaignId?.trim())) {

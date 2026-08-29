@@ -12,7 +12,8 @@ import {
   ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO, CreatedUserResponse, ResetUserPasswordDTO,
   BulkUserImportDTO, BulkUserImportResult, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse,
   LoginDTO, LoginResponse,
-  AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, UpdateAuditCampaignDTO, UpdateOrgUnitDTO,
+  AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UpdateUserDTO,
+  BulkOrgUnitImportDTO, BulkOrgUnitImportResult,
 } from '../../shared/contracts';
 
 export interface FindingApprovalCandidates {
@@ -157,8 +158,17 @@ class ApiService {
   public deleteOrgUnit(id: string): Promise<void> {
     return this.request(`/admin/org-units/${id}`, { method: 'DELETE' });
   }
+  public importOrgUnits(data: BulkOrgUnitImportDTO): Promise<BulkOrgUnitImportResult> {
+    return this.request('/admin/org-units/imports/commit', { method: 'POST', body: JSON.stringify(data) });
+  }
   public createUser(data: CreateUserDTO): Promise<CreatedUserResponse> {
     return this.request('/admin/users', { method: 'POST', body: JSON.stringify(data) });
+  }
+  public updateUser(id: string, data: UpdateUserDTO): Promise<{ user: UserProfile }> {
+    return this.request(`/admin/users/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
+  }
+  public deleteUser(id: string): Promise<void> {
+    return this.request(`/admin/users/${id}`, { method: 'DELETE' });
   }
   public importUsers(data: BulkUserImportDTO): Promise<BulkUserImportResult> {
     return this.request('/admin/users/imports/commit', {
@@ -172,6 +182,12 @@ class ApiService {
   }
   public updateUserAuthenticator(id: string, data: UpdateAuthenticatorDTO): Promise<UpdateAuthenticatorResponse> {
     return this.request(`/admin/users/${id}/authenticator`, { method: 'PUT', body: JSON.stringify(data) });
+  }
+  public changePassword(data: { currentPassword?: string; password: string }): Promise<{ user: UserProfile }> {
+    return this.request('/auth/password', { method: 'POST', body: JSON.stringify(data) });
+  }
+  public forgotPassword(email: string, redirectTo?: string): Promise<void> {
+    return this.request('/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email, redirectTo }) });
   }
   public createChannel(data: Partial<CreateReportChannelDTO>): Promise<ReportChannel> {
     return this.request('/admin/channels', { method: 'POST', body: JSON.stringify(data) });
@@ -235,6 +251,16 @@ class ApiService {
     if (!response.ok) {
       const problem = await response.json().catch(() => ({ detail: response.statusText }));
       throw new ApiError(problem.detail || problem.title || 'Không thể đọc DOCX.', response.status, problem.code);
+    }
+    return response.json();
+  }
+  public async previewFindingDocument(file: File): Promise<{ fileName: string; rows: Array<{ rowNumber: number; cif: string; customerName: string; branchCode: string; branchName: string; errorCode: string; errorTitle: string; description: string; department?: string; decisionNo?: string }> }> {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await fetch(`${API_BASE}/imports/findings/document-preview`, { method: 'POST', credentials: 'same-origin', body: formData });
+    if (!response.ok) {
+      const problem = await response.json().catch(() => ({ detail: response.statusText }));
+      throw new ApiError(problem.detail || problem.title || 'Không thể đọc tiểu biên bản.', response.status, problem.code);
     }
     return response.json();
   }

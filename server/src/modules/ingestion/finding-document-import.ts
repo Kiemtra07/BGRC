@@ -86,3 +86,57 @@ export async function parseFindingDocx(buffer: Buffer): Promise<FindingDocumentR
   }
   throw new FindingDocumentImportError('Không tìm thấy bảng DOCX có đủ cột Tên khách hàng, CIF, Mã chi nhánh và Mã sai sót.');
 }
+
+/**
+ * Extract the common text layout emitted by OCR-enabled tiểu biên bản PDFs. PDF is intentionally
+ * parsed on the server so the browser never needs to ship a second PDF parser; scanned, image-only
+ * PDFs return a clear validation error and can still be uploaded as evidence after manual entry.
+ */
+export async function parseFindingPdf(buffer: Buffer): Promise<FindingDocumentRow[]> {
+  try {
+    const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+    const pages = await Promise.all(Array.from({ length: document.numPages }, async (_, index) => {
+      const page = await document.getPage(index + 1);
+      const content = await page.getTextContent();
+      return cleanPdfText(content.items.map(item => 'str' in item ? item.str : '').join(' '));
+    }));
+    const text = pages.filter(Boolean).join('\n');
+    const rows: FindingDocumentRow[] = [];
+    const segments = text.split(/(?=(?:CIF|Mã\s*KH)\s*[:#-]?\s*[A-Z0-9.-]{3,20})/i).filter(Boolean);
+    segments.forEach((segment, segmentIndex) => {
+      const cifMatch = segment.match(/(?:CIF|Mã\s*KH)\s*[:#-]?\s*([A-Z0-9.-]{3,20})/i);
+      if (!cifMatch) return;
+      const cif = cifMatch[1].replace(/\s+/g, '');
+      const customerName = segment.slice(0, segment.indexOf(cifMatch[0])).replace(/^.*?[:：]\s*/, '').trim() || `Khách hàng ${cif}`;
+      const branch = segment.match(/(?:Mã\s*chi\s*nhánh|Mã\s*CN)\s*[:#-]?\s*([A-Z]?\d{3,4})/i)?.[1]?.replace(/^[A-Z](?=\d)/i, '');
+      if (!branch) return;
+      const branchName = segment.match(/Tên\s*chi\s*nhánh\s*[:：-]?\s*([^\n]+?)(?=\s+(?:Mã\s*chi|CIF|Mã\s*KH)\b|$)/i)?.[1]?.trim();
+      const decisionNo = segment.match(/(?:Số\s*quyết\s*định|Quyết\s*định|Số\s*QĐ)\s*[:：-]?\s*([^\n]+?)(?=\s+(?:Mã\s*chi|CIF|Mã\s*KH)\b|$)/i)?.[1]?.trim();
+      const codes = [...segment.matchAll(/\b((?:TD|PNTD)\d{2}(?:\.\d{2})?)\b/gi)];
+      codes.forEach((match, codeIndex) => {
+        const code = match[1].toUpperCase();
+        const nextCodeAt = codes[codeIndex + 1]?.index ?? segment.length;
+        const detail = cleanPdfText(segment.slice((match.index ?? 0) + match[0].length, nextCodeAt)).replace(/^\s*[-:–]\s*/, '').trim();
+        rows.push({
+          rowNumber: segmentIndex + 1,
+          cif,
+          customerName,
+          branchCode: branch,
+          branchName: branchName || `Chi nhánh ${branch}`,
+          decisionNo,
+          errorCode: code,
+          errorTitle: detail.split(/[.;]/)[0]?.trim() || `Sai sót ${code}`,
+          description: detail || `Sai sót ${code} được trích xuất từ PDF.`,
+        });
+      });
+    });
+    if (!rows.length) throw new FindingDocumentImportError('Không tìm thấy dữ liệu CIF, mã chi nhánh và mã sai sót trong PDF. Nếu đây là bản scan, hãy dùng PDF có OCR hoặc nhập thủ công.');
+    return rows;
+  } catch (error) {
+    if (error instanceof FindingDocumentImportError) throw error;
+    throw new FindingDocumentImportError('Không thể đọc văn bản trong PDF. Nếu đây là bản scan, hãy dùng PDF có OCR hoặc nhập thủ công.');
+  }
+}
+
+const cleanPdfText = (value: string): string => value.replace(/\s+/g, ' ').trim();

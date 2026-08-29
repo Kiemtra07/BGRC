@@ -9,7 +9,7 @@ import {
   Database,
   ClipboardCheck,
 } from 'lucide-react';
-import { AuditCampaign, BulkUserImportDTO, BulkUserImportResult, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse } from '../../../shared/contracts';
+import { AuditCampaign, BulkUserImportDTO, BulkUserImportResult, BulkOrgUnitImportDTO, BulkOrgUnitImportResult, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, UpdateUserDTO } from '../../../shared/contracts';
 import { DynamicChannelManager } from './DynamicChannelManager';
 import { OrganizationManager } from './OrganizationManager';
 import { UserManager } from './UserManager';
@@ -27,9 +27,13 @@ interface Props {
   onOrgUnitCreated: (unit: Partial<OrgUnit>) => Promise<void>;
   onOrgUnitUpdated: (id: string, unit: UpdateOrgUnitDTO) => Promise<void>;
   onOrgUnitDeleted: (id: string) => Promise<void>;
+  onOrgUnitsImported: (batch: BulkOrgUnitImportDTO) => Promise<BulkOrgUnitImportResult>;
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
   onUsersImported: (batch: BulkUserImportDTO) => Promise<BulkUserImportResult>;
   onAuthenticatorChange: (id: string, data: UpdateAuthenticatorDTO) => Promise<UpdateAuthenticatorResponse>;
+  onUserUpdated: (id: string, data: UpdateUserDTO) => Promise<UserProfile>;
+  onUserDeleted: (id: string) => Promise<void>;
+  onUserPasswordReset: (id: string) => Promise<CreatedUserResponse>;
   onChannelCreated: (channel: Partial<CreateReportChannelDTO>) => Promise<void>;
   onChannelUpdated: (id: string, channel: UpdateReportChannelDTO) => Promise<void>;
   onChannelDeleted: (id: string) => Promise<void>;
@@ -52,9 +56,13 @@ export const AdminPortal: React.FC<Props> = ({
   onOrgUnitCreated,
   onOrgUnitUpdated,
   onOrgUnitDeleted,
+  onOrgUnitsImported,
   onUserCreated,
   onUsersImported,
   onAuthenticatorChange,
+  onUserUpdated,
+  onUserDeleted,
+  onUserPasswordReset,
   onChannelCreated,
   onChannelUpdated,
   onChannelDeleted,
@@ -129,7 +137,7 @@ export const AdminPortal: React.FC<Props> = ({
         )}
 
         {activeTab === 'ORGANIZATION' && (
-          <OrganizationManager orgUnits={orgUnits} users={users} onOrgUnitCreated={onOrgUnitCreated} onOrgUnitUpdated={onOrgUnitUpdated} onOrgUnitDeleted={onOrgUnitDeleted} />
+          <OrganizationManager orgUnits={orgUnits} users={users} onOrgUnitCreated={onOrgUnitCreated} onOrgUnitUpdated={onOrgUnitUpdated} onOrgUnitDeleted={onOrgUnitDeleted} onOrgUnitsImported={onOrgUnitsImported} />
         )}
 
         {activeTab === 'REPORT_CATALOG' && (
@@ -137,7 +145,7 @@ export const AdminPortal: React.FC<Props> = ({
         )}
 
         {activeTab === 'USERS' && (
-          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} />
+          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} onUserUpdated={onUserUpdated} onUserDeleted={onUserDeleted} onUserPasswordReset={onUserPasswordReset} />
         )}
 
         {activeTab === 'PERMISSIONS' && (

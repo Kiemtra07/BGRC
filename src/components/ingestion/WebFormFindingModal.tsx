@@ -1,10 +1,13 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { X, ShieldAlert } from 'lucide-react';
+import { FileSpreadsheet, FileText, Loader2, UploadCloud, X, ShieldAlert } from 'lucide-react';
 import {
   AuditCampaign, BUSINESS_LINES, BusinessLine, DynamicFieldDefinition, OrgUnit, RISK_LEVELS, ReportChannel,
   ReportFormBlockWidth, RiskLevel, WebFormFindingDTO, businessLineLabels, riskLevelLabels,
 } from '../../../shared/contracts';
 import { REPORT_FORM_WIDTH_CLASS, ReportFieldLabel, ReportFormBlockLayout, resolveReportFormTemplate } from '../reports/ReportFormBlockLayout';
+import { ExcelFastIngestionService } from '../../lib/excel-parser';
+import type { UserProfile as LegacyUserProfile } from '../../types';
+import { api } from '../../services/api';
 
 interface Props {
   isOpen: boolean;
@@ -13,7 +16,8 @@ interface Props {
   campaigns: AuditCampaign[];
   initialCampaignId?: string;
   orgUnits: OrgUnit[];
-  onSubmit: (dto: WebFormFindingDTO) => void;
+  currentUser?: import('../../../shared/contracts').UserProfile;
+  onSubmit: (dto: WebFormFindingDTO | WebFormFindingDTO[]) => void | Promise<void>;
 }
 
 const emptyValue = (value: unknown): boolean => value === undefined || value === null || value === '';
@@ -25,6 +29,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
   campaigns,
   initialCampaignId,
   orgUnits,
+  currentUser,
   onSubmit,
 }) => {
   const branches = useMemo(() => orgUnits.filter(u => u.type === 'BRANCH'), [orgUnits]);
@@ -47,6 +52,9 @@ export const WebFormFindingModal: React.FC<Props> = ({
   const [referenceDocument, setReferenceDocument] = useState('');
   const [customPayload, setCustomPayload] = useState<Record<string, unknown>>({});
   const [formError, setFormError] = useState<string>();
+  const [importedRows, setImportedRows] = useState<WebFormFindingDTO[]>([]);
+  const [importFileName, setImportFileName] = useState('');
+  const [importBusy, setImportBusy] = useState(false);
 
   // The modal stays mounted while closed, so reopening has to start from a clean draft.
   useEffect(() => {
@@ -61,6 +69,8 @@ export const WebFormFindingModal: React.FC<Props> = ({
     setPenaltyProposalCode('');
     setReferenceDocument('');
     setCustomPayload({});
+    setImportedRows([]);
+    setImportFileName('');
     setFormError(undefined);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
@@ -78,7 +88,99 @@ export const WebFormFindingModal: React.FC<Props> = ({
   const effectiveCampaignId = eligibleCampaigns.some(campaign => campaign.id === campaignId) ? campaignId : eligibleCampaigns[0]?.id ?? '';
   const selectedCampaign = eligibleCampaigns.find(campaign => campaign.id === effectiveCampaignId);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const mapImportedRow = (row: { cif: string; customerName: string; branchCode: string; branchName: string; errorCode: string; errorTitle: string; description: string; department?: string; decisionNo?: string; businessLine?: BusinessLine; riskLevel?: RiskLevel; inspectionTeamCode?: string; sourceRecordCode?: string; penaltyProposalCode?: string; referenceDocument?: string; }): WebFormFindingDTO => {
+    const branchObj = branches.find(branch => branch.code === row.branchCode);
+    return {
+      campaignId: effectiveCampaignId || undefined,
+      channelId,
+      cif: row.cif,
+      customerName: row.customerName,
+      clusterName: branchObj?.parentName || 'Cụm chưa xác định',
+      branchCode: row.branchCode,
+      branchName: branchObj?.name || row.branchName || `Chi nhánh ${row.branchCode}`,
+      department: row.department,
+      decisionNo: row.decisionNo || decisionNo,
+      errorCode: row.errorCode,
+      errorTitle: row.errorTitle,
+      description: row.description,
+      exposureAmount: 0,
+      inspectionTeamCode: row.inspectionTeamCode || selectedCampaign?.code,
+      sourceRecordCode: row.sourceRecordCode || sourceRecordCode.trim() || undefined,
+      businessLine: row.businessLine || businessLine,
+      riskLevel: row.riskLevel || riskLevel,
+      penaltyProposalCode: row.penaltyProposalCode || penaltyProposalCode.trim() || undefined,
+      referenceDocument: row.referenceDocument || referenceDocument.trim() || undefined,
+      customPayload,
+    };
+  };
+
+  const handleSourceUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = '';
+    if (!file) return;
+    setImportBusy(true);
+    setFormError(undefined);
+    try {
+      if (!currentUser) throw new Error('Phiên đăng nhập đã hết hạn. Hãy đăng nhập lại trước khi tải tệp.');
+      let rows: WebFormFindingDTO[] = [];
+      if (/\.xlsx?$/i.test(file.name)) {
+        const legacyUser: LegacyUserProfile = {
+          id: currentUser.id,
+          name: currentUser.fullName,
+          email: currentUser.email,
+          portal: currentUser.portal,
+          role: currentUser.primaryRole as LegacyUserProfile['role'],
+          branchCode: currentUser.branchCode,
+          branchName: currentUser.branchName,
+          department: currentUser.department,
+        };
+        const result = await ExcelFastIngestionService.parseExcelFile(file, legacyUser);
+        rows = result.customers.flatMap(customer => customer.errors.map(error => mapImportedRow({
+          cif: customer.cif,
+          customerName: customer.customerName,
+          branchCode: customer.branchCode,
+          branchName: customer.branchName,
+          department: customer.department,
+          decisionNo: customer.decisionNo,
+          errorCode: error.errorCode,
+          errorTitle: error.errorTitle,
+          description: error.description,
+          businessLine: error.businessLine,
+          riskLevel: error.riskLevel,
+          inspectionTeamCode: error.inspectionTeamCode,
+          sourceRecordCode: error.sourceRecordCode,
+          penaltyProposalCode: error.penaltyProposalCode,
+          referenceDocument: error.referenceDocument,
+        })));
+        if (!rows.length) throw new Error(result.message || 'Không tìm thấy dòng sai sót hợp lệ trong Excel.');
+      } else if (/\.(docx|pdf)$/i.test(file.name)) {
+        const preview = await api.previewFindingDocument(file);
+        rows = preview.rows.map(mapImportedRow);
+        if (!rows.length) throw new Error('Không tìm thấy mã sai sót hợp lệ trong tệp.');
+      } else {
+        throw new Error('Chỉ hỗ trợ tiểu biên bản .xlsx, .xls, .docx hoặc .pdf.');
+      }
+      const first = rows[0];
+      setImportedRows(rows);
+      setImportFileName(file.name);
+      setCif(first.cif);
+      setCustomerName(first.customerName);
+      setSelectedBranch(first.branchCode);
+      setDecisionNo(first.decisionNo || decisionNo);
+      setErrorCode(first.errorCode);
+      setErrorTitle(first.errorTitle);
+      setDescription(first.description);
+      setFormError(`Đã bóc tách ${rows.length} hồ sơ từ ${file.name}. Kiểm tra chuyên đề/chi nhánh rồi bấm Tạo hồ sơ.`);
+    } catch (error) {
+      setImportedRows([]);
+      setImportFileName('');
+      setFormError(error instanceof Error ? error.message : 'Không thể bóc tách tệp tiểu biên bản.');
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setFormError(undefined);
     if (!cif || !customerName || !errorCode || !errorTitle || !description) {
@@ -98,7 +200,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
 
     const branchObj = branches.find(b => b.code === selectedBranch);
 
-    onSubmit({
+    const dto: WebFormFindingDTO = {
       campaignId: effectiveCampaignId || undefined,
       channelId,
       cif,
@@ -119,9 +221,19 @@ export const WebFormFindingModal: React.FC<Props> = ({
       penaltyProposalCode: penaltyProposalCode.trim() || undefined,
       referenceDocument: referenceDocument.trim() || undefined,
       customPayload,
-    });
+    };
 
-    onClose();
+    setImportBusy(true);
+    try {
+      await onSubmit(importedRows.length
+        ? importedRows.map(row => ({ ...row, campaignId: effectiveCampaignId || row.campaignId, channelId }))
+        : dto);
+      onClose();
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : 'Không thể tạo hồ sơ.');
+    } finally {
+      setImportBusy(false);
+    }
   };
 
   const renderCustomControl = (field: DynamicFieldDefinition) => field.dataType === 'file'
@@ -166,6 +278,20 @@ export const WebFormFindingModal: React.FC<Props> = ({
         </div>
 
         <form onSubmit={handleSubmit} className="p-6 overflow-y-auto space-y-4 flex-1">
+          <section className="rounded-xl border border-dashed border-teal-300 bg-teal-50/60 p-3" aria-label="Tách hồ sơ từ tiểu biên bản">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <p className="text-xs font-black text-[#006b68]">Tách hồ sơ từ tiểu biên bản</p>
+                <p className="mt-1 text-[11px] text-slate-600">Tải .xlsx, .xls, .docx hoặc PDF có OCR để tự tách nhiều mã sai sót. Vẫn có thể nhập tay bên dưới.</p>
+              </div>
+              <label className="inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg bg-[#006b68] px-3 py-2 text-[11px] font-bold text-white hover:bg-[#005b59]">
+                {importBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : /\.(docx|pdf)$/i.test(importFileName) ? <FileText className="h-4 w-4" /> : <FileSpreadsheet className="h-4 w-4" />}
+                {importBusy ? 'Đang bóc tách...' : 'Chọn tệp'}
+                <input type="file" accept=".xlsx,.xls,.docx,.pdf" className="hidden" onChange={handleSourceUpload} disabled={importBusy} />
+              </label>
+            </div>
+            {importFileName && importedRows.length > 0 && <p className="mt-2 text-[11px] font-semibold text-teal-800">{importFileName} · {importedRows.length} hồ sơ đã sẵn sàng tạo.</p>}
+          </section>
           {!hasCampaignBlock && renderCampaignContext()}
           <div>
             <label className="text-xs font-bold text-slate-700 block mb-1">Kênh tiếp nhận</label>
@@ -335,9 +461,10 @@ export const WebFormFindingModal: React.FC<Props> = ({
             </button>
             <button
               type="submit"
+              disabled={importBusy}
               className="px-5 py-2 text-xs font-bold text-white bg-sky-600 hover:bg-sky-700 rounded-lg shadow-md shadow-sky-500/20"
             >
-              Tạo hồ sơ
+              {importBusy ? 'Đang tạo...' : importedRows.length ? `Tạo ${importedRows.length} hồ sơ` : 'Tạo hồ sơ'}
             </button>
           </div>
         </form>

@@ -44,3 +44,14 @@ export const UpdateOrgUnitSchema = z.object({
 });
 
 export type UpdateOrgUnitDTO = z.infer<typeof UpdateOrgUnitSchema>;
+
+export const BulkOrgUnitImportSchema = z.object({
+  rows: z.array(z.object({ rowNumber: z.number().int().positive(), unit: CreateOrgUnitSchema })).min(1).max(1000),
+});
+export type BulkOrgUnitImportDTO = z.infer<typeof BulkOrgUnitImportSchema>;
+
+export interface BulkOrgUnitImportResult {
+  batchId: string;
+  created: Array<{ rowNumber: number; unit: OrgUnit }>;
+  failed: Array<{ rowNumber: number; code: string; message: string }>;
+}

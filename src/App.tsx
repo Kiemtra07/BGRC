@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
   BarChart3, Building2, ChevronRight, FileUp, LayoutDashboard, Plus, Search, Settings,
-  LogOut, Menu, ShieldCheck, Users,
+  LogOut, Menu, ShieldCheck, Users, Key as KeyIcon,
 } from 'lucide-react';
 import { AuditCampaign, DashboardSummary, Finding, LoginDTO, MyWorkQueue, OrgUnit, ReportChannel, UserProfile, WebFormFindingDTO, WorkspaceTarget, coplusRoleLabel } from '../shared/contracts';
 import { ApiError, api } from './services/api';
@@ -43,6 +43,10 @@ export const App: React.FC = () => {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [adminCatalogLoaded, setAdminCatalogLoaded] = useState(false);
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState('');
+  const [newPassword, setNewPassword] = useState('');
+  const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
 
   const isAdmin = currentUser?.roles.includes('ADMIN') || false;
   const canConfigureCatalog = currentUser?.roles.some(role => ['ADMIN', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'SUPERVISOR'].includes(role)) || false;
@@ -139,6 +143,16 @@ export const App: React.FC = () => {
     }
   };
 
+  const changePassword = async (event: React.FormEvent) => {
+    event.preventDefault();
+    try {
+      await api.changePassword({ currentPassword: currentPassword || undefined, password: newPassword });
+      setPasswordMessage('Đã đổi mật khẩu. Vui lòng đăng nhập lại.');
+      setCurrentPassword(''); setNewPassword('');
+      setTimeout(() => { setPasswordModalOpen(false); setPasswordMessage(null); logout(); }, 1200);
+    } catch (error) { setPasswordMessage(error instanceof Error ? error.message : 'Không thể đổi mật khẩu.'); }
+  };
+
   const activeChannel = channels.find(channel => channel.id === channelId);
   const gridMode = activeChannel?.schemaConfig?.formTemplate?.presentationMode === 'EXCEL_GRID';
 
@@ -219,7 +233,7 @@ export const App: React.FC = () => {
     return <div role="status" className="grid min-h-screen place-items-center bg-[#f4f7f7] text-sm font-bold text-[#006b68]">Đang kiểm tra phiên đăng nhập...</div>;
   }
 
-  if (!currentUser) return <LoginPage onLogin={login} />;
+  if (!currentUser) return <LoginPage onLogin={login} onForgotPassword={email => api.forgotPassword(email, `${window.location.origin}/reset-password`)} />;
 
   return (
     <div className="min-h-screen overflow-x-hidden bg-[#f4f7f7] text-slate-900">
@@ -238,10 +252,13 @@ export const App: React.FC = () => {
           <div className="ml-auto flex shrink-0 items-center gap-2">
             <div className="hidden text-right md:block"><div className="text-xs font-bold">{currentUser?.fullName}</div><div className="text-[10px] text-teal-100">{currentUser?.department || currentUser?.branchName || 'Hội sở'}</div></div>
             <div title={`${currentUser.coplusRole ?? ''} · ${userRoleLabels[currentUser.primaryRole]}`} className="hidden max-w-[220px] truncate rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-[11px] font-bold text-white sm:block">{currentUser.coplusRole ? `${currentUser.coplusRole} · ${coplusRoleLabel(currentUser.coplusRole)}` : userRoleLabels[currentUser.primaryRole]}</div>
+            <button type="button" onClick={() => setPasswordModalOpen(true)} aria-label="Đổi mật khẩu" title="Đổi mật khẩu" className="grid h-11 w-11 place-items-center rounded-xl border border-white/20 bg-white/10 text-white hover:bg-white/20"><KeyIcon /></button>
             <button type="button" onClick={logout} aria-label="Đăng xuất" title="Đăng xuất" className="grid h-11 w-11 place-items-center rounded-xl border border-white/20 bg-white/10 text-white hover:bg-white/20"><LogOut className="h-4 w-4" /></button>
           </div>
         </div>
       </header>
+
+      {passwordModalOpen && <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/70 p-4"><form onSubmit={changePassword} className="w-full max-w-md space-y-4 rounded-2xl bg-white p-6 shadow-2xl"><div className="flex items-center justify-between"><h2 className="text-base font-bold">Đổi mật khẩu</h2><button type="button" onClick={() => { setPasswordModalOpen(false); setPasswordMessage(null); }} aria-label="Đóng" className="text-slate-500">×</button></div><p className="text-xs text-slate-500">Mật khẩu mới tối thiểu 12 ký tự. Sau khi đổi, phiên hiện tại sẽ kết thúc để đăng nhập lại.</p>{passwordMessage && <div role="alert" className="rounded-lg bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-800">{passwordMessage}</div>}<input type="password" autoComplete="current-password" value={currentPassword} onChange={event => setCurrentPassword(event.target.value)} placeholder="Mật khẩu hiện tại (bắt buộc ở local)" className="min-h-11 w-full rounded-xl border border-slate-200 px-3 text-sm" /><input type="password" autoComplete="new-password" minLength={12} required value={newPassword} onChange={event => setNewPassword(event.target.value)} placeholder="Mật khẩu mới" className="min-h-11 w-full rounded-xl border border-slate-200 px-3 text-sm" /><button type="submit" className="min-h-11 w-full rounded-xl bg-[#006b68] text-sm font-bold text-white">Lưu mật khẩu</button></form></div>}
 
       <main className={surface === 'CASES' ? 'w-full' : 'mx-auto max-w-[1480px] space-y-5 px-3 py-4 sm:px-6 sm:py-6'}>
         {loading && <div role="status" className="rounded-xl border border-teal-200 bg-teal-50 px-4 py-3 text-xs font-bold text-[#006b68]">Đang tải dữ liệu...</div>}
@@ -250,7 +267,7 @@ export const App: React.FC = () => {
         {surface === 'CASES' && selectedCase && currentUser && <FindingDetailPage findings={selectedCase} currentUser={currentUser} initialFindingId={selectedFindingId} workQueue={workQueue} onBack={() => { setSelectedCase(null); setSelectedFindingId(undefined); }} onFindingUpdated={updateFinding} onWorkspaceChanged={async () => setWorkQueue(await api.getMyWork())} />}
 
         <Suspense fallback={<WorkspaceLoading />}>
-          {surface === 'ADMIN' && canConfigureCatalog && adminCatalogLoaded && <AdminPortal isSystemAdmin={isAdmin} orgUnits={orgUnits} users={users} channels={channels} campaigns={campaigns} onOrgUnitCreated={async unit => { const created = await api.createOrgUnit(unit); setOrgUnits(previous => [...previous, created]); }} onOrgUnitUpdated={async (id, unit) => { const updated = await api.updateOrgUnit(id, unit); setOrgUnits(previous => previous.map(item => item.id === id ? updated : item)); }} onOrgUnitDeleted={async id => { await api.deleteOrgUnit(id); setOrgUnits(previous => previous.filter(item => item.id !== id)); }} onUserCreated={async user => { const created = await api.createUser(user); setUsers(previous => [...previous, created.user]); return created; }} onUsersImported={async batch => { const result = await api.importUsers(batch); setUsers(previous => [...previous, ...result.created.map(row => row.user)]); return result; }} onAuthenticatorChange={async (id, data) => { const result = await api.updateUserAuthenticator(id, data); setUsers(previous => previous.map(item => item.id === id ? result.user : item)); return result; }} onChannelCreated={async channel => { const created = await api.createChannel(channel); setChannels(previous => [...previous, created]); }} onChannelUpdated={async (id, channel) => { const updated = await api.updateChannel(id, channel); setChannels(previous => previous.map(item => item.id === id ? updated : item)); }} onChannelDeleted={async id => { await api.deleteChannel(id); setChannels(previous => previous.filter(item => item.id !== id)); }} onCampaignCreated={async campaign => { const created = await api.createCampaign(campaign); setCampaigns(previous => [...previous, created]); }} onCampaignUpdated={async (id, campaign) => { const updated = await api.updateCampaign(id, campaign); setCampaigns(previous => previous.map(item => item.id === id ? updated : item)); }} onCampaignDeleted={async id => { await api.deleteCampaign(id); setCampaigns(previous => previous.filter(item => item.id !== id)); }} onCampaignImportDraft={file => api.importCampaignDraft(file)} onCampaignProvisionDrive={async id => { const updated = await api.provisionCampaignDrive(id); setCampaigns(previous => previous.map(item => item.id === id ? updated : item)); }} onBackToPortal={() => setSurface('CASES')} />}
+          {surface === 'ADMIN' && canConfigureCatalog && adminCatalogLoaded && <AdminPortal isSystemAdmin={isAdmin} orgUnits={orgUnits} users={users} channels={channels} campaigns={campaigns} onOrgUnitCreated={async unit => { const created = await api.createOrgUnit(unit); setOrgUnits(previous => [...previous, created]); }} onOrgUnitUpdated={async (id, unit) => { const updated = await api.updateOrgUnit(id, unit); setOrgUnits(previous => previous.map(item => item.id === id ? updated : item)); }} onOrgUnitDeleted={async id => { await api.deleteOrgUnit(id); setOrgUnits(previous => previous.filter(item => item.id !== id)); }} onOrgUnitsImported={async batch => { const result = await api.importOrgUnits(batch); setOrgUnits(previous => [...previous, ...result.created.map(row => row.unit)]); return result; }} onUserCreated={async user => { const created = await api.createUser(user); setUsers(previous => [...previous, created.user]); return created; }} onUsersImported={async batch => { const result = await api.importUsers(batch); setUsers(previous => [...previous, ...result.created.map(row => row.user)]); return result; }} onUserUpdated={async (id, data) => { const result = await api.updateUser(id, data); setUsers(previous => previous.map(item => item.id === id ? result.user : item)); return result.user; }} onUserDeleted={async id => { await api.deleteUser(id); setUsers(previous => previous.filter(item => item.id !== id)); }} onUserPasswordReset={async id => { const result = await api.resetUserPassword(id); return result; }} onAuthenticatorChange={async (id, data) => { const result = await api.updateUserAuthenticator(id, data); setUsers(previous => previous.map(item => item.id === id ? result.user : item)); return result; }} onChannelCreated={async channel => { const created = await api.createChannel(channel); setChannels(previous => [...previous, created]); }} onChannelUpdated={async (id, channel) => { const updated = await api.updateChannel(id, channel); setChannels(previous => previous.map(item => item.id === id ? updated : item)); }} onChannelDeleted={async id => { await api.deleteChannel(id); setChannels(previous => previous.filter(item => item.id !== id)); }} onCampaignCreated={async campaign => { const created = await api.createCampaign(campaign); setCampaigns(previous => [...previous, created]); }} onCampaignUpdated={async (id, campaign) => { const updated = await api.updateCampaign(id, campaign); setCampaigns(previous => previous.map(item => item.id === id ? updated : item)); }} onCampaignDeleted={async id => { await api.deleteCampaign(id); setCampaigns(previous => previous.filter(item => item.id !== id)); }} onCampaignImportDraft={file => api.importCampaignDraft(file)} onCampaignProvisionDrive={async id => { const updated = await api.provisionCampaignDrive(id); setCampaigns(previous => previous.map(item => item.id === id ? updated : item)); }} onBackToPortal={() => setSurface('CASES')} />}
           {surface === 'IMPORT' && canImport && legacyUser && <FastDataIngestion currentUser={legacyUser} channels={channels} campaigns={campaigns} onCampaignCreated={async campaign => { const created = await api.createCampaign(campaign); const active = await api.updateCampaign(created.id, { expectedVersion: created.version, status: 'ACTIVE' }); setCampaigns(previous => [...previous, active]); return active; }} onCommitNewCustomers={refreshScopedData} />}
           {surface === 'REPORTS' && <ReportsWorkspace />}
         </Suspense>
@@ -320,7 +337,7 @@ export const App: React.FC = () => {
         </>}
       </main>
 
-      <WebFormFindingModal isOpen={createOpen} channels={channels.filter(channel => channel.isActive)} campaigns={campaigns} initialCampaignId={campaignId} orgUnits={orgUnits} onClose={() => setCreateOpen(false)} onSubmit={async (dto: WebFormFindingDTO) => { await api.createFinding(dto); await refreshScopedData(); setCreateOpen(false); }} />
+      <WebFormFindingModal isOpen={createOpen} currentUser={currentUser ?? undefined} channels={channels.filter(channel => channel.isActive)} campaigns={campaigns} initialCampaignId={campaignId} orgUnits={orgUnits} onClose={() => setCreateOpen(false)} onSubmit={async (dto: WebFormFindingDTO | WebFormFindingDTO[]) => { const rows = Array.isArray(dto) ? dto : [dto]; for (const row of rows) await api.createFinding(row); await refreshScopedData(); setCreateOpen(false); }} />
     </div>
   );
 };

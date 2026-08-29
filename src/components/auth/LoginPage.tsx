@@ -4,6 +4,7 @@ import { LoginDTO } from '../../../shared/contracts';
 
 interface LoginPageProps {
   onLogin: (credentials: LoginDTO) => Promise<void>;
+  onForgotPassword?: (email: string) => Promise<void>;
 }
 
 // Usernames and CoPlus role codes match the CoPlus directory so a persona is the same person here.
@@ -15,7 +16,7 @@ const demoUsers = [
   ['Lê Trần Khánh Ly · CB_GSKT_TH', 'lyltk1@auditbgs.local', 'BranchControl@2026'],
 ] as const;
 
-export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
+export const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onForgotPassword }) => {
   const isDevelopment = Boolean((import.meta as ImportMeta & { env?: { DEV?: boolean } }).env?.DEV);
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
@@ -42,6 +43,12 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
     window.location.assign('/api/v1/auth/google');
   };
   const googleLoginEnabled = (import.meta as ImportMeta & { env?: { VITE_AUTH_MODE?: string } }).env?.VITE_AUTH_MODE === 'oidc';
+  const forgotPassword = async () => {
+    const email = username.trim() || window.prompt('Nhập email để nhận liên kết đặt lại mật khẩu')?.trim();
+    if (!email || !onForgotPassword) return;
+    try { await onForgotPassword(email); setError('Nếu email tồn tại, liên kết đặt lại mật khẩu đã được gửi.'); }
+    catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thể gửi email đặt lại mật khẩu.'); }
+  };
 
   return (
     <main className="grid min-h-screen place-items-center bg-[#f3f7f7] px-4 py-8">
@@ -89,6 +96,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin }) => {
           <button type="submit" disabled={submitting || !username.trim() || !password} className="inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#006b68] px-4 text-sm font-bold text-white shadow-sm hover:bg-[#005956] disabled:cursor-not-allowed disabled:opacity-50">
             <LogIn className="h-4 w-4" />{submitting ? 'Đang đăng nhập...' : 'Đăng nhập'}
           </button>
+          {onForgotPassword && <button type="button" onClick={forgotPassword} className="w-full text-center text-xs font-bold text-[#006b68] hover:underline">Quên mật khẩu?</button>}
           {isDevelopment && <details className="rounded-xl border border-slate-200 bg-slate-50 p-3 text-xs">
             <summary className="cursor-pointer font-bold text-slate-700">5 tài khoản dùng thử tại local</summary>
             <div className="mt-3 space-y-2">{demoUsers.map(([role, demoUsername, demoPassword]) => <button key={demoUsername} type="button" onClick={() => { setUsername(demoUsername); setPassword(demoPassword); }} className="block w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-left hover:border-[#006b68]"><span className="block font-bold text-slate-800">{role}</span><span className="mt-0.5 block font-mono text-[10px] text-slate-500">{demoUsername} · {demoPassword}</span></button>)}</div>

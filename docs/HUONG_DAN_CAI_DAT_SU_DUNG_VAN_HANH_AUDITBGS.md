@@ -14,6 +14,8 @@ Ba nguyên tắc cần nhớ:
 2. Tuyến duyệt được hệ thống tự suy từ loại báo cáo, vai trò và chi nhánh; người xử lý không chọn tay tuyến duyệt.
 3. Production phải dùng PostgreSQL, Google OIDC và Google Drive thật; không dùng dữ liệu demo hoặc lưu file local.
 
+Ranh giới lưu trữ là bắt buộc: danh tính, mật khẩu, user, đơn vị, vai trò/phạm vi và audit đi qua Supabase Auth + Supabase PostgreSQL; chỉ tệp minh chứng/tiểu biên bản được chuyển qua API vào Google Drive (hoặc Apps Script Drive gateway). Không đưa secret Supabase vào trình duyệt và không ghi user/RBAC vào Drive. Nút **Tạo hồ sơ** có thể đọc Excel/Word/PDF để tách dữ liệu xem trước; sau khi tạo, tệp minh chứng vẫn dùng nút tải lên của hồ sơ để lưu đúng kho Drive.
+
 ## 2. Kiến trúc vận hành
 
 ```text
@@ -388,6 +390,21 @@ Sinh khóa và hash trên PowerShell:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 npm run auth:hash-password -- '<mat-khau-manh>'
 ```
+
+### 7.4 Quản trị tài khoản bằng Supabase Auth (khuyến nghị)
+
+Để Supabase Dashboard là nơi quản lý danh tính và mật khẩu, đặt `AUTH_MODE=supabase` và thêm:
+
+```dotenv
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+SUPABASE_SECRET_KEY=sb_secret_...
+APP_BASE_URL=https://bgrc.vercel.app
+```
+
+Chạy thêm migration `0101_supabase_auth_profiles.sql`. Backend chỉ dùng `SUPABASE_SECRET_KEY` ở server để tạo, mời, sửa, khóa/xóa và reset user; không đưa khóa này vào `VITE_*` hoặc bundle trình duyệt. Admin vẫn thao tác được trong tab **Cấu hình → Người dùng**, còn người dùng có **Quên mật khẩu?** ở màn hình đăng nhập và nút chìa khóa **Đổi mật khẩu** sau khi đăng nhập. Cần cấu hình SMTP và Redirect URL `/reset-password` trong **Authentication → URL Configuration** của Supabase trước khi gửi email.
+
+Các tài khoản local đang dùng hash `scrypt$...` không được chép thẳng vào `auth.users`; tạo lại bằng chức năng cấp tài khoản hoặc gửi email mời/reset rồi gán `auth_user_id` tương ứng. Có thể theo dõi danh tính trong **Authentication → Users**, còn vai trò/phạm vi nghiệp vụ vẫn nằm ở `public.app_users` và được API kiểm tra.
 
 Mỗi secret nên sinh riêng. Không dùng lại `CRON_SECRET` cho state hoặc mã hóa token.
 

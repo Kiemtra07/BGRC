@@ -13,6 +13,8 @@ export interface UserDataScope {
 
 export interface UserProfile {
   id: string;
+  /** Supabase Auth identity id when AUTH_MODE=supabase; absent for legacy local accounts. */
+  authUserId?: string;
   username: string;
   email: string;
   fullName: string;
@@ -67,6 +69,21 @@ export const LoginSchema = z.object({
   password: z.string().min(1).max(200),
   mfaCode: z.string().trim().regex(/^\d{6}$/, 'Mã Authenticator phải gồm 6 chữ số.').optional(),
 });
+
+export const ChangePasswordSchema = z.object({
+  currentPassword: z.string().min(1).max(200).optional(),
+  password: z.string().min(12, 'Mật khẩu tối thiểu 12 ký tự').max(200),
+});
+export type ChangePasswordDTO = z.infer<typeof ChangePasswordSchema>;
+
+export const UpdateUserSchema = z.object({
+  username: z.string().trim().min(2).max(100).optional(),
+  email: z.string().email().optional(),
+  fullName: z.string().trim().min(2).max(255).optional(),
+  phone: z.string().max(50).optional(),
+  isActive: z.boolean().optional(),
+});
+export type UpdateUserDTO = z.infer<typeof UpdateUserSchema>;
 
 export const UpdateAuthenticatorSchema = z.object({
   enabled: z.boolean(),

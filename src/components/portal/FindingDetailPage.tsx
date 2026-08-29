@@ -382,8 +382,8 @@ export const FindingDetailPage: React.FC<Props> = ({
                 {finding.riskLevel && <span aria-label={`Mức độ rủi ro: ${riskLevelLabels[finding.riskLevel]}`} className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold ${riskTone[finding.riskLevel]}`}>Rủi ro {riskLevelLabels[finding.riskLevel].toLowerCase()}</span>}
               </div>
               <h2 id="finding-detail-title" className="text-sm font-black text-slate-900">Nội dung cần giải trình</h2>
-              <p className="mt-2 text-sm font-bold leading-6 text-slate-800">{finding.errorTitle}</p>
-              <p className="mt-2 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-slate-700">{finding.description}</p>
+              <p className="mt-2 text-justify text-sm font-bold leading-6 text-slate-800">{finding.errorTitle}</p>
+              <p className="mt-2 rounded-xl bg-slate-50 p-3 text-justify text-xs leading-5 text-slate-700">{finding.description}</p>
               <div className={`mt-2 rounded-xl border p-3 text-xs font-bold ${slaTone[finding.slaStatus]}`}>Hạn xử lý {new Date(`${finding.deadlineDate}T00:00:00`).toLocaleDateString('vi-VN')} · {deadlineNotice}</div>
             </div>
 
@@ -410,10 +410,9 @@ export const FindingDetailPage: React.FC<Props> = ({
               onReview={reviewSubItems}
             />
 
-            {finding.rejectionReason && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs text-red-800"><strong>Lý do chuyển trả:</strong> {finding.rejectionReason}</div>}
-            {finding.resolutionNotes && <div className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-xs leading-5 text-teal-900"><strong>Giải trình chi nhánh:</strong> {finding.resolutionNotes}</div>}
-            {finding.dynamicPayload && Object.keys(finding.dynamicPayload).length > 0 && <section className="overflow-hidden rounded-xl border border-slate-200" aria-label="Dữ liệu báo cáo"><h3 className="bg-slate-50 px-3 py-2 text-xs font-black text-slate-800">Dữ liệu báo cáo</h3><dl className={`grid gap-px bg-slate-200 ${finding.presentationMode === 'EXCEL_GRID' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>{Object.entries(finding.dynamicPayload).map(([key, value]) => <div key={key} className="bg-white p-3"><dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{key.replace(/_/g, ' ')}</dt><dd className="mt-1 text-xs font-semibold text-slate-800">{String(value ?? '')}</dd></div>)}</dl></section>}
-            {evidenceRequired && !hasAvailableEvidence && ['PENDING', 'REJECTED', 'SUBMITTED_BRANCH', 'SUBMITTED_BRANCH_LEADER', 'SUBMITTED_INTERNAL'].includes(finding.workflowStatus) && <div className="rounded-xl border border-amber-200 bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-800">Cần ít nhất một tài liệu hợp lệ trước khi chuyển bước.</div>}
+            {finding.rejectionReason && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-justify text-xs text-red-800"><strong>Lý do chuyển trả:</strong> {finding.rejectionReason}</div>}
+            {finding.resolutionNotes && <div className="rounded-xl border border-teal-200 bg-teal-50 p-3 text-justify text-xs leading-5 text-teal-900"><strong>Giải trình chi nhánh:</strong> {finding.resolutionNotes}</div>}
+            {finding.dynamicPayload && Object.keys(finding.dynamicPayload).length > 0 && <section className="overflow-hidden rounded-xl border border-slate-200" aria-label="Dữ liệu báo cáo"><h3 className="bg-slate-50 px-3 py-2 text-xs font-black text-slate-800">Dữ liệu báo cáo</h3><dl className={`grid gap-px bg-slate-200 ${finding.presentationMode === 'EXCEL_GRID' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>{Object.entries(finding.dynamicPayload).map(([key, value]) => <div key={key} className="bg-white p-3"><dt className="text-[10px] font-bold uppercase tracking-wide text-slate-400">{key.replace(/_/g, ' ')}</dt><dd className="mt-1 text-justify text-xs font-semibold text-slate-800">{String(value ?? '')}</dd></div>)}</dl></section>}
 
             {(finding.workflowStatus === 'PENDING' || finding.workflowStatus === 'REJECTED') && isBranchInput && <ActionPanel title="Chi nhánh khắc phục">
               <textarea value={resolutionNotes} onChange={event => setResolutionNotes(event.target.value)} rows={4} placeholder="Nêu rõ nội dung đã khắc phục, tài liệu và ngày hoàn thành..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-[#006b68] focus:outline-none focus:ring-2 focus:ring-[#006b68]/15" />
@@ -445,9 +444,7 @@ export const FindingDetailPage: React.FC<Props> = ({
               </div>
             </ActionPanel>}
 
-            {/* Where this sai sót came from in CoPlus. Shown open by default: a branch officer
-                needs the đoàn and tiểu biên bản codes to look the original record up. */}
-            {(finding.inspectionTeamCode || finding.sourceRecordCode || finding.businessLine || finding.penaltyProposalCode || finding.referenceDocument) && <details open className="group border-t border-slate-200 pt-3">
+            {(finding.inspectionTeamCode || finding.sourceRecordCode || finding.businessLine || finding.penaltyProposalCode || finding.referenceDocument) && <details className="group border-t border-slate-200 pt-3">
               <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between text-xs font-black text-slate-800">Nguồn kiểm tra <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
               <div className="mt-2 grid grid-cols-2 gap-2 text-[11px]">
                 <Detail label="Mã đoàn kiểm tra" value={finding.inspectionTeamCode || 'Chưa gắn đoàn'} />
@@ -471,21 +468,10 @@ export const FindingDetailPage: React.FC<Props> = ({
               </div>
             </details>
 
-            {/* Who did what, when is the core of an audit record, so the latest entries stay visible
-                and only the older tail is folded away. */}
-            {finding.history?.length ? (() => {
-              const newestFirst = [...finding.history].reverse();
-              const recent = newestFirst.slice(0, 3);
-              const older = newestFirst.slice(3);
-              return <div className="border-t border-slate-200 pt-3" data-testid="finding-history">
-                <h3 className="text-xs font-black text-slate-800">Lịch sử xử lý ({finding.history.length})</h3>
-                <ol className="mt-3 space-y-3">{recent.map(event => <HistoryEntry key={event.id} event={event} />)}</ol>
-                {older.length > 0 && <details className="group mt-3">
-                  <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between text-[11px] font-bold text-slate-600">Xem {older.length} mốc cũ hơn <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
-                  <ol className="mt-3 space-y-3">{older.map(event => <HistoryEntry key={event.id} event={event} />)}</ol>
-                </details>}
-              </div>;
-            })() : null}
+            {finding.history?.length ? <details className="group border-t border-slate-200 pt-3" data-testid="finding-history">
+              <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between text-xs font-black text-slate-800">Lịch sử xử lý ({finding.history.length}) <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
+              <ol className="mt-3 space-y-3">{[...finding.history].reverse().map(event => <HistoryEntry key={event.id} event={event} />)}</ol>
+            </details> : null}
 
             {busy && <div className="flex items-center justify-center gap-2 text-xs font-semibold text-[#006b68]"><RefreshCw className="h-4 w-4 animate-spin" />Đang cập nhật hồ sơ...</div>}
           </section>}
@@ -499,7 +485,7 @@ const HistoryEntry: React.FC<{ event: NonNullable<Finding['history']>[number] }>
   <span className="absolute -left-[5px] top-1 h-2 w-2 rounded-full bg-[#006b68]" />
   <strong className="text-slate-800">{event.actorName}</strong>
   <span className="block text-slate-500">{workflowEventLabels[event.command]} · {new Date(event.createdAt).toLocaleString('vi-VN')}</span>
-  {event.notes && <span className="mt-1 block text-slate-600">{event.notes}</span>}
+  {event.notes && <span className="mt-1 block text-justify text-slate-600">{event.notes}</span>}
 </li>;
 
 const Detail: React.FC<{ label: string; value: string }> = ({ label, value }) => <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className="block text-[9px] font-bold uppercase tracking-wide text-slate-400">{label}</span><span className="mt-1 block font-semibold text-slate-700">{value}</span></div>;
@@ -532,8 +518,10 @@ const SubItemReview: React.FC<SubItemReviewProps> = ({
       <h3 id="sub-item-title" className="flex items-center gap-2 text-xs font-black text-slate-900"><ListChecks className="h-4 w-4 text-[#006b68]" />Các ý sai sót trong mã lỗi</h3>
       <span className="rounded-full bg-white px-2 py-0.5 text-[10px] font-black text-[#006b68] ring-1 ring-slate-200">{subItems.length}</span>
     </div>
-    <div className="mt-3 space-y-2">
-      {subItems.map((item, index) => {
+    <details className="group mt-3">
+      <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between rounded-lg border border-slate-200 bg-white px-3 text-[11px] font-bold text-slate-600">Xem chi tiết các ý sai sót <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
+      <div className="mt-3 space-y-2">
+        {subItems.map((item, index) => {
         const checked = acceptedIds.has(item.id);
         const status = item.status === 'ACCEPTED'
           ? { label: 'Đồng ý bỏ', tone: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
@@ -544,14 +532,15 @@ const SubItemReview: React.FC<SubItemReviewProps> = ({
           {canReview && <input type="checkbox" checked={checked} onChange={() => onToggle(item.id)} className="mt-0.5 h-4 w-4 shrink-0 accent-[#006b68]" aria-label={`Đồng ý bỏ ý sai sót ${index + 1}`} />}
           <span className="min-w-0 flex-1">
             <span className="flex items-start justify-between gap-2">
-              <span className="text-xs font-bold leading-5 text-slate-800">{index + 1}. {item.content}</span>
+              <span className="text-justify text-xs font-bold leading-5 text-slate-800">{index + 1}. {item.content}</span>
               <span className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[9px] font-bold ${status.tone}`}>{status.label}</span>
             </span>
             {item.reviewerNote && <span className="mt-1 block text-[10px] leading-4 text-slate-500">Nhận xét: {item.reviewerNote}</span>}
           </span>
-        </label>;
-      })}
-    </div>
+          </label>;
+        })}
+      </div>
+    </details>
 
     {canAdd && finding.workflowStatus !== 'WAIVED_RESOLVED' && <div className="mt-3 flex flex-col gap-2 sm:flex-row">
       <input value={newSubItem} onChange={event => onNewSubItemChange(event.target.value)} placeholder="Bổ sung thêm một ý sai sót trong mã lỗi..." className="min-h-11 min-w-0 flex-1 rounded-xl border border-slate-300 bg-white px-3 text-xs focus:border-[#006b68] focus:outline-none" />
@@ -559,9 +548,8 @@ const SubItemReview: React.FC<SubItemReviewProps> = ({
     </div>}
 
     {canReview && <div className="mt-3 space-y-2 border-t border-slate-200 pt-3">
-      <p className="text-[10px] leading-4 text-slate-600">Chọn các ý đủ căn cứ; các ý còn lại sẽ được trả bổ sung.</p>
+      <p className="text-justify text-[10px] leading-4 text-slate-600">Chọn các ý đủ căn cứ; các ý còn lại sẽ được trả bổ sung.</p>
       <textarea value={reviewNote} onChange={event => onReviewNoteChange(event.target.value)} rows={2} placeholder="Nhập nhận xét..." className="w-full rounded-xl border border-slate-300 bg-white p-3 text-xs focus:border-[#006b68] focus:outline-none" />
-      {isAcceptingAll && !hasAvailableEvidence && <p className="rounded-lg border border-amber-200 bg-amber-50 p-2 text-[10px] font-semibold leading-4 text-amber-800">Cần ít nhất một tài liệu hợp lệ để đóng toàn bộ mã lỗi.</p>}
       <button type="button" onClick={onReview} disabled={busy || reviewNote.trim().length < 5 || (isAcceptingAll && !hasAvailableEvidence)} className="min-h-11 w-full rounded-xl bg-[#006b68] px-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.saveSubItemReview}</button>
     </div>}
   </section>;

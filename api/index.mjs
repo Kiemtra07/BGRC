@@ -4,6 +4,7 @@ import path4 from "node:path";
 import fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
+import { z as z13 } from "zod";
 
 // shared/contracts/common.ts
 import { z } from "zod";
@@ -160,6 +161,17 @@ var LoginSchema = z3.object({
   password: z3.string().min(1).max(200),
   mfaCode: z3.string().trim().regex(/^\d{6}$/, "M\xE3 Authenticator ph\u1EA3i g\u1ED3m 6 ch\u1EEF s\u1ED1.").optional()
 });
+var ChangePasswordSchema = z3.object({
+  currentPassword: z3.string().min(1).max(200).optional(),
+  password: z3.string().min(12, "M\u1EADt kh\u1EA9u t\u1ED1i thi\u1EC3u 12 k\xFD t\u1EF1").max(200)
+});
+var UpdateUserSchema = z3.object({
+  username: z3.string().trim().min(2).max(100).optional(),
+  email: z3.string().email().optional(),
+  fullName: z3.string().trim().min(2).max(255).optional(),
+  phone: z3.string().max(50).optional(),
+  isActive: z3.boolean().optional()
+});
 var UpdateAuthenticatorSchema = z3.object({
   enabled: z3.boolean()
 });
@@ -297,6 +309,9 @@ var UpdateOrgUnitSchema = z4.object({
   expectedUpdatedAt: z4.string().datetime()
 }).refine((value) => Object.keys(value).some((key) => key !== "expectedUpdatedAt"), {
   message: "C\u1EA7n c\xF3 \xEDt nh\u1EA5t m\u1ED9t thay \u0111\u1ED5i cho \u0111\u01A1n v\u1ECB."
+});
+var BulkOrgUnitImportSchema = z4.object({
+  rows: z4.array(z4.object({ rowNumber: z4.number().int().positive(), unit: CreateOrgUnitSchema })).min(1).max(1e3)
 });
 
 // shared/contracts/channels.ts
@@ -585,7 +600,7 @@ var WebFormFindingSchema = z9.object({
 });
 var BulkFindingImportSchema = z9.object({
   sourceFileName: z9.string().trim().min(1).max(255),
-  sourceType: z9.enum(["XLSX", "ZIP_XLSX", "CLIPBOARD", "DOCX", "API_BULK", "WEB_FORM"]).default("API_BULK"),
+  sourceType: z9.enum(["XLSX", "ZIP_XLSX", "CLIPBOARD", "DOCX", "PDF", "API_BULK", "WEB_FORM"]).default("API_BULK"),
   rows: z9.array(WebFormFindingSchema).min(1).max(5e3)
 }).superRefine((value, context) => {
   if (value.sourceType !== "API_BULK" && value.rows.some((row) => !row.campaignId?.trim())) {
@@ -3378,6 +3393,151 @@ async function parseFindingDocx(buffer) {
   }
   throw new FindingDocumentImportError("Kh\xF4ng t\xECm th\u1EA5y b\u1EA3ng DOCX c\xF3 \u0111\u1EE7 c\u1ED9t T\xEAn kh\xE1ch h\xE0ng, CIF, M\xE3 chi nh\xE1nh v\xE0 M\xE3 sai s\xF3t.");
 }
+async function parseFindingPdf(buffer) {
+  try {
+    const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+    const document = await pdfjs.getDocument({ data: new Uint8Array(buffer) }).promise;
+    const pages = await Promise.all(Array.from({ length: document.numPages }, async (_, index) => {
+      const page = await document.getPage(index + 1);
+      const content = await page.getTextContent();
+      return cleanPdfText(content.items.map((item) => "str" in item ? item.str : "").join(" "));
+    }));
+    const text = pages.filter(Boolean).join("\n");
+    const rows = [];
+    const segments = text.split(/(?=(?:CIF|Mã\s*KH)\s*[:#-]?\s*[A-Z0-9.-]{3,20})/i).filter(Boolean);
+    segments.forEach((segment, segmentIndex) => {
+      const cifMatch = segment.match(/(?:CIF|Mã\s*KH)\s*[:#-]?\s*([A-Z0-9.-]{3,20})/i);
+      if (!cifMatch) return;
+      const cif = cifMatch[1].replace(/\s+/g, "");
+      const customerName = segment.slice(0, segment.indexOf(cifMatch[0])).replace(/^.*?[:：]\s*/, "").trim() || `Kh\xE1ch h\xE0ng ${cif}`;
+      const branch = segment.match(/(?:Mã\s*chi\s*nhánh|Mã\s*CN)\s*[:#-]?\s*([A-Z]?\d{3,4})/i)?.[1]?.replace(/^[A-Z](?=\d)/i, "");
+      if (!branch) return;
+      const branchName = segment.match(/Tên\s*chi\s*nhánh\s*[:：-]?\s*([^\n]+?)(?=\s+(?:Mã\s*chi|CIF|Mã\s*KH)\b|$)/i)?.[1]?.trim();
+      const decisionNo = segment.match(/(?:Số\s*quyết\s*định|Quyết\s*định|Số\s*QĐ)\s*[:：-]?\s*([^\n]+?)(?=\s+(?:Mã\s*chi|CIF|Mã\s*KH)\b|$)/i)?.[1]?.trim();
+      const codes = [...segment.matchAll(/\b((?:TD|PNTD)\d{2}(?:\.\d{2})?)\b/gi)];
+      codes.forEach((match, codeIndex) => {
+        const code = match[1].toUpperCase();
+        const nextCodeAt = codes[codeIndex + 1]?.index ?? segment.length;
+        const detail = cleanPdfText(segment.slice((match.index ?? 0) + match[0].length, nextCodeAt)).replace(/^\s*[-:–]\s*/, "").trim();
+        rows.push({
+          rowNumber: segmentIndex + 1,
+          cif,
+          customerName,
+          branchCode: branch,
+          branchName: branchName || `Chi nh\xE1nh ${branch}`,
+          decisionNo,
+          errorCode: code,
+          errorTitle: detail.split(/[.;]/)[0]?.trim() || `Sai s\xF3t ${code}`,
+          description: detail || `Sai s\xF3t ${code} \u0111\u01B0\u1EE3c tr\xEDch xu\u1EA5t t\u1EEB PDF.`
+        });
+      });
+    });
+    if (!rows.length) throw new FindingDocumentImportError("Kh\xF4ng t\xECm th\u1EA5y d\u1EEF li\u1EC7u CIF, m\xE3 chi nh\xE1nh v\xE0 m\xE3 sai s\xF3t trong PDF. N\u1EBFu \u0111\xE2y l\xE0 b\u1EA3n scan, h\xE3y d\xF9ng PDF c\xF3 OCR ho\u1EB7c nh\u1EADp th\u1EE7 c\xF4ng.");
+    return rows;
+  } catch (error) {
+    if (error instanceof FindingDocumentImportError) throw error;
+    throw new FindingDocumentImportError("Kh\xF4ng th\u1EC3 \u0111\u1ECDc v\u0103n b\u1EA3n trong PDF. N\u1EBFu \u0111\xE2y l\xE0 b\u1EA3n scan, h\xE3y d\xF9ng PDF c\xF3 OCR ho\u1EB7c nh\u1EADp th\u1EE7 c\xF4ng.");
+  }
+}
+var cleanPdfText = (value) => value.replace(/\s+/g, " ").trim();
+
+// server/src/auth/supabase-auth.ts
+var SupabaseAuthConfigurationError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "SupabaseAuthConfigurationError";
+  }
+};
+function parseError(status, body) {
+  let message = body || `Supabase Auth request failed (${status})`;
+  try {
+    const parsed = JSON.parse(body);
+    message = parsed.msg || parsed.message || parsed.error_description || message;
+  } catch {
+  }
+  return new Error(`Supabase Auth ${status}: ${message}`);
+}
+function createSupabaseAuthAdapter(options) {
+  const url = options.url.trim().replace(/\/$/, "");
+  const publishableKey = options.publishableKey.trim();
+  const secretKey = options.secretKey?.trim();
+  const fetchImpl = options.fetchImpl ?? fetch;
+  if (!url || !publishableKey) {
+    throw new SupabaseAuthConfigurationError("Thi\u1EBFu SUPABASE_URL ho\u1EB7c SUPABASE_PUBLISHABLE_KEY.");
+  }
+  async function request(path5, init, key, bearer) {
+    const response = await fetchImpl(`${url}${path5}`, {
+      ...init,
+      headers: {
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        apikey: key,
+        ...bearer ? { Authorization: `Bearer ${bearer}` } : {},
+        ...init.headers ?? {}
+      }
+    });
+    const body = await response.text();
+    if (!response.ok) throw parseError(response.status, body);
+    if (!body) return void 0;
+    return JSON.parse(body);
+  }
+  function adminKey() {
+    if (!secretKey) throw new SupabaseAuthConfigurationError("Thi\u1EBFu SUPABASE_SECRET_KEY cho t\xE1c v\u1EE5 qu\u1EA3n tr\u1ECB Auth.");
+    return secretKey;
+  }
+  return {
+    async verifyAccessToken(accessToken) {
+      if (!accessToken.trim()) return null;
+      try {
+        return await request("/auth/v1/user", { method: "GET" }, publishableKey, accessToken);
+      } catch (error) {
+        if (error instanceof Error && error.message.startsWith("Supabase Auth 401:")) return null;
+        throw error;
+      }
+    },
+    async signInWithPassword(email, password) {
+      const response = await request("/auth/v1/token?grant_type=password", {
+        method: "POST",
+        body: JSON.stringify({ email, password })
+      }, publishableKey);
+      return {
+        accessToken: response.access_token,
+        refreshToken: response.refresh_token,
+        expiresIn: response.expires_in,
+        user: response.user
+      };
+    },
+    async changePassword(accessToken, password) {
+      await request("/auth/v1/user", {
+        method: "PUT",
+        body: JSON.stringify({ password })
+      }, publishableKey, accessToken);
+    },
+    createUser(attributes) {
+      return request("/auth/v1/admin/users", { method: "POST", body: JSON.stringify(attributes) }, adminKey(), adminKey());
+    },
+    inviteUser(email, options2 = {}) {
+      return request("/auth/v1/invite", {
+        method: "POST",
+        body: JSON.stringify({
+          email,
+          ...options2.userMetadata ? { data: options2.userMetadata } : {},
+          ...options2.redirectTo ? { redirect_to: options2.redirectTo } : {}
+        })
+      }, adminKey(), adminKey());
+    },
+    updateUser(id, attributes) {
+      return request(`/auth/v1/admin/users/${encodeURIComponent(id)}`, { method: "PUT", body: JSON.stringify(attributes) }, adminKey(), adminKey());
+    },
+    async deleteUser(id, options2 = {}) {
+      const query = options2.shouldSoftDelete ? "?should_soft_delete=true" : "";
+      await request(`/auth/v1/admin/users/${encodeURIComponent(id)}${query}`, { method: "DELETE" }, adminKey(), adminKey());
+    },
+    async sendPasswordReset(email, redirectTo) {
+      await request("/auth/v1/recover", { method: "POST", body: JSON.stringify({ email, redirect_to: redirectTo }) }, publishableKey);
+    }
+  };
+}
 
 // server/src/app.ts
 var app = fastify({
@@ -3418,12 +3578,18 @@ var publicPaths = /* @__PURE__ */ new Set([
   "/api/v1/ready",
   "/api/v1/auth/login",
   "/api/v1/auth/logout",
+  "/api/v1/auth/forgot-password",
   "/api/v1/auth/google",
   "/api/v1/auth/google/callback",
   internalSlaPath
 ]);
 var requestUsers = /* @__PURE__ */ new WeakMap();
 var authSessionStore;
+var supabaseAuthAdapter = process.env.AUTH_MODE === "supabase" && process.env.SUPABASE_URL && (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY) ? createSupabaseAuthAdapter({
+  url: process.env.SUPABASE_URL,
+  publishableKey: process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? "",
+  secretKey: process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY
+}) : void 0;
 function cookieValue(request, name) {
   const cookieHeader = request.headers.cookie;
   if (!cookieHeader) return void 0;
@@ -3442,8 +3608,36 @@ async function createAuthenticatedSession(user, reply) {
   reply.header("set-cookie", `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure}`);
   return session.record.expiresAt;
 }
+function supabaseAccessToken(request) {
+  const cookie = cookieValue(request, "audit_bgs_supabase_access");
+  if (cookie) return cookie;
+  const authorization = request.headers.authorization;
+  return authorization?.startsWith("Bearer ") ? authorization.slice("Bearer ".length).trim() : void 0;
+}
+function setSupabaseSessionCookies(reply, accessToken, refreshToken, expiresIn) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  reply.header("set-cookie", [
+    `audit_bgs_supabase_access=${encodeURIComponent(accessToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.max(60, Math.floor(expiresIn))}${secure}`,
+    `audit_bgs_supabase_refresh=${encodeURIComponent(refreshToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`
+  ]);
+}
+function clearSupabaseSessionCookies(reply) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  reply.header("set-cookie", [
+    `audit_bgs_supabase_access=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`,
+    `audit_bgs_supabase_refresh=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`
+  ]);
+}
 app.addHook("preHandler", async (request) => {
   if (publicPaths.has(request.url.split("?")[0])) return;
+  if (process.env.AUTH_MODE === "supabase") {
+    const accessToken = supabaseAccessToken(request);
+    const authUser = accessToken && supabaseAuthAdapter ? await supabaseAuthAdapter.verifyAccessToken(accessToken) : null;
+    const sessionUser = authUser ? appUsers.find((item) => item.isActive && (item.authUserId === authUser.id || item.email.toLocaleLowerCase("en-US") === authUser.email?.toLocaleLowerCase("en-US"))) : void 0;
+    if (!sessionUser) throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Vui l\xF2ng \u0111\u0103ng nh\u1EADp \u0111\u1EC3 ti\u1EBFp t\u1EE5c.");
+    requestUsers.set(request, sessionUser);
+    return;
+  }
   const allowTestUserHeader = process.env.NODE_ENV === "test" && process.env.ALLOW_TEST_USER_HEADER !== "false";
   const user = allowTestUserHeader && request.headers["x-user-id"] ? resolveLocalUser(request.headers["x-user-id"], appUsers) : (() => {
     const session = authSessionStore.resolve(cookieValue(request, "audit_bgs_session") ?? "");
@@ -5400,6 +5594,31 @@ app.post("/api/v1/auth/login", async (req, reply) => {
   if (process.env.AUTH_MODE === "oidc") {
     throw new HttpProblem(405, "OIDC_LOGIN_REQUIRED", "H\xE3y \u0111\u0103ng nh\u1EADp b\u1EB1ng Google", "M\xF4i tr\u01B0\u1EDDng n\xE0y ch\u1EC9 ch\u1EA5p nh\u1EADn Google OIDC.");
   }
+  if (process.env.AUTH_MODE === "supabase") {
+    if (!supabaseAuthAdapter) throw new HttpProblem(503, "SUPABASE_AUTH_NOT_CONFIGURED", "Supabase Auth ch\u01B0a s\u1EB5n s\xE0ng", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n c\u1EA5u h\xECnh SUPABASE_URL v\xE0 SUPABASE_PUBLISHABLE_KEY.");
+    const credentials2 = LoginSchema.parse(req.body);
+    const email = credentials2.username.trim().toLocaleLowerCase("en-US");
+    const user2 = appUsers.find((item) => item.isActive && item.email.toLocaleLowerCase("en-US") === email);
+    if (!user2) throw new HttpProblem(401, "INVALID_CREDENTIALS", "\u0110\u0103ng nh\u1EADp kh\xF4ng th\xE0nh c\xF4ng", "T\xE0i kho\u1EA3n ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng.");
+    let session;
+    try {
+      session = await supabaseAuthAdapter.signInWithPassword(email, credentials2.password);
+    } catch {
+      throw new HttpProblem(401, "INVALID_CREDENTIALS", "\u0110\u0103ng nh\u1EADp kh\xF4ng th\xE0nh c\xF4ng", "T\xE0i kho\u1EA3n ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng.");
+    }
+    if (session.user.id !== user2.authUserId) {
+      user2.authUserId = session.user.id;
+      await persistLocalState();
+    }
+    recordUserSecurityEvent(req, user2, {
+      type: "AUTH_LOGIN_SUCCEEDED",
+      outcome: "SUCCESS",
+      subject: email,
+      detail: "\u0110\u0103ng nh\u1EADp b\u1EB1ng Supabase Auth."
+    });
+    setSupabaseSessionCookies(reply, session.accessToken, session.refreshToken, session.expiresIn);
+    return { user: user2, expiresAt: new Date(Date.now() + session.expiresIn * 1e3).toISOString() };
+  }
   const nowMs = Date.now();
   assertLoginBurstAllowed(nowMs);
   const credentials = LoginSchema.parse(req.body);
@@ -5482,6 +5701,10 @@ app.post("/api/v1/auth/login", async (req, reply) => {
   return { user, expiresAt };
 });
 app.post("/api/v1/auth/logout", async (req, reply) => {
+  if (process.env.AUTH_MODE === "supabase") {
+    clearSupabaseSessionCookies(reply);
+    return reply.code(204).send();
+  }
   const token = cookieValue(req, "audit_bgs_session");
   const endingSession = token ? authSessionStore.resolve(token) : void 0;
   if (token) authSessionStore.revoke(token);
@@ -5502,6 +5725,36 @@ app.post("/api/v1/auth/logout", async (req, reply) => {
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   reply.header("set-cookie", `audit_bgs_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
   return reply.code(204).send();
+});
+app.post("/api/v1/auth/forgot-password", async (req, reply) => {
+  const body = z13.object({ email: z13.string().email(), redirectTo: z13.string().url().optional() }).parse(req.body);
+  if (process.env.AUTH_MODE !== "supabase" || !supabaseAuthAdapter) {
+    return reply.code(204).send();
+  }
+  const baseUrl = process.env.APP_BASE_URL?.trim() || `${req.protocol}://${req.headers.host ?? "localhost"}`;
+  await supabaseAuthAdapter.sendPasswordReset(body.email.toLocaleLowerCase("en-US"), body.redirectTo ?? `${baseUrl}/reset-password`);
+  return reply.code(204).send();
+});
+app.post("/api/v1/auth/password", async (req) => {
+  const user = getCurrentUser(req);
+  const body = ChangePasswordSchema.parse(req.body);
+  if (process.env.AUTH_MODE === "supabase") {
+    const accessToken = supabaseAccessToken(req);
+    if (!accessToken || !supabaseAuthAdapter) throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Vui l\xF2ng \u0111\u0103ng nh\u1EADp l\u1EA1i \u0111\u1EC3 \u0111\u1ED5i m\u1EADt kh\u1EA9u.");
+    await supabaseAuthAdapter.changePassword(accessToken, body.password);
+    recordUserSecurityEvent(req, user, { type: "AUTH_PASSWORD_CHANGED", outcome: "SUCCESS", detail: "Ng\u01B0\u1EDDi d\xF9ng t\u1EF1 \u0111\u1ED5i m\u1EADt kh\u1EA9u b\u1EB1ng Supabase Auth." });
+    return { user };
+  }
+  const credential = credentialDirectory.find((item) => item.userId === user.id);
+  if (!credential || !body.currentPassword || !await verifyPassword(body.currentPassword, credential.passwordHash)) {
+    throw new HttpProblem(422, "CURRENT_PASSWORD_INVALID", "M\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i kh\xF4ng \u0111\xFAng", "Nh\u1EADp \u0111\xFAng m\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i \u0111\u1EC3 ti\u1EBFp t\u1EE5c.");
+  }
+  credential.passwordHash = await hashPassword(body.password);
+  const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+  authSessions = authSessionStore.records();
+  recordUserSecurityEvent(req, user, { type: "AUTH_PASSWORD_CHANGED", outcome: "SUCCESS", detail: `Ng\u01B0\u1EDDi d\xF9ng t\u1EF1 \u0111\u1ED5i m\u1EADt kh\u1EA9u; thu h\u1ED3i ${revokedSessions} phi\xEAn.` });
+  await persistLocalState();
+  return { user };
 });
 app.get("/api/v1/me", async (req) => {
   const user = getCurrentUser(req);
@@ -5729,6 +5982,36 @@ app.post("/api/v1/admin/org-units", async (req) => {
   await persistLocalState();
   return projectOrgUnit(newUnit);
 });
+app.post("/api/v1/admin/org-units/imports/commit", async (req, reply) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = BulkOrgUnitImportSchema.parse(req.body);
+  const batchId = `org-import-${crypto5.randomUUID()}`;
+  const result = { batchId, created: [], failed: [] };
+  for (const row of body.rows) {
+    try {
+      const parentRef = row.unit.parentId;
+      const parent = parentRef ? orgUnits.find((unit2) => unit2.id === parentRef || unit2.code.toLocaleLowerCase("vi-VN") === parentRef.toLocaleLowerCase("vi-VN") || unit2.name.toLocaleLowerCase("vi-VN") === parentRef.toLocaleLowerCase("vi-VN")) : void 0;
+      const payload = { ...row.unit, parentId: parent?.id };
+      const created = CreateOrgUnitSchema.parse(payload);
+      const duplicate = orgUnits.some((unit2) => unit2.code.toLocaleLowerCase("vi-VN") === created.code.toLocaleLowerCase("vi-VN"));
+      if (duplicate) throw new HttpProblem(409, "ORG_UNIT_CODE_EXISTS", "M\xE3 \u0111\u01A1n v\u1ECB \u0111\xE3 t\u1ED3n t\u1EA1i", "Vui l\xF2ng s\u1EED d\u1EE5ng m\xE3 \u0111\u01A1n v\u1ECB kh\xE1c.");
+      if (created.type !== "HEAD_OFFICE" && !parent) throw new HttpProblem(422, "ORG_UNIT_PARENT_INVALID", "\u0110\u01A1n v\u1ECB cha kh\xF4ng h\u1EE3p l\u1EC7", "H\xE3y d\xF9ng m\xE3 ho\u1EB7c t\xEAn \u0111\u01A1n v\u1ECB cha \u0111\xE3 c\xF3 trong h\u1EC7 th\u1ED1ng ho\u1EB7c \u1EDF d\xF2ng tr\u01B0\u1EDBc.");
+      assertOrgUnitParent(created.type, created.parentId, void 0);
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const unit = { id: `org-${crypto5.randomUUID()}`, ...created, createdAt: now, updatedAt: now };
+      orgUnits.push(unit);
+      result.created.push({ rowNumber: row.rowNumber, unit: projectOrgUnit(unit) });
+    } catch (error) {
+      const problem = normalizeProblem(error);
+      if (problem.status >= 500) throw error;
+      result.failed.push({ rowNumber: row.rowNumber, code: problem.code, message: problem.message });
+    }
+  }
+  recordUserSecurityEvent(req, actor, { type: "ADMIN_ORG_IMPORT_COMMITTED", outcome: "SUCCESS", subject: batchId, detail: `Nh\u1EADp \u0111\u01A1n v\u1ECB theo l\xF4: t\u1EA1o ${result.created.length}, l\u1ED7i ${result.failed.length}.` });
+  await persistLocalState();
+  return reply.code(201).send(result);
+});
 app.patch("/api/v1/admin/org-units/:id", async (req) => {
   requireAdmin(getCurrentUser(req));
   const body = UpdateOrgUnitSchema.parse(req.body);
@@ -5847,11 +6130,27 @@ async function createUserAccount(req, body) {
   }
   newUser.username = normalizedUsername;
   const temporaryPassword = body.password ? void 0 : generateTemporaryPassword();
-  credentialDirectory.push({
-    userId: newUser.id,
-    username: normalizedUsername,
-    passwordHash: await hashPassword(body.password ?? temporaryPassword)
-  });
+  const initialPassword = body.password ?? temporaryPassword;
+  if (process.env.AUTH_MODE === "supabase") {
+    if (!supabaseAuthAdapter) throw new HttpProblem(503, "SUPABASE_AUTH_NOT_CONFIGURED", "Supabase Auth ch\u01B0a s\u1EB5n s\xE0ng", "Qu\u1EA3n tr\u1ECB vi\xEAn c\u1EA7n c\u1EA5u h\xECnh Supabase Auth tr\u01B0\u1EDBc khi c\u1EA5p t\xE0i kho\u1EA3n.");
+    try {
+      const authUser = await supabaseAuthAdapter.createUser({
+        email: body.email.toLocaleLowerCase("en-US"),
+        password: initialPassword,
+        email_confirm: true,
+        user_metadata: { full_name: body.fullName, username: normalizedUsername }
+      });
+      newUser.authUserId = authUser.id;
+    } catch (error) {
+      throw new HttpProblem(422, "SUPABASE_USER_CREATE_FAILED", "Kh\xF4ng th\u1EC3 t\u1EA1o t\xE0i kho\u1EA3n Supabase", error instanceof Error ? error.message : "Supabase Auth t\u1EEB ch\u1ED1i t\xE0i kho\u1EA3n.");
+    }
+  } else {
+    credentialDirectory.push({
+      userId: newUser.id,
+      username: normalizedUsername,
+      passwordHash: await hashPassword(initialPassword)
+    });
+  }
   appUsers.push(newUser);
   recordUserSecurityEvent(req, getCurrentUser(req), {
     type: "ADMIN_USER_CREATED",
@@ -5899,6 +6198,57 @@ app.post("/api/v1/admin/users/imports/commit", async (req, reply) => {
   rememberIdempotentResponse(idempotency, result);
   await persistLocalState();
   return reply.code(201).send(result);
+});
+app.patch("/api/v1/admin/users/:id", async (req) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = UpdateUserSchema.parse(req.body);
+  const user = appUsers.find((item) => item.id === req.params.id);
+  if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
+  if (user.id === actor.id && body.isActive === false) throw new HttpProblem(409, "USER_SELF_LOCK", "Kh\xF4ng th\u1EC3 t\u1EF1 kh\xF3a t\xE0i kho\u1EA3n", "H\xE3y c\u1EA5p quy\u1EC1n cho m\u1ED9t qu\u1EA3n tr\u1ECB vi\xEAn kh\xE1c tr\u01B0\u1EDBc.");
+  if (body.email && appUsers.some((item) => item.id !== user.id && item.email.toLocaleLowerCase("en-US") === body.email.toLocaleLowerCase("en-US"))) {
+    throw new HttpProblem(409, "USER_EMAIL_EXISTS", "Email \u0111\xE3 \u0111\u01B0\u1EE3c s\u1EED d\u1EE5ng", "\u0110\xE3 t\u1ED3n t\u1EA1i t\xE0i kho\u1EA3n v\u1EDBi email n\xE0y.");
+  }
+  if (body.username && appUsers.some((item) => item.id !== user.id && item.username.toLocaleLowerCase("vi-VN") === body.username.toLocaleLowerCase("vi-VN"))) {
+    throw new HttpProblem(409, "USER_NAME_EXISTS", "T\xEAn \u0111\u0103ng nh\u1EADp \u0111\xE3 t\u1ED3n t\u1EA1i", "Ch\u1ECDn m\u1ED9t t\xEAn \u0111\u0103ng nh\u1EADp kh\xE1c.");
+  }
+  if (process.env.AUTH_MODE === "supabase" && supabaseAuthAdapter && user.authUserId) {
+    await supabaseAuthAdapter.updateUser(user.authUserId, {
+      ...body.email ? { email: body.email.toLocaleLowerCase("en-US"), email_confirm: true } : {},
+      ...body.isActive !== void 0 ? { ban_duration: body.isActive ? "none" : "876000h" } : {}
+    });
+  }
+  if (body.email) user.email = body.email.toLocaleLowerCase("en-US");
+  if (body.username) user.username = body.username.toLocaleLowerCase("vi-VN");
+  if (body.fullName !== void 0) user.fullName = body.fullName;
+  if (body.phone !== void 0) user.phone = body.phone;
+  if (body.isActive !== void 0) user.isActive = body.isActive;
+  if (body.isActive === false) {
+    const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+    authSessions = authSessionStore.records();
+    recordUserSecurityEvent(req, actor, { type: "ADMIN_USER_DISABLED", outcome: "SUCCESS", subject: user.username, detail: `Kh\xF3a t\xE0i kho\u1EA3n ${user.fullName}; thu h\u1ED3i ${revokedSessions} phi\xEAn.` });
+  } else {
+    recordUserSecurityEvent(req, actor, { type: "ADMIN_USER_UPDATED", outcome: "SUCCESS", subject: user.username, detail: `C\u1EADp nh\u1EADt h\u1ED3 s\u01A1 t\xE0i kho\u1EA3n ${user.fullName}.` });
+  }
+  await persistLocalState();
+  return { user };
+});
+app.delete("/api/v1/admin/users/:id", async (req, reply) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const index = appUsers.findIndex((item) => item.id === req.params.id);
+  if (index < 0) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
+  const user = appUsers[index];
+  if (user.id === actor.id) throw new HttpProblem(409, "USER_SELF_DELETE", "Kh\xF4ng th\u1EC3 t\u1EF1 x\xF3a t\xE0i kho\u1EA3n", "H\xE3y c\u1EA5p quy\u1EC1n cho m\u1ED9t qu\u1EA3n tr\u1ECB vi\xEAn kh\xE1c tr\u01B0\u1EDBc.");
+  if (process.env.AUTH_MODE === "supabase" && supabaseAuthAdapter && user.authUserId) await supabaseAuthAdapter.deleteUser(user.authUserId, { shouldSoftDelete: true });
+  appUsers.splice(index, 1);
+  credentialDirectory = credentialDirectory.filter((entry) => entry.userId !== user.id);
+  authenticatorCredentials = authenticatorCredentials.filter((entry) => entry.userId !== user.id);
+  authSessionStore.revokeAllForUser(user.id);
+  authSessions = authSessionStore.records();
+  recordUserSecurityEvent(req, actor, { type: "ADMIN_USER_DELETED", outcome: "SUCCESS", subject: user.username, detail: `X\xF3a t\xE0i kho\u1EA3n ${user.fullName}.` });
+  await persistLocalState();
+  return reply.code(204).send();
 });
 app.put("/api/v1/admin/users/:id/authenticator", async (req) => {
   const actor = getCurrentUser(req);
@@ -5952,10 +6302,16 @@ app.post("/api/v1/admin/users/:id/password", async (req) => {
     throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
   }
   const temporaryPassword = body.password ? void 0 : generateTemporaryPassword();
-  const passwordHash = await hashPassword(body.password ?? temporaryPassword);
-  const existing = credentialDirectory.find((item) => item.userId === user.id);
-  if (existing) existing.passwordHash = passwordHash;
-  else credentialDirectory.push({ userId: user.id, username: user.username.toLocaleLowerCase("vi-VN"), passwordHash });
+  const nextPassword = body.password ?? temporaryPassword;
+  if (process.env.AUTH_MODE === "supabase") {
+    if (!supabaseAuthAdapter || !user.authUserId) throw new HttpProblem(503, "SUPABASE_AUTH_NOT_LINKED", "T\xE0i kho\u1EA3n ch\u01B0a li\xEAn k\u1EBFt Supabase", "H\xE3y \u0111\u1ED3ng b\u1ED9 t\xE0i kho\u1EA3n Auth tr\u01B0\u1EDBc khi \u0111\u1EB7t l\u1EA1i m\u1EADt kh\u1EA9u.");
+    await supabaseAuthAdapter.updateUser(user.authUserId, { password: nextPassword });
+  } else {
+    const passwordHash = await hashPassword(nextPassword);
+    const existing = credentialDirectory.find((item) => item.userId === user.id);
+    if (existing) existing.passwordHash = passwordHash;
+    else credentialDirectory.push({ userId: user.id, username: user.username.toLocaleLowerCase("vi-VN"), passwordHash });
+  }
   const revokedSessions = authSessionStore.revokeAllForUser(user.id);
   clearLoginFailures(user.username.toLocaleLowerCase("vi-VN"));
   recordUserSecurityEvent(req, getCurrentUser(req), {
@@ -6494,6 +6850,24 @@ app.post("/api/v1/imports/findings/docx-preview", async (req, reply) => {
     return reply.send({ fileName: data.filename, rows: await parseFindingDocx(await data.toBuffer()) });
   } catch (error) {
     if (error instanceof FindingDocumentImportError) throw new HttpProblem(422, "FINDING_DOCX_UNSUPPORTED", "Kh\xF4ng th\u1EC3 b\xF3c t\xE1ch DOCX", error.message);
+    throw error;
+  }
+});
+app.post("/api/v1/imports/findings/document-preview", async (req, reply) => {
+  const user = getCurrentUser(req);
+  requireRoles(user, ["ADMIN", "INTERNAL_OFFICER", "SUPERVISOR"]);
+  const data = await req.file();
+  if (!data) throw new HttpProblem(422, "FINDING_DOCUMENT_REQUIRED", "Thi\u1EBFu t\u1EC7p ti\u1EC3u bi\xEAn b\u1EA3n", "H\xE3y ch\u1ECDn t\u1EC7p DOCX ho\u1EB7c PDF c\xF3 d\u1EEF li\u1EC7u sai s\xF3t.");
+  const fileName = data.filename.toLowerCase();
+  if (!fileName.endsWith(".docx") && !fileName.endsWith(".pdf")) {
+    throw new HttpProblem(422, "FINDING_DOCUMENT_INVALID", "Sai \u0111\u1ECBnh d\u1EA1ng", "Ch\u1EC9 h\u1ED7 tr\u1EE3 t\u1EC7p .docx ho\u1EB7c .pdf \u1EDF ngu\u1ED3n n\xE0y.");
+  }
+  try {
+    const buffer = await data.toBuffer();
+    const rows = fileName.endsWith(".docx") ? await parseFindingDocx(buffer) : await parseFindingPdf(buffer);
+    return reply.send({ fileName: data.filename, rows });
+  } catch (error) {
+    if (error instanceof FindingDocumentImportError) throw new HttpProblem(422, "FINDING_DOCUMENT_UNSUPPORTED", "Kh\xF4ng th\u1EC3 b\xF3c t\xE1ch ti\u1EC3u bi\xEAn b\u1EA3n", error.message);
     throw error;
   }
 });
@@ -7197,15 +7571,20 @@ function assertSafeRuntimeConfiguration(env = process.env) {
   if (env.NODE_ENV !== "production") return;
   const violations = [];
   const credentialAuth = env.AUTH_MODE === "credentials" || env.AUTH_MODE === "local-credential-session";
-  if (!credentialAuth && env.AUTH_MODE !== "oidc") violations.push("AUTH_MODE ph\u1EA3i l\xE0 credentials ho\u1EB7c oidc");
+  const supabaseAuth = env.AUTH_MODE === "supabase";
+  if (!credentialAuth && env.AUTH_MODE !== "oidc" && !supabaseAuth) violations.push("AUTH_MODE ph\u1EA3i l\xE0 credentials, supabase ho\u1EB7c oidc");
   if (env.SEED_DEMO_DATA === "true" || env.SEED_DEMO_USERS === "true") violations.push("SEED_DEMO_DATA kh\xF4ng \u0111\u01B0\u1EE3c b\u1EADt \u1EDF production");
-  if (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH) {
+  if (!supabaseAuth && (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH)) {
     violations.push("thi\u1EBFu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH");
   }
-  if (!env.BOOTSTRAP_ADMIN_EMAIL?.trim()) {
+  if (!supabaseAuth && !env.BOOTSTRAP_ADMIN_EMAIL?.trim()) {
     violations.push("thi\u1EBFu BOOTSTRAP_ADMIN_EMAIL");
   }
-  if (!credentialAuth) {
+  if (supabaseAuth) {
+    if (!env.SUPABASE_URL || !(env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY) || !(env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY)) {
+      violations.push("thi\u1EBFu SUPABASE_URL/SUPABASE_PUBLISHABLE_KEY/SUPABASE_SECRET_KEY");
+    }
+  } else if (!credentialAuth) {
     if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push("thi\u1EBFu OIDC_ISSUER_URL/OIDC_AUDIENCE");
     if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
       violations.push("thi\u1EBFu c\u1EA5u h\xECnh Google OIDC");

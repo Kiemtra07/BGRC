@@ -3,6 +3,7 @@ import path from 'node:path';
 import fastify, { FastifyInstance, FastifyRequest } from 'fastify';
 import cors from '@fastify/cors';
 import multipart from '@fastify/multipart';
+import { z } from 'zod';
 import { 
   UserProfile, 
   Finding, 
@@ -24,6 +25,8 @@ import {
   BulkFindingImportSchema,
   buildFindingBusinessKey,
   CreateOrgUnitSchema,
+  BulkOrgUnitImportSchema,
+  BulkOrgUnitImportResult,
   UpdateOrgUnitSchema,
   CreateUserSchema,
   CreateUserDTO,
@@ -79,6 +82,9 @@ import {
   CreateReportSpreadsheetSchema,
   ReportChannelVersion,
   LoginSchema,
+  ChangePasswordSchema,
+  UpdateUserSchema,
+  UpdateUserDTO,
   AuthSessionRecord,
   UpdateAuthenticatorSchema,
   UpdateAuthenticatorResponse,
@@ -131,7 +137,8 @@ import { createAuthorizationUrl, exchangeCode } from './security/google-oidc-cli
 import { sortWatchTargets } from './modules/workspace/workspace-priority';
 import { canAccessCampaign, validateCampaignTransition } from './modules/campaigns/campaign-service';
 import { CampaignDocumentImportError, extractCampaignImportDraft } from './modules/campaigns/campaign-document-import';
-import { FindingDocumentImportError, parseFindingDocx } from './modules/ingestion/finding-document-import';
+import { FindingDocumentImportError, parseFindingDocx, parseFindingPdf } from './modules/ingestion/finding-document-import';
+import { createSupabaseAuthAdapter, SupabaseAuthAdapter } from './auth/supabase-auth';
 
 export const app: FastifyInstance = fastify({
   logger: process.env.NODE_ENV !== 'test',
@@ -188,12 +195,22 @@ const publicPaths = new Set([
   '/api/v1/ready',
   '/api/v1/auth/login',
   '/api/v1/auth/logout',
+  '/api/v1/auth/forgot-password',
   '/api/v1/auth/google',
   '/api/v1/auth/google/callback',
   internalSlaPath,
 ]);
 const requestUsers = new WeakMap<FastifyRequest, UserProfile>();
 let authSessionStore: AuthSessionStore;
+const supabaseAuthAdapter: SupabaseAuthAdapter | undefined = process.env.AUTH_MODE === 'supabase'
+  && process.env.SUPABASE_URL
+  && (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY)
+  ? createSupabaseAuthAdapter({
+      url: process.env.SUPABASE_URL,
+      publishableKey: process.env.SUPABASE_PUBLISHABLE_KEY ?? process.env.SUPABASE_ANON_KEY ?? '',
+      secretKey: process.env.SUPABASE_SECRET_KEY ?? process.env.SUPABASE_SERVICE_ROLE_KEY,
+    })
+  : undefined;
 
 function cookieValue(request: FastifyRequest, name: string): string | undefined {
   const cookieHeader = request.headers.cookie;
@@ -215,8 +232,41 @@ async function createAuthenticatedSession(user: UserProfile, reply: { header(nam
   return session.record.expiresAt;
 }
 
+function supabaseAccessToken(request: FastifyRequest): string | undefined {
+  const cookie = cookieValue(request, 'audit_bgs_supabase_access');
+  if (cookie) return cookie;
+  const authorization = request.headers.authorization;
+  return authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length).trim() : undefined;
+}
+
+function setSupabaseSessionCookies(reply: { header(name: string, value: string | string[]): unknown }, accessToken: string, refreshToken: string, expiresIn: number): void {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  reply.header('set-cookie', [
+    `audit_bgs_supabase_access=${encodeURIComponent(accessToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.max(60, Math.floor(expiresIn))}${secure}`,
+    `audit_bgs_supabase_refresh=${encodeURIComponent(refreshToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`,
+  ]);
+}
+
+function clearSupabaseSessionCookies(reply: { header(name: string, value: string | string[]): unknown }): void {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  reply.header('set-cookie', [
+    `audit_bgs_supabase_access=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`,
+    `audit_bgs_supabase_refresh=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`,
+  ]);
+}
+
 app.addHook('preHandler', async (request) => {
   if (publicPaths.has(request.url.split('?')[0])) return;
+  if (process.env.AUTH_MODE === 'supabase') {
+    const accessToken = supabaseAccessToken(request);
+    const authUser = accessToken && supabaseAuthAdapter ? await supabaseAuthAdapter.verifyAccessToken(accessToken) : null;
+    const sessionUser = authUser
+      ? appUsers.find(item => item.isActive && (item.authUserId === authUser.id || item.email.toLocaleLowerCase('en-US') === authUser.email?.toLocaleLowerCase('en-US')))
+      : undefined;
+    if (!sessionUser) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Vui lòng đăng nhập để tiếp tục.');
+    requestUsers.set(request, sessionUser);
+    return;
+  }
   const allowTestUserHeader = process.env.NODE_ENV === 'test' && process.env.ALLOW_TEST_USER_HEADER !== 'false';
   const user = allowTestUserHeader && request.headers['x-user-id']
     ? resolveLocalUser(request.headers['x-user-id'], appUsers)
@@ -949,7 +999,12 @@ type SecurityEventType =
   | 'AUTH_LOGOUT'
   | 'AUTH_OIDC_LOGIN_SUCCEEDED'
   | 'AUTH_OIDC_LOGIN_REJECTED'
+  | 'AUTH_PASSWORD_CHANGED'
   | 'ADMIN_USER_CREATED'
+  | 'ADMIN_ORG_IMPORT_COMMITTED'
+  | 'ADMIN_USER_UPDATED'
+  | 'ADMIN_USER_DISABLED'
+  | 'ADMIN_USER_DELETED'
   | 'ADMIN_USER_IMPORT_COMMITTED'
   | 'ADMIN_USER_PASSWORD_RESET'
   | 'ADMIN_AUTHENTICATOR_TOGGLED'
@@ -2595,6 +2650,31 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   if (process.env.AUTH_MODE === 'oidc') {
     throw new HttpProblem(405, 'OIDC_LOGIN_REQUIRED', 'Hãy đăng nhập bằng Google', 'Môi trường này chỉ chấp nhận Google OIDC.');
   }
+  if (process.env.AUTH_MODE === 'supabase') {
+    if (!supabaseAuthAdapter) throw new HttpProblem(503, 'SUPABASE_AUTH_NOT_CONFIGURED', 'Supabase Auth chưa sẵn sàng', 'Quản trị viên cần cấu hình SUPABASE_URL và SUPABASE_PUBLISHABLE_KEY.');
+    const credentials = LoginSchema.parse(req.body);
+    const email = credentials.username.trim().toLocaleLowerCase('en-US');
+    const user = appUsers.find(item => item.isActive && item.email.toLocaleLowerCase('en-US') === email);
+    if (!user) throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
+    let session: Awaited<ReturnType<SupabaseAuthAdapter['signInWithPassword']>>;
+    try {
+      session = await supabaseAuthAdapter.signInWithPassword(email, credentials.password);
+    } catch {
+      throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
+    }
+    if (session.user.id !== user.authUserId) {
+      user.authUserId = session.user.id;
+      await persistLocalState();
+    }
+    recordUserSecurityEvent(req, user, {
+      type: 'AUTH_LOGIN_SUCCEEDED',
+      outcome: 'SUCCESS',
+      subject: email,
+      detail: 'Đăng nhập bằng Supabase Auth.',
+    });
+    setSupabaseSessionCookies(reply, session.accessToken, session.refreshToken, session.expiresIn);
+    return { user, expiresAt: new Date(Date.now() + session.expiresIn * 1000).toISOString() };
+  }
   const nowMs = Date.now();
   assertLoginBurstAllowed(nowMs);
   const credentials = LoginSchema.parse(req.body);
@@ -2689,6 +2769,10 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
 });
 
 app.post('/api/v1/auth/logout', async (req, reply) => {
+  if (process.env.AUTH_MODE === 'supabase') {
+    clearSupabaseSessionCookies(reply);
+    return reply.code(204).send();
+  }
   const token = cookieValue(req, 'audit_bgs_session');
   const endingSession = token ? authSessionStore.resolve(token) : undefined;
   if (token) authSessionStore.revoke(token);
@@ -2709,6 +2793,39 @@ app.post('/api/v1/auth/logout', async (req, reply) => {
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   reply.header('set-cookie', `audit_bgs_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
   return reply.code(204).send();
+});
+
+app.post('/api/v1/auth/forgot-password', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
+  const body = z.object({ email: z.string().email(), redirectTo: z.string().url().optional() }).parse(req.body);
+  if (process.env.AUTH_MODE !== 'supabase' || !supabaseAuthAdapter) {
+    // Do not disclose whether an account exists in legacy mode.
+    return reply.code(204).send();
+  }
+  const baseUrl = process.env.APP_BASE_URL?.trim() || `${req.protocol}://${req.headers.host ?? 'localhost'}`;
+  await supabaseAuthAdapter.sendPasswordReset(body.email.toLocaleLowerCase('en-US'), body.redirectTo ?? `${baseUrl}/reset-password`);
+  return reply.code(204).send();
+});
+
+app.post('/api/v1/auth/password', async (req: FastifyRequest<{ Body: unknown }>) => {
+  const user = getCurrentUser(req);
+  const body = ChangePasswordSchema.parse(req.body);
+  if (process.env.AUTH_MODE === 'supabase') {
+    const accessToken = supabaseAccessToken(req);
+    if (!accessToken || !supabaseAuthAdapter) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Vui lòng đăng nhập lại để đổi mật khẩu.');
+    await supabaseAuthAdapter.changePassword(accessToken, body.password);
+    recordUserSecurityEvent(req, user, { type: 'AUTH_PASSWORD_CHANGED', outcome: 'SUCCESS', detail: 'Người dùng tự đổi mật khẩu bằng Supabase Auth.' });
+    return { user };
+  }
+  const credential = credentialDirectory.find(item => item.userId === user.id);
+  if (!credential || !body.currentPassword || !(await verifyPassword(body.currentPassword, credential.passwordHash))) {
+    throw new HttpProblem(422, 'CURRENT_PASSWORD_INVALID', 'Mật khẩu hiện tại không đúng', 'Nhập đúng mật khẩu hiện tại để tiếp tục.');
+  }
+  credential.passwordHash = await hashPassword(body.password);
+  const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+  authSessions = authSessionStore.records();
+  recordUserSecurityEvent(req, user, { type: 'AUTH_PASSWORD_CHANGED', outcome: 'SUCCESS', detail: `Người dùng tự đổi mật khẩu; thu hồi ${revokedSessions} phiên.` });
+  await persistLocalState();
+  return { user };
 });
 
 app.get('/api/v1/me', async (req) => {
@@ -2958,6 +3075,39 @@ app.post('/api/v1/admin/org-units', async (req: FastifyRequest<{ Body: any }>) =
   return projectOrgUnit(newUnit);
 });
 
+app.post('/api/v1/admin/org-units/imports/commit', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body = BulkOrgUnitImportSchema.parse(req.body);
+  const batchId = `org-import-${crypto.randomUUID()}`;
+  const result: BulkOrgUnitImportResult = { batchId, created: [], failed: [] };
+  for (const row of body.rows) {
+    try {
+      const parentRef = row.unit.parentId;
+      const parent = parentRef
+        ? orgUnits.find(unit => unit.id === parentRef || unit.code.toLocaleLowerCase('vi-VN') === parentRef.toLocaleLowerCase('vi-VN') || unit.name.toLocaleLowerCase('vi-VN') === parentRef.toLocaleLowerCase('vi-VN'))
+        : undefined;
+      const payload = { ...row.unit, parentId: parent?.id };
+      const created = CreateOrgUnitSchema.parse(payload);
+      const duplicate = orgUnits.some(unit => unit.code.toLocaleLowerCase('vi-VN') === created.code.toLocaleLowerCase('vi-VN'));
+      if (duplicate) throw new HttpProblem(409, 'ORG_UNIT_CODE_EXISTS', 'Mã đơn vị đã tồn tại', 'Vui lòng sử dụng mã đơn vị khác.');
+      if (created.type !== 'HEAD_OFFICE' && !parent) throw new HttpProblem(422, 'ORG_UNIT_PARENT_INVALID', 'Đơn vị cha không hợp lệ', 'Hãy dùng mã hoặc tên đơn vị cha đã có trong hệ thống hoặc ở dòng trước.');
+      assertOrgUnitParent(created.type, created.parentId, undefined);
+      const now = new Date().toISOString();
+      const unit: OrgUnit = { id: `org-${crypto.randomUUID()}`, ...created, createdAt: now, updatedAt: now };
+      orgUnits.push(unit);
+      result.created.push({ rowNumber: row.rowNumber, unit: projectOrgUnit(unit) });
+    } catch (error) {
+      const problem = normalizeProblem(error);
+      if (problem.status >= 500) throw error;
+      result.failed.push({ rowNumber: row.rowNumber, code: problem.code, message: problem.message });
+    }
+  }
+  recordUserSecurityEvent(req, actor, { type: 'ADMIN_ORG_IMPORT_COMMITTED', outcome: 'SUCCESS', subject: batchId, detail: `Nhập đơn vị theo lô: tạo ${result.created.length}, lỗi ${result.failed.length}.` });
+  await persistLocalState();
+  return reply.code(201).send(result);
+});
+
 app.patch('/api/v1/admin/org-units/:id', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   requireAdmin(getCurrentUser(req));
   const body = UpdateOrgUnitSchema.parse(req.body);
@@ -3104,11 +3254,27 @@ async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Prom
 
   // Không có mật khẩu thì tài khoản vô dụng: sinh mật khẩu tạm và trả về đúng một lần.
   const temporaryPassword = body.password ? undefined : generateTemporaryPassword();
-  credentialDirectory.push({
-    userId: newUser.id,
-    username: normalizedUsername,
-    passwordHash: await hashPassword(body.password ?? temporaryPassword!),
-  });
+  const initialPassword = body.password ?? temporaryPassword!;
+  if (process.env.AUTH_MODE === 'supabase') {
+    if (!supabaseAuthAdapter) throw new HttpProblem(503, 'SUPABASE_AUTH_NOT_CONFIGURED', 'Supabase Auth chưa sẵn sàng', 'Quản trị viên cần cấu hình Supabase Auth trước khi cấp tài khoản.');
+    try {
+      const authUser = await supabaseAuthAdapter.createUser({
+        email: body.email.toLocaleLowerCase('en-US'),
+        password: initialPassword,
+        email_confirm: true,
+        user_metadata: { full_name: body.fullName, username: normalizedUsername },
+      });
+      newUser.authUserId = authUser.id;
+    } catch (error) {
+      throw new HttpProblem(422, 'SUPABASE_USER_CREATE_FAILED', 'Không thể tạo tài khoản Supabase', error instanceof Error ? error.message : 'Supabase Auth từ chối tài khoản.');
+    }
+  } else {
+    credentialDirectory.push({
+      userId: newUser.id,
+      username: normalizedUsername,
+      passwordHash: await hashPassword(initialPassword),
+    });
+  }
 
   appUsers.push(newUser);
   recordUserSecurityEvent(req, getCurrentUser(req), {
@@ -3161,6 +3327,59 @@ app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body
   rememberIdempotentResponse(idempotency, result);
   await persistLocalState();
   return reply.code(201).send(result);
+});
+
+app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const body: UpdateUserDTO = UpdateUserSchema.parse(req.body);
+  const user = appUsers.find(item => item.id === req.params.id);
+  if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
+  if (user.id === actor.id && body.isActive === false) throw new HttpProblem(409, 'USER_SELF_LOCK', 'Không thể tự khóa tài khoản', 'Hãy cấp quyền cho một quản trị viên khác trước.');
+  if (body.email && appUsers.some(item => item.id !== user.id && item.email.toLocaleLowerCase('en-US') === body.email!.toLocaleLowerCase('en-US'))) {
+    throw new HttpProblem(409, 'USER_EMAIL_EXISTS', 'Email đã được sử dụng', 'Đã tồn tại tài khoản với email này.');
+  }
+  if (body.username && appUsers.some(item => item.id !== user.id && item.username.toLocaleLowerCase('vi-VN') === body.username!.toLocaleLowerCase('vi-VN'))) {
+    throw new HttpProblem(409, 'USER_NAME_EXISTS', 'Tên đăng nhập đã tồn tại', 'Chọn một tên đăng nhập khác.');
+  }
+  if (process.env.AUTH_MODE === 'supabase' && supabaseAuthAdapter && user.authUserId) {
+    await supabaseAuthAdapter.updateUser(user.authUserId, {
+      ...(body.email ? { email: body.email.toLocaleLowerCase('en-US'), email_confirm: true } : {}),
+      ...(body.isActive !== undefined ? { ban_duration: body.isActive ? 'none' : '876000h' } : {}),
+    });
+  }
+  if (body.email) user.email = body.email.toLocaleLowerCase('en-US');
+  if (body.username) user.username = body.username.toLocaleLowerCase('vi-VN');
+  if (body.fullName !== undefined) user.fullName = body.fullName;
+  if (body.phone !== undefined) user.phone = body.phone;
+  if (body.isActive !== undefined) user.isActive = body.isActive;
+  if (body.isActive === false) {
+    const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+    authSessions = authSessionStore.records();
+    recordUserSecurityEvent(req, actor, { type: 'ADMIN_USER_DISABLED', outcome: 'SUCCESS', subject: user.username, detail: `Khóa tài khoản ${user.fullName}; thu hồi ${revokedSessions} phiên.` });
+  } else {
+    recordUserSecurityEvent(req, actor, { type: 'ADMIN_USER_UPDATED', outcome: 'SUCCESS', subject: user.username, detail: `Cập nhật hồ sơ tài khoản ${user.fullName}.` });
+  }
+  await persistLocalState();
+  return { user };
+});
+
+app.delete('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const index = appUsers.findIndex(item => item.id === req.params.id);
+  if (index < 0) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
+  const user = appUsers[index];
+  if (user.id === actor.id) throw new HttpProblem(409, 'USER_SELF_DELETE', 'Không thể tự xóa tài khoản', 'Hãy cấp quyền cho một quản trị viên khác trước.');
+  if (process.env.AUTH_MODE === 'supabase' && supabaseAuthAdapter && user.authUserId) await supabaseAuthAdapter.deleteUser(user.authUserId, { shouldSoftDelete: true });
+  appUsers.splice(index, 1);
+  credentialDirectory = credentialDirectory.filter(entry => entry.userId !== user.id);
+  authenticatorCredentials = authenticatorCredentials.filter(entry => entry.userId !== user.id);
+  authSessionStore.revokeAllForUser(user.id);
+  authSessions = authSessionStore.records();
+  recordUserSecurityEvent(req, actor, { type: 'ADMIN_USER_DELETED', outcome: 'SUCCESS', subject: user.username, detail: `Xóa tài khoản ${user.fullName}.` });
+  await persistLocalState();
+  return reply.code(204).send();
 });
 
 /** Bật/tắt bắt buộc Google Authenticator. Secret chỉ trả về đúng một lần khi bật lần đầu. */
@@ -3220,10 +3439,16 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
     throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
   }
   const temporaryPassword = body.password ? undefined : generateTemporaryPassword();
-  const passwordHash = await hashPassword(body.password ?? temporaryPassword!);
-  const existing = credentialDirectory.find(item => item.userId === user.id);
-  if (existing) existing.passwordHash = passwordHash;
-  else credentialDirectory.push({ userId: user.id, username: user.username.toLocaleLowerCase('vi-VN'), passwordHash });
+  const nextPassword = body.password ?? temporaryPassword!;
+  if (process.env.AUTH_MODE === 'supabase') {
+    if (!supabaseAuthAdapter || !user.authUserId) throw new HttpProblem(503, 'SUPABASE_AUTH_NOT_LINKED', 'Tài khoản chưa liên kết Supabase', 'Hãy đồng bộ tài khoản Auth trước khi đặt lại mật khẩu.');
+    await supabaseAuthAdapter.updateUser(user.authUserId, { password: nextPassword });
+  } else {
+    const passwordHash = await hashPassword(nextPassword);
+    const existing = credentialDirectory.find(item => item.userId === user.id);
+    if (existing) existing.passwordHash = passwordHash;
+    else credentialDirectory.push({ userId: user.id, username: user.username.toLocaleLowerCase('vi-VN'), passwordHash });
+  }
 
   // Đổi mật khẩu phải đá mọi phiên đang mở, nếu không người bị thu hồi vẫn dùng tiếp được.
   const revokedSessions = authSessionStore.revokeAllForUser(user.id);
@@ -3853,6 +4078,25 @@ app.post('/api/v1/imports/findings/docx-preview', async (req, reply) => {
     return reply.send({ fileName: data.filename, rows: await parseFindingDocx(await data.toBuffer()) });
   } catch (error) {
     if (error instanceof FindingDocumentImportError) throw new HttpProblem(422, 'FINDING_DOCX_UNSUPPORTED', 'Không thể bóc tách DOCX', error.message);
+    throw error;
+  }
+});
+
+app.post('/api/v1/imports/findings/document-preview', async (req, reply) => {
+  const user = getCurrentUser(req);
+  requireRoles(user, ['ADMIN', 'INTERNAL_OFFICER', 'SUPERVISOR']);
+  const data = await req.file();
+  if (!data) throw new HttpProblem(422, 'FINDING_DOCUMENT_REQUIRED', 'Thiếu tệp tiểu biên bản', 'Hãy chọn tệp DOCX hoặc PDF có dữ liệu sai sót.');
+  const fileName = data.filename.toLowerCase();
+  if (!fileName.endsWith('.docx') && !fileName.endsWith('.pdf')) {
+    throw new HttpProblem(422, 'FINDING_DOCUMENT_INVALID', 'Sai định dạng', 'Chỉ hỗ trợ tệp .docx hoặc .pdf ở nguồn này.');
+  }
+  try {
+    const buffer = await data.toBuffer();
+    const rows = fileName.endsWith('.docx') ? await parseFindingDocx(buffer) : await parseFindingPdf(buffer);
+    return reply.send({ fileName: data.filename, rows });
+  } catch (error) {
+    if (error instanceof FindingDocumentImportError) throw new HttpProblem(422, 'FINDING_DOCUMENT_UNSUPPORTED', 'Không thể bóc tách tiểu biên bản', error.message);
     throw error;
   }
 });
@@ -4713,16 +4957,21 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
 
   const violations: string[] = [];
   const credentialAuth = env.AUTH_MODE === 'credentials' || env.AUTH_MODE === 'local-credential-session';
-  if (!credentialAuth && env.AUTH_MODE !== 'oidc') violations.push('AUTH_MODE phải là credentials hoặc oidc');
+  const supabaseAuth = env.AUTH_MODE === 'supabase';
+  if (!credentialAuth && env.AUTH_MODE !== 'oidc' && !supabaseAuth) violations.push('AUTH_MODE phải là credentials, supabase hoặc oidc');
   if (env.SEED_DEMO_DATA === 'true' || env.SEED_DEMO_USERS === 'true') violations.push('SEED_DEMO_DATA không được bật ở production');
   // Không seed demo thì phải có đúng một tài khoản quản trị khởi tạo, nếu không sẽ không ai vào được.
-  if (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH) {
+  if (!supabaseAuth && (!env.BOOTSTRAP_ADMIN_USERNAME || !env.BOOTSTRAP_ADMIN_PASSWORD_HASH)) {
     violations.push('thiếu BOOTSTRAP_ADMIN_USERNAME/BOOTSTRAP_ADMIN_PASSWORD_HASH');
   }
-  if (!env.BOOTSTRAP_ADMIN_EMAIL?.trim()) {
+  if (!supabaseAuth && !env.BOOTSTRAP_ADMIN_EMAIL?.trim()) {
     violations.push('thiếu BOOTSTRAP_ADMIN_EMAIL');
   }
-  if (!credentialAuth) {
+  if (supabaseAuth) {
+    if (!env.SUPABASE_URL || !(env.SUPABASE_PUBLISHABLE_KEY || env.SUPABASE_ANON_KEY) || !(env.SUPABASE_SECRET_KEY || env.SUPABASE_SERVICE_ROLE_KEY)) {
+      violations.push('thiếu SUPABASE_URL/SUPABASE_PUBLISHABLE_KEY/SUPABASE_SECRET_KEY');
+    }
+  } else if (!credentialAuth) {
     if (!env.OIDC_ISSUER_URL || !env.OIDC_AUDIENCE) violations.push('thiếu OIDC_ISSUER_URL/OIDC_AUDIENCE');
     if (!env.GOOGLE_OIDC_CLIENT_ID || !env.GOOGLE_OIDC_CLIENT_SECRET || !env.GOOGLE_OIDC_REDIRECT_URI || !env.GOOGLE_OIDC_STATE_SECRET) {
       violations.push('thiếu cấu hình Google OIDC');

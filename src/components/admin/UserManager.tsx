@@ -13,8 +13,10 @@ import {
   Upload,
   Download,
   X,
+  Pencil,
+  Trash2,
 } from 'lucide-react';
-import { BulkUserImportDTO, BulkUserImportResult, CreatedUserResponse, CreateUserDTO, OrgUnit, UserProfile, UserRole, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
+import { BulkUserImportDTO, BulkUserImportResult, CreatedUserResponse, CreateUserDTO, OrgUnit, UserProfile, UserRole, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, UpdateUserDTO, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
 import { userRoleLabels } from '../../content/ui-copy';
 import { parseUserImportFile, type UserImportPreviewRow } from '../../lib/user-import';
 
@@ -24,11 +26,15 @@ interface Props {
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
   onUsersImported: (batch: BulkUserImportDTO) => Promise<BulkUserImportResult>;
   onAuthenticatorChange: (id: string, data: UpdateAuthenticatorDTO) => Promise<UpdateAuthenticatorResponse>;
+  onUserUpdated: (id: string, data: UpdateUserDTO) => Promise<UserProfile>;
+  onUserDeleted: (id: string) => Promise<void>;
+  onUserPasswordReset: (id: string) => Promise<CreatedUserResponse>;
 }
 
 type DirectoryView = 'INTERNAL' | 'GEOGRAPHY';
 
-const UserCard: React.FC<{ user: UserProfile; compact?: boolean; onAuthenticatorChange?: (user: UserProfile, enabled: boolean) => void; updatingAuthenticator?: boolean }> = ({ user, compact = false, onAuthenticatorChange, updatingAuthenticator = false }) => (
+type UserCardProps = { user: UserProfile; compact?: boolean; onAuthenticatorChange?: (user: UserProfile, enabled: boolean) => void; updatingAuthenticator?: boolean; onEdit?: (user: UserProfile) => void; onDelete?: (user: UserProfile) => void; onResetPassword?: (user: UserProfile) => void };
+const UserCard: React.FC<UserCardProps> = ({ user, compact = false, onAuthenticatorChange, updatingAuthenticator = false, onEdit, onDelete, onResetPassword }) => (
   <article className={`rounded-xl border border-slate-200 bg-white ${compact ? 'p-3' : 'p-4'} shadow-sm`}>
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
@@ -66,16 +72,24 @@ const UserCard: React.FC<{ user: UserProfile; compact?: boolean; onAuthenticator
         <input type="checkbox" aria-label={`Bật Google Authenticator cho ${user.fullName}`} checked={Boolean(user.authenticatorRequired)} disabled={updatingAuthenticator || !user.isActive} onChange={event => onAuthenticatorChange(user, event.target.checked)} className="h-4 w-4 accent-violet-700" />
       </label>
     )}
+    {(onEdit || onDelete || onResetPassword) && (
+      <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
+        {onEdit && <button type="button" onClick={() => onEdit(user)} className="inline-flex items-center gap-1 rounded-lg border border-slate-200 px-2.5 py-1.5 text-[10px] font-bold text-slate-700 hover:bg-slate-50"><Pencil className="h-3 w-3" /> Sửa</button>}
+        {onResetPassword && <button type="button" onClick={() => onResetPassword(user)} className="inline-flex items-center gap-1 rounded-lg border border-amber-200 px-2.5 py-1.5 text-[10px] font-bold text-amber-800 hover:bg-amber-50"><Key className="h-3 w-3" /> Đặt lại mật khẩu</button>}
+        {onDelete && <button type="button" onClick={() => onDelete(user)} className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-[10px] font-bold text-red-700 hover:bg-red-50"><Trash2 className="h-3 w-3" /> Xóa</button>}
+      </div>
+    )}
   </article>
 );
 
-export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, onUsersImported, onAuthenticatorChange }) => {
+export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, onUsersImported, onAuthenticatorChange, onUserUpdated, onUserDeleted, onUserPasswordReset }) => {
   const [directoryView, setDirectoryView] = useState<DirectoryView>('INTERNAL');
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [googleWorkspaceEmail, setGoogleWorkspaceEmail] = useState('');
+  const [initialPassword, setInitialPassword] = useState('');
   const [portal, setPortal] = useState<'INTERNAL' | 'BRANCH'>('INTERNAL');
   const [role, setRole] = useState<UserRole>('INTERNAL_OFFICER');
   const [selectedInternalTeam, setSelectedInternalTeam] = useState('');
@@ -88,6 +102,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
   const [isImportingUsers, setIsImportingUsers] = useState(false);
   const [updatingAuthenticatorId, setUpdatingAuthenticatorId] = useState<string | null>(null);
   const [authenticatorSetup, setAuthenticatorSetup] = useState<{ fullName: string; secret: string; otpauthUri: string } | null>(null);
+  const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
 
   const internalTeams = orgUnits.filter(unit => unit.type === 'INTERNAL_TEAM' && unit.isActive);
   const clusters = orgUnits.filter(unit => unit.type === 'CLUSTER' && unit.isActive);
@@ -116,6 +131,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
     setFullName('');
     setEmail('');
     setGoogleWorkspaceEmail('');
+    setInitialPassword('');
     setPortal('INTERNAL');
     setRole('INTERNAL_OFFICER');
     setSelectedInternalTeam('');
@@ -142,6 +158,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
     const payload: CreateUserDTO = {
       fullName,
       email,
+      password: initialPassword.trim() || undefined,
       googleWorkspaceEmail: googleWorkspaceEmail.trim() || undefined,
       username: email.split('@')[0],
       portal,
@@ -233,8 +250,50 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
     }
   };
 
+  const handleEditUser = async (user: UserProfile) => {
+    const fullName = window.prompt('Họ và tên mới', user.fullName);
+    if (!fullName || fullName.trim() === user.fullName) return;
+    setUpdatingUserId(user.id);
+    try {
+      await onUserUpdated(user.id, { fullName: fullName.trim() });
+      setToastMessage(`Đã cập nhật ${fullName.trim()}.`);
+      setTimeout(() => setToastMessage(null), 6000);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Không thể cập nhật tài khoản.');
+    } finally {
+      setUpdatingUserId(null);
+    }
+  };
+
+  const handleDeleteUser = async (user: UserProfile) => {
+    if (!window.confirm(`Xóa tài khoản ${user.fullName}? Thao tác này không thể hoàn tác.`)) return;
+    setUpdatingUserId(user.id);
+    try {
+      await onUserDeleted(user.id);
+      setToastMessage(`Đã xóa ${user.fullName}.`);
+      setTimeout(() => setToastMessage(null), 6000);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Không thể xóa tài khoản.');
+    } finally {
+      setUpdatingUserId(null);
+    }
+  };
+
+  const handleResetPassword = async (user: UserProfile) => {
+    setUpdatingUserId(user.id);
+    try {
+      const result = await onUserPasswordReset(user.id);
+      if (result.temporaryPassword) setIssuedCredential({ fullName: user.fullName, username: user.username, password: result.temporaryPassword });
+      else setToastMessage(`Đã đặt lại mật khẩu cho ${user.fullName}.`);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Không thể đặt lại mật khẩu.');
+    } finally {
+      setUpdatingUserId(null);
+    }
+  };
+
   return (
-    <div className="space-y-5" data-testid="admin-user-directory">
+    <div className="space-y-5" data-testid="admin-user-directory" aria-busy={Boolean(updatingUserId)}>
       {toastMessage && (
         <div role="status" className="flex items-center justify-between rounded-xl bg-[#006b68] p-4 text-xs font-semibold text-white shadow-lg">
           <div className="flex items-center gap-2"><Key className="h-4 w-4" /><span>{toastMessage}</span></div>
@@ -344,11 +403,11 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
                 <div className="space-y-3 p-4">
                   <div>
                     <div className="mb-2 flex items-center gap-2 text-[10px] font-bold uppercase text-amber-700"><UserCheck className="h-3.5 w-3.5" /> Phê duyệt HT</div>
-                    {lead ? <UserCard user={lead} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === lead.id} /> : <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-3 text-xs font-semibold text-amber-800">Chưa phân công phê duyệt HT.</div>}
+                    {lead ? <UserCard user={lead} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === lead.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} /> : <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-3 text-xs font-semibold text-amber-800">Chưa phân công phê duyệt HT.</div>}
                   </div>
                   <div>
                     <div className="mb-2 text-[10px] font-bold uppercase text-slate-500">Thành viên nhóm</div>
-                    <div className="grid gap-2 sm:grid-cols-2">{members.map(member => <UserCard key={member.id} user={member} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === member.id} />)}</div>
+                    <div className="grid gap-2 sm:grid-cols-2">{members.map(member => <UserCard key={member.id} user={member} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === member.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} />)}</div>
                     {!members.length && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-xs text-slate-500">Chưa có thành viên phù hợp bộ lọc.</div>}
                   </div>
                 </div>
@@ -358,7 +417,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
           {systemUsers.length > 0 && (
             <article className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm xl:col-span-2">
               <h4 className="text-sm font-bold text-slate-900">Tài khoản hệ thống</h4>
-              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{systemUsers.map(user => <UserCard key={user.id} user={user} onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} />)}</div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{systemUsers.map(user => <UserCard key={user.id} user={user} onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} />)}</div>
             </article>
           )}
         </section>
@@ -385,8 +444,8 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
                       <section key={branch.id} className="rounded-xl border border-slate-200 bg-slate-50 p-3 sm:p-4">
                         <div className="flex items-center justify-between gap-2"><div><div className="text-[10px] font-bold uppercase text-[#006b68]">Chi nhánh {branch.code}</div><h5 className="mt-0.5 text-sm font-bold text-slate-900">{branch.name}</h5></div><Building2 className="h-5 w-5 text-[#006b68]" /></div>
                         <div className="mt-3 space-y-3">
-                          <div><div className="mb-2 text-[10px] font-bold uppercase text-amber-700">Kiểm soát chi nhánh</div><div className="mb-2 text-[11px] text-slate-500">Kiểm tra hồ sơ và chuyển phê duyệt HT.</div><div className="grid gap-2">{controllers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} />)}</div>{!controllers.length && <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800">Chưa có người kiểm soát.</div>}</div>
-                          <div><div className="mb-2 text-[10px] font-bold uppercase text-slate-500">Cán bộ theo Phòng / PGD</div><div className="grid gap-2">{officers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} />)}</div>{!officers.length && <div className="rounded-lg border border-dashed border-slate-300 p-2 text-[11px] text-slate-500">Chưa có cán bộ phù hợp bộ lọc.</div>}</div>
+                          <div><div className="mb-2 text-[10px] font-bold uppercase text-amber-700">Kiểm soát chi nhánh</div><div className="mb-2 text-[11px] text-slate-500">Kiểm tra hồ sơ và chuyển phê duyệt HT.</div><div className="grid gap-2">{controllers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} />)}</div>{!controllers.length && <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800">Chưa có người kiểm soát.</div>}</div>
+                          <div><div className="mb-2 text-[10px] font-bold uppercase text-slate-500">Cán bộ theo Phòng / PGD</div><div className="grid gap-2">{officers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} />)}</div>{!officers.length && <div className="rounded-lg border border-dashed border-slate-300 p-2 text-[11px] text-slate-500">Chưa có cán bộ phù hợp bộ lọc.</div>}</div>
                         </div>
                       </section>
                     );
@@ -411,6 +470,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
                 <label className="text-xs font-bold text-slate-700">Email doanh nghiệp<input type="email" value={email} onChange={event => setEmail(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 px-3 text-xs font-medium outline-none focus:border-[#006b68]" required /></label>
               </div>
               <label className="block text-xs font-bold text-slate-700">Email Google Workspace dùng cho file đính kèm<input type="email" value={googleWorkspaceEmail} onChange={event => setGoogleWorkspaceEmail(event.target.value)} placeholder="Để trống nếu trùng email doanh nghiệp" className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 px-3 text-xs font-medium outline-none focus:border-[#006b68]" /><span className="mt-1 block text-[10px] font-medium text-slate-500">Email này được dùng khi cấp quyền Google Drive; không thay thế email và mật khẩu đăng nhập.</span></label>
+              <label className="block text-xs font-bold text-slate-700">Mật khẩu ban đầu (tùy chọn)<input type="password" value={initialPassword} onChange={event => setInitialPassword(event.target.value)} minLength={12} placeholder="Bỏ trống để sinh mật khẩu tạm" className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 px-3 text-xs font-medium outline-none focus:border-[#006b68]" /><span className="mt-1 block text-[10px] font-medium text-slate-500">Nếu bỏ trống, hệ thống sinh mật khẩu tạm và chỉ hiển thị một lần sau khi tạo.</span></label>
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="text-xs font-bold text-slate-700">Khối người dùng<select value={portal} onChange={event => handlePortalChange(event.target.value as 'INTERNAL' | 'BRANCH')} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs"><option value="INTERNAL">Khối nội bộ</option><option value="BRANCH">Mạng lưới chi nhánh</option></select></label>
                 <label className="text-xs font-bold text-slate-700">Vai trò<select value={role} onChange={event => setRole(event.target.value as UserRole)} className="mt-1.5 min-h-11 w-full rounded-xl border border-slate-200 bg-white px-3 text-xs">

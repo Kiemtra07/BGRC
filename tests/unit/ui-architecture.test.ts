@@ -167,7 +167,7 @@ describe('UI and business terminology architecture', () => {
     expect(apiSource).toContain('pendingCommandKeys');
     expect(apiSource).toContain('Idempotency-Key');
     expect(apiSource).toContain('crypto.randomUUID');
-    expect(detailSource).toContain('Cần ít nhất một tài liệu hợp lệ');
+    expect(detailSource).not.toContain('Cần ít nhất một tài liệu hợp lệ');
     expect(serverSource).toContain('idempotencyRecords');
   });
 
@@ -200,7 +200,7 @@ describe('UI and business terminology architecture', () => {
     expect(detailSource.indexOf('aria-label="Thanh trượt mã lỗi"')).toBeLessThan(detailSource.indexOf('</header>'));
     expect(detailSource).toContain("xl:grid-cols-[minmax(0,3fr)_minmax(320px,1fr)]");
     expect(detailSource).toContain('onReview={reviewSubItems}');
-    expect(detailSource).toContain('Cần ít nhất một tài liệu hợp lệ để đóng toàn bộ mã lỗi');
+    expect(detailSource).not.toContain('Cần ít nhất một tài liệu hợp lệ để đóng toàn bộ mã lỗi');
     expect(detailSource).toContain('Tiếp nhận công việc');
     expect(detailSource).toContain('Cụm địa bàn');
     expect(detailSource).toContain('Chi nhánh');
@@ -267,13 +267,18 @@ describe('UI and business terminology architecture', () => {
     expect(stepper).toContain('data-testid="approval-route-stepper"');
     expect(stepper).toContain('getFindingApprovalRoute');
     expect(stepper).not.toContain('Kiểm soát chi nhánh');
+    expect(stepper).not.toContain('route.steps.map');
+    expect(stepper).toContain('Chưa phân công người duyệt');
     expect(apiSource).toContain('approval-route');
     expect(detail).toContain('<ApprovalRouteStepper');
     expect(detail).toContain('refreshToken={finding.version}');
 
-    // History is the audit trail; the newest entries stay on screen instead of behind a summary.
+    // Operational detail is collapsed by default; operators open it on demand.
     expect(detail).toContain('data-testid="finding-history"');
-    expect(detail).toContain('Xem {older.length} mốc cũ hơn');
+    expect(detail).not.toContain('Xem {older.length} mốc cũ hơn');
+    expect(detail).toContain('Xem chi tiết các ý sai sót');
+    expect(detail).not.toContain('Cần ít nhất một tài liệu hợp lệ trước khi chuyển bước.');
+    expect(detail).not.toContain('<details open');
 
     // The admin diagram has to show the star branch, because the engine really does insert it.
     expect(workflow).toContain('data-testid="workflow-stage-conditional"');

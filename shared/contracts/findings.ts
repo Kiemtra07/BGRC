@@ -86,7 +86,7 @@ export interface Finding {
   importedByUserId?: string;
   importedByName?: string;
   importedAt?: string;
-  importSourceType?: 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'API_BULK' | 'WEB_FORM';
+  importSourceType?: 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'PDF' | 'API_BULK' | 'WEB_FORM';
   importSourceFileName?: string;
 
   // Status & Versioning (P0-01, P0-02, P0-06, P0-08)

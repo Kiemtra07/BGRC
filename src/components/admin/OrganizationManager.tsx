@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { Building2, MapPin, Network, Pencil, Plus, Trash2, Users, X } from 'lucide-react';
-import { OrgUnit, UpdateOrgUnitDTO, UserProfile } from '../../../shared/contracts';
+import { Building2, MapPin, Network, Pencil, Plus, Trash2, Users, X, Upload, Download } from 'lucide-react';
+import { BulkOrgUnitImportDTO, BulkOrgUnitImportResult, OrgUnit, UpdateOrgUnitDTO, UserProfile } from '../../../shared/contracts';
+import { parseOrgImportFile, type OrgImportPreviewRow } from '../../lib/org-import';
 
 type EditableType = 'INTERNAL_TEAM' | 'CLUSTER' | 'BRANCH' | 'DEPARTMENT';
 
@@ -10,6 +11,7 @@ interface Props {
   onOrgUnitCreated: (unit: Partial<OrgUnit>) => Promise<void>;
   onOrgUnitUpdated: (id: string, unit: UpdateOrgUnitDTO) => Promise<void>;
   onOrgUnitDeleted: (id: string) => Promise<void>;
+  onOrgUnitsImported: (batch: BulkOrgUnitImportDTO) => Promise<BulkOrgUnitImportResult>;
 }
 
 interface FormState {
@@ -23,12 +25,13 @@ interface FormState {
 
 const emptyForm = (): FormState => ({ code: '', name: '', type: 'INTERNAL_TEAM', parentId: '', leaderUserId: '', isActive: true });
 
-export const OrganizationManager: React.FC<Props> = ({ orgUnits, users, onOrgUnitCreated, onOrgUnitUpdated, onOrgUnitDeleted }) => {
+export const OrganizationManager: React.FC<Props> = ({ orgUnits, users, onOrgUnitCreated, onOrgUnitUpdated, onOrgUnitDeleted, onOrgUnitsImported }) => {
   const [editing, setEditing] = useState<OrgUnit | null>(null);
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [form, setForm] = useState<FormState>(emptyForm);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [importPreview, setImportPreview] = useState<OrgImportPreviewRow[]>([]);
   const headOffice = orgUnits.find(unit => unit.type === 'HEAD_OFFICE');
   const internalTeams = orgUnits.filter(unit => unit.type === 'INTERNAL_TEAM');
   const clusters = orgUnits.filter(unit => unit.type === 'CLUSTER');
@@ -67,9 +70,29 @@ export const OrganizationManager: React.FC<Props> = ({ orgUnits, users, onOrgUni
     finally { setBusy(false); }
   };
   const parentOptions = form.type === 'BRANCH' ? clusters : form.type === 'DEPARTMENT' ? branches : [];
+  const handleImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    try { setImportPreview(await parseOrgImportFile(file, orgUnits)); }
+    catch (error) { setSubmitError(error instanceof Error ? error.message : 'Không thể đọc tệp đơn vị.'); }
+    finally { event.target.value = ''; }
+  };
+  const commitImport = async () => {
+    const valid = importPreview.filter(row => row.payload && !row.errors.length);
+    if (!valid.length) return;
+    try {
+      setBusy(true);
+      const result = await onOrgUnitsImported({ rows: valid.map(row => ({ rowNumber: row.rowNumber, unit: row.payload! })) });
+      const failed = new Map(result.failed.map(row => [row.rowNumber, `${row.code}: ${row.message}`]));
+      setImportPreview(previous => previous.filter(row => row.errors.length || failed.has(row.rowNumber)).map(row => failed.has(row.rowNumber) ? { ...row, errors: [failed.get(row.rowNumber)!] } : row));
+      setSubmitError(`Đã tạo ${result.created.length} đơn vị${result.failed.length ? `; ${result.failed.length} dòng lỗi.` : '.'}`);
+    } catch (error) { setSubmitError(error instanceof Error ? error.message : 'Không thể nhập đơn vị theo lô.'); }
+    finally { setBusy(false); }
+  };
 
   return <div className="space-y-6">
-    <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center"><div><h3 className="text-base font-bold text-slate-900">Cơ cấu tổ chức</h3><p className="mt-1 text-xs text-slate-500">Tạo, sửa hoặc xóa đơn vị khi không còn dữ liệu nghiệp vụ tham chiếu.</p></div><button onClick={openCreate} className="flex items-center gap-2 rounded-xl bg-[#006b68] px-4 py-2.5 text-xs font-bold text-white shadow-md transition-all hover:bg-[#005956]"><Plus className="h-4 w-4" />Thêm đơn vị</button></div>
+    <div className="flex flex-col justify-between gap-4 rounded-2xl border border-slate-200 bg-white p-5 shadow-sm sm:flex-row sm:items-center"><div><h3 className="text-base font-bold text-slate-900">Cơ cấu tổ chức</h3><p className="mt-1 text-xs text-slate-500">Tạo, sửa hoặc xóa đơn vị khi không còn dữ liệu nghiệp vụ tham chiếu.</p></div><div className="flex flex-wrap gap-2"><a href="/templates/mau-nhap-don-vi.csv" download className="inline-flex items-center gap-2 rounded-xl border border-slate-300 px-4 py-2.5 text-xs font-bold text-slate-700"><Download className="h-4 w-4" />Tải mẫu Excel/CSV</a><input id="bulk-org-import" type="file" accept=".xlsx,.csv" className="hidden" onChange={handleImportFile} /><label htmlFor="bulk-org-import" className="inline-flex cursor-pointer items-center gap-2 rounded-xl border border-[#006b68] px-4 py-2.5 text-xs font-bold text-[#006b68]"><Upload className="h-4 w-4" />Nhập danh sách</label><button onClick={openCreate} className="flex items-center gap-2 rounded-xl bg-[#006b68] px-4 py-2.5 text-xs font-bold text-white shadow-md transition-all hover:bg-[#005956]"><Plus className="h-4 w-4" />Thêm đơn vị</button></div></div>
+    {importPreview.length > 0 && <section className="rounded-2xl border border-cyan-200 bg-cyan-50 p-4"><div className="flex items-center justify-between gap-2"><div><h4 className="text-sm font-bold text-slate-900">Xem trước nhập đơn vị</h4><p className="text-xs text-slate-600">Cột bắt buộc: Mã đơn vị, Tên đơn vị, Loại đơn vị, Mã đơn vị cha. Dùng mã/tên cha đã có hoặc nằm ở dòng trước.</p></div><div className="flex gap-2"><button type="button" onClick={() => setImportPreview([])} className="rounded-lg px-3 py-2 text-xs font-bold text-slate-600">Hủy</button><button type="button" onClick={commitImport} disabled={busy || !importPreview.some(row => row.payload && !row.errors.length)} className="rounded-lg bg-[#006b68] px-3 py-2 text-xs font-bold text-white disabled:opacity-50">{busy ? 'Đang nhập...' : 'Tạo đơn vị hợp lệ'}</button></div></div><div className="mt-3 max-h-56 overflow-auto rounded-lg border border-cyan-200 bg-white"><table className="w-full text-left text-xs"><thead className="bg-slate-100"><tr><th className="p-2">Dòng</th><th className="p-2">Mã</th><th className="p-2">Tên</th><th className="p-2">Kết quả</th></tr></thead><tbody>{importPreview.map(row => <tr key={row.rowNumber} className="border-t border-slate-100"><td className="p-2">{row.rowNumber}</td><td className="p-2 font-mono">{row.payload?.code || '-'}</td><td className="p-2">{row.payload?.name || '-'}</td><td className={`p-2 ${row.errors.length ? 'text-red-700' : 'text-emerald-700'}`}>{row.errors.join('; ') || 'Sẵn sàng'}</td></tr>)}</tbody></table></div></section>}
     {submitError && !open && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-700">{submitError}</div>}
 
     <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"><div className="flex items-center gap-2 text-[#006b68]"><Users className="h-4 w-4" /><h4 className="text-sm font-bold">Nhóm nội bộ</h4></div><div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{internalTeams.map(team => <article key={team.id} className="rounded-xl border border-teal-100 bg-teal-50/60 p-4"><div className="flex items-start justify-between gap-2"><div><div className="text-[10px] font-bold uppercase text-[#006b68]">{team.code}</div><div className="mt-1 text-sm font-bold text-slate-900">{team.name}</div></div><UnitActions unit={team} disabled={busy} onEdit={openEdit} onDelete={remove} /></div><div className="mt-2 text-[11px] text-slate-600">Phê duyệt HT: <span className="font-bold">{team.leaderName || 'Chưa phân công'}</span></div><StatusBadge active={team.isActive} /></article>)}</div></section>
