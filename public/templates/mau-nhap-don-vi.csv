@@ -1,4 +1,4 @@
-Mã đơn vị,Tên đơn vị,Loại đơn vị,Mã đơn vị cha,Trạng thái
+﻿Mã đơn vị,Tên đơn vị,Loại đơn vị,Mã đơn vị cha,Trạng thái
 01,Cụm miền Bắc,CLUSTER,HO_AUDIT,ACTIVE
 0101,Chi nhánh mẫu,BRANCH,01,ACTIVE
 010101,Phòng giao dịch mẫu,DEPARTMENT,0101,ACTIVE

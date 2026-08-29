@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseOrgImportRows } from '../../src/lib/org-import';
 
@@ -12,5 +13,11 @@ describe('organization bulk import parser', () => {
     expect(result).toHaveLength(2);
     expect(result.every(row => row.errors.length === 0)).toBe(true);
     expect(result[1].payload?.parentId).toBe('01');
+  });
+
+  it('ships the CSV template with a UTF-8 BOM for Excel', () => {
+    const bytes = readFileSync('public/templates/mau-nhap-don-vi.csv');
+
+    expect(bytes.subarray(0, 3)).toEqual(Buffer.from([0xef, 0xbb, 0xbf]));
   });
 });

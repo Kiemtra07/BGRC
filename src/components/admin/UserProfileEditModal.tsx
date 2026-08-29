@@ -67,5 +67,15 @@ export const UserProfileEditModal: React.FC<Props> = ({ user, orgUnits, busy = f
   </div>;
 };
 
-const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => <label className="block text-xs font-bold text-slate-700">{label}{React.cloneElement(children as React.ReactElement, { className: 'mt-1.5 min-h-11 w-full rounded-xl border border-rule px-3 text-xs font-medium outline-none focus:border-brand-500' })}</label>;
+const fieldInputClass = 'mt-1.5 min-h-11 w-full rounded-xl border border-rule px-3 text-xs font-medium outline-none focus:border-brand-500';
+const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
+  <label className="block text-xs font-bold text-slate-700">
+    {label}
+    {React.Children.map(children, child => {
+      if (!React.isValidElement(child) || child.type !== 'input') return child;
+      const input = child as React.ReactElement<{ className?: string }>;
+      return React.cloneElement(input, { className: [fieldInputClass, input.props.className].filter(Boolean).join(' ') });
+    })}
+  </label>
+);
 const Info: React.FC<{ label: string; value: string; icon: React.ReactNode }> = ({ label, value, icon }) => <div className="rounded-xl border border-rule bg-slate-50 p-3"><div className="flex items-center gap-2 text-[10px] font-bold text-slate-400">{icon}{label}</div><div className="mt-1 text-xs font-bold text-slate-800">{value}</div></div>;
