@@ -3460,8 +3460,23 @@ app.setErrorHandler((error, request, reply) => {
   if (problem.status >= 500) request.log.error(error);
   return sendProblem(reply, problem, request);
 });
+function createHeadOfficeOrgUnit() {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  return {
+    id: "org-ho",
+    code: "HO_AUDIT",
+    name: "Ban Ki\u1EC3m To\xE1n N\u1ED9i B\u1ED9 & H\u1ED9i S\u1EDF",
+    type: "HEAD_OFFICE",
+    isActive: true,
+    createdAt: now,
+    updatedAt: now
+  };
+}
+function ensureHeadOfficeOrgUnit(units) {
+  return units.some((unit) => unit.type === "HEAD_OFFICE") ? units : [createHeadOfficeOrgUnit(), ...units];
+}
 var orgUnits = [
-  { id: "org-ho", code: "HO_AUDIT", name: "Ban Ki\u1EC3m To\xE1n N\u1ED9i B\u1ED9 & H\u1ED9i S\u1EDF", type: "HEAD_OFFICE", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
+  createHeadOfficeOrgUnit(),
   { id: "org-team-credit-audit", code: "TEAM_CREDIT_AUDIT_01", name: "Nh\xF3m Ki\u1EC3m to\xE1n T\xEDn d\u1EE5ng 01", type: "INTERNAL_TEAM", parentId: "org-ho", leaderUserId: "user-internal-supervisor", leaderName: "Tr\u1EA7n L\xE3nh \u0110\u1EA1o (Gi\xE1m \u0110\u1ED1c Ban Ki\u1EC3m To\xE1n)", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
   { id: "org-team-compliance", code: "TEAM_COMPLIANCE_01", name: "Nh\xF3m Gi\xE1m s\xE1t Tu\xE2n th\u1EE7 01", type: "INTERNAL_TEAM", parentId: "org-ho", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
   { id: "org-cluster-tn", code: "CUM_TAY_NGUYEN", name: "C\u1EE5m T\xE2y Nguy\xEAn", type: "CLUSTER", parentId: "org-ho", isActive: true, createdAt: (/* @__PURE__ */ new Date()).toISOString(), updatedAt: (/* @__PURE__ */ new Date()).toISOString() },
@@ -4092,7 +4107,7 @@ var credentialDirectory = [...localCredentialDirectory];
 var unknownUserPasswordHash = await hashPassword(crypto5.randomUUID());
 if (!DEMO_SEED_ENABLED) {
   appUsers = [];
-  orgUnits = [];
+  orgUnits = [createHeadOfficeOrgUnit()];
   auditCampaigns = [];
   findings = [];
   workflowEvents = [];
@@ -4130,7 +4145,7 @@ var hydratedState = await stateRepository.load({
   securityEvents,
   loginAttempts
 });
-orgUnits = hydratedState.orgUnits;
+orgUnits = ensureHeadOfficeOrgUnit(hydratedState.orgUnits);
 appUsers = hydratedState.appUsers;
 if (hydratedState.credentials?.length) credentialDirectory = hydratedState.credentials;
 reportChannels = hydratedState.reportChannels.map(normalizedReportChannel);

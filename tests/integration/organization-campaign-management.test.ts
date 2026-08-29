@@ -1,6 +1,6 @@
 import JSZip from 'jszip';
 import { describe, expect, it } from 'vitest';
-import { app } from '../../server/src/app';
+import { app, ensureHeadOfficeOrgUnit } from '../../server/src/app';
 
 const adminHeaders = { 'x-user-id': 'user-admin' };
 
@@ -38,6 +38,13 @@ async function makeCampaignXlsx(): Promise<Buffer> {
 }
 
 describe('organization and campaign administration APIs', () => {
+  it('bootstraps only the structural head office when a production snapshot has no root', () => {
+    const units = ensureHeadOfficeOrgUnit([]);
+    expect(units).toHaveLength(1);
+    expect(units[0]).toMatchObject({ id: 'org-ho', code: 'HO_AUDIT', type: 'HEAD_OFFICE', isActive: true });
+    expect(ensureHeadOfficeOrgUnit(units)).toBe(units);
+  });
+
   it('edits and deletes an unused organization unit while protecting the hierarchy', async () => {
     const existing = await app.inject({ method: 'GET', url: '/api/v1/admin/org-units', headers: adminHeaders });
     const headOffice = existing.json().find((unit: { type: string }) => unit.type === 'HEAD_OFFICE');
@@ -62,6 +69,35 @@ describe('organization and campaign administration APIs', () => {
 
     const deleted = await app.inject({ method: 'DELETE', url: `/api/v1/admin/org-units/${created.json().id}`, headers: adminHeaders });
     expect(deleted.statusCode).toBe(204);
+  });
+
+  it('creates a cluster, branch and department in the same parent chain', async () => {
+    const existing = await app.inject({ method: 'GET', url: '/api/v1/admin/org-units', headers: adminHeaders });
+    const headOffice = existing.json().find((unit: { type: string }) => unit.type === 'HEAD_OFFICE');
+    expect(headOffice).toBeDefined();
+    const suffix = Date.now().toString(36);
+
+    const cluster = await app.inject({
+      method: 'POST', url: '/api/v1/admin/org-units', headers: adminHeaders,
+      payload: { code: `CUM-${suffix}`, name: 'Cụm kiểm thử', type: 'CLUSTER', parentId: headOffice.id, isActive: true },
+    });
+    expect(cluster.statusCode).toBe(200);
+
+    const branch = await app.inject({
+      method: 'POST', url: '/api/v1/admin/org-units', headers: adminHeaders,
+      payload: { code: `CN-${suffix}`, name: 'Chi nhánh kiểm thử', type: 'BRANCH', parentId: cluster.json().id, isActive: true },
+    });
+    expect(branch.statusCode).toBe(200);
+
+    const department = await app.inject({
+      method: 'POST', url: '/api/v1/admin/org-units', headers: adminHeaders,
+      payload: { code: `PGD-${suffix}`, name: 'Phòng giao dịch kiểm thử', type: 'DEPARTMENT', parentId: branch.json().id, isActive: true },
+    });
+    expect(department.statusCode).toBe(200);
+
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/org-units/${department.json().id}`, headers: adminHeaders })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/org-units/${branch.json().id}`, headers: adminHeaders })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/org-units/${cluster.json().id}`, headers: adminHeaders })).statusCode).toBe(204);
   });
 
   it('returns a reviewable campaign draft from a DOCX upload without creating a campaign', async () => {

@@ -241,8 +241,33 @@ app.setErrorHandler((error, request, reply) => {
 // STATE REPOSITORY (In-memory seeded state synced with schema)
 // ----------------------------------------------------
 
+/**
+ * The head office is the non-demo root of the organization tree. Production deliberately starts
+ * without fabricated branches/users/findings, but the admin organization form still needs a stable
+ * parent before a real cluster can be created. Keep this root deterministic so an empty Postgres
+ * snapshot can bootstrap the real organization tree without re-enabling demo data.
+ */
+function createHeadOfficeOrgUnit(): OrgUnit {
+  const now = new Date().toISOString();
+  return {
+    id: 'org-ho',
+    code: 'HO_AUDIT',
+    name: 'Ban Kiểm Toán Nội Bộ & Hội Sở',
+    type: 'HEAD_OFFICE',
+    isActive: true,
+    createdAt: now,
+    updatedAt: now,
+  };
+}
+
+export function ensureHeadOfficeOrgUnit(units: OrgUnit[]): OrgUnit[] {
+  return units.some(unit => unit.type === 'HEAD_OFFICE')
+    ? units
+    : [createHeadOfficeOrgUnit(), ...units];
+}
+
 let orgUnits: OrgUnit[] = [
-  { id: 'org-ho', code: 'HO_AUDIT', name: 'Ban Kiểm Toán Nội Bộ & Hội Sở', type: 'HEAD_OFFICE', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
+  createHeadOfficeOrgUnit(),
   { id: 'org-team-credit-audit', code: 'TEAM_CREDIT_AUDIT_01', name: 'Nhóm Kiểm toán Tín dụng 01', type: 'INTERNAL_TEAM', parentId: 'org-ho', leaderUserId: 'user-internal-supervisor', leaderName: 'Trần Lãnh Đạo (Giám Đốc Ban Kiểm Toán)', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
   { id: 'org-team-compliance', code: 'TEAM_COMPLIANCE_01', name: 'Nhóm Giám sát Tuân thủ 01', type: 'INTERNAL_TEAM', parentId: 'org-ho', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
   { id: 'org-cluster-tn', code: 'CUM_TAY_NGUYEN', name: 'Cụm Tây Nguyên', type: 'CLUSTER', parentId: 'org-ho', isActive: true, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() },
@@ -1063,7 +1088,8 @@ const unknownUserPasswordHash = await hashPassword(crypto.randomUUID());
 
 if (!DEMO_SEED_ENABLED) {
   appUsers = [];
-  orgUnits = [];
+  // Keep the structural root while excluding all fabricated production/demo units.
+  orgUnits = [createHeadOfficeOrgUnit()];
   auditCampaigns = [];
   findings = [];
   workflowEvents = [];
@@ -1087,7 +1113,10 @@ const hydratedState = await stateRepository.load({
   authenticatorCredentials,
   googleDriveOAuthCredential, securityEvents, loginAttempts,
 });
-orgUnits = hydratedState.orgUnits;
+orgUnits = ensureHeadOfficeOrgUnit(hydratedState.orgUnits);
+// Older production snapshots may predate the organization baseline and contain no root at all.
+// Restore only the structural head office; real admins can then add clusters, branches and
+// departments in order without silently restoring any demo records.
 appUsers = hydratedState.appUsers;
 // Mật khẩu đã lưu thắng danh sách seed: tài khoản do quản trị viên tạo phải sống qua restart.
 // Nếu state còn dữ liệu demo cũ thì nó quay lại cùng tài khoản demo — dùng npm run demo:purge để xoá hẳn.
