@@ -56,6 +56,14 @@ describe('local evidence upload guard', () => {
     expect(folder).toContain('LOI_TD01_01');
   });
 
+  it('builds the folder path used inside a provisioned campaign folder', () => {
+    expect(adapter.generateCampaignEvidenceFolderPath({
+      cif: '10482910',
+      customerName: 'Công ty Cà Phê Tây Nguyên',
+      errorCode: 'TD01.01',
+    })).toBe('/KHACH_HANG/10482910_Công_ty_Cà_Phê_Tây_Nguyên/LOI_TD01_01');
+  });
+
   it.each([undefined, { googleServiceAccountKey: '{}', googleDriveRootFolderId: 'folder-id' }])(
     'keeps explicit local storage local even when Google credentials are %s',
     async (googleConfiguration) => {
@@ -226,6 +234,40 @@ describe('local evidence upload guard', () => {
 
     const content = await adapter.getFileContentStream('drive-file-123');
     expect(content).toMatchObject({ fileName: 'Biên bản 10MB.pdf', mimeType: 'application/pdf' });
+  });
+
+  it('starts a resumable upload from the provisioned campaign folder when provided', async () => {
+    const folderQueries: string[] = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      if (url.includes('/files/campaign-folder') || url.includes('/files/root-folder')) {
+        return Response.json({ id: url.includes('campaign-folder') ? 'campaign-folder' : 'root-folder', driveId: 'shared-drive-1', mimeType: 'application/vnd.google-apps.folder', trashed: false, capabilities: { canAddChildren: true } });
+      }
+      if (url.includes('/files?') && url.includes('q=')) {
+        folderQueries.push(new URL(url).searchParams.get('q') ?? '');
+        return Response.json({ files: [{ id: 'customer-folder' }] });
+      }
+      if (url.includes('/files/generateIds')) return Response.json({ ids: ['drive-file-123'] });
+      if (url.includes('/upload/drive/v3/files')) return new Response(null, { status: 200, headers: { location: 'https://upload.example/session-123' } });
+      throw new Error(`Unexpected Drive request: ${url}`);
+    };
+    const campaignAdapter = new GoogleDriveAdapter({
+      storageMode: 'google-drive',
+      googleDriveRootFolderId: 'root-folder',
+      accessTokenProvider: async () => 'token-for-test',
+      fetchImpl,
+    });
+
+    await expect(campaignAdapter.createResumableUploadSession({
+      fileName: 'Biên bản kiểm tra.pdf',
+      mimeType: 'application/pdf',
+      fileSize: 1024,
+      sha256Checksum: 'a'.repeat(64),
+      folderPath: '/KHACH_HANG/10482910_Cong_ty/LOI_TD01_01',
+      findingId: 'finding-1',
+      rootFolderId: 'campaign-folder',
+    })).resolves.toMatchObject({ uploadUrl: 'https://upload.example/session-123' });
+    expect(folderQueries[0]).toContain("'campaign-folder' in parents");
   });
 
   it('creates a Google Sheet in the configured folder and writes report headers', async () => {

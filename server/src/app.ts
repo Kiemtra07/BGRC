@@ -4772,8 +4772,16 @@ app.post('/api/v1/findings/:id/actions/internal-reject', async (req: FastifyRequ
 // ----------------------------------------------------
 
 function evidenceFolderPath(finding: Finding): string {
+  const campaign = auditCampaigns.find(item => item.id === finding.campaignId);
+  if (campaign?.driveProvisionStatus === 'READY' && campaign.driveRootFolderId) {
+    return googleDriveService.generateCampaignEvidenceFolderPath({
+      cif: finding.cif,
+      customerName: finding.customerName,
+      errorCode: finding.errorCode,
+    });
+  }
   return googleDriveService.generateFolderPath({
-    campaignCode: auditCampaigns.find(campaign => campaign.id === finding.campaignId)?.code,
+    campaignCode: campaign?.code,
     channelCode: finding.channelCode,
     year: Number((finding.auditDate || finding.createdAt).slice(0, 4)) || new Date().getFullYear(),
     clusterName: finding.clusterName,
@@ -4782,6 +4790,14 @@ function evidenceFolderPath(finding: Finding): string {
     customerName: finding.customerName,
     errorCode: finding.errorCode,
   });
+}
+
+function requireProvisionedCampaignDriveRootFolderId(finding: Finding): string {
+  const campaign = auditCampaigns.find(item => item.id === finding.campaignId);
+  if (!campaign || campaign.driveProvisionStatus !== 'READY' || !campaign.driveRootFolderId) {
+    throw new HttpProblem(409, 'CAMPAIGN_DRIVE_NOT_READY', 'Kho chuyên đề chưa sẵn sàng', 'Quản trị viên phải tạo kho dữ liệu Drive cho chuyên đề trước khi tải minh chứng.');
+  }
+  return campaign.driveRootFolderId;
 }
 
 function requireEvidenceUploadAccess(req: FastifyRequest, findingId: string): { user: UserProfile; finding: Finding } {
@@ -4810,15 +4826,16 @@ app.post('/api/v1/findings/:id/evidence/upload-session', async (req: FastifyRequ
   const { finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CreateEvidenceUploadSessionSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
-  if ((await googleDriveService.getStorageStatus()).mode !== 'google-drive') return { uploadMode: 'local' as const };
-  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const storageStatus = await googleDriveService.getStorageStatus();
+  if (storageStatus.mode !== 'google-drive') return { uploadMode: 'local' as const };
+  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
 });
 
 app.post('/api/v1/findings/:id/evidence/complete', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const { user, finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CompleteEvidenceDirectUploadSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
-  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
   const evidence = registerEvidence(finding, user, uploadResult, fileName);
   await persistLocalState();
   return evidence;

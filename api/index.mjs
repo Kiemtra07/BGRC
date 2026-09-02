@@ -1570,6 +1570,9 @@ function parseServiceAccount(raw) {
 function escapeDriveQuery(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
+function sanitizeDriveFolderSegment(value) {
+  return value.normalize("NFC").replace(/[^a-zA-Z0-9_\u00C0-\u1EF9-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+}
 var GoogleDriveAdapter = class {
   localFallbackDir;
   storageMode;
@@ -1705,15 +1708,17 @@ var GoogleDriveAdapter = class {
     }
   }
   generateFolderPath(params) {
-    const sanitize = (value) => value.normalize("NFC").replace(/[^a-zA-Z0-9_\u00C0-\u1EF9-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
-    const campaign = sanitize(params.campaignCode ?? "KHONG_CHUYEN_DE");
-    return `/${campaign}/${sanitize(params.channelCode)}/${params.year}/${sanitize(params.clusterName)}/CN_${sanitize(params.branchCode)}/KHACH_HANG/${sanitize(params.cif)}_${sanitize(params.customerName ?? "KHACH_HANG")}/LOI_${sanitize(params.errorCode)}`;
+    const campaign = sanitizeDriveFolderSegment(params.campaignCode ?? "KHONG_CHUYEN_DE");
+    return `/${campaign}/${sanitizeDriveFolderSegment(params.channelCode)}/${params.year}/${sanitizeDriveFolderSegment(params.clusterName)}/CN_${sanitizeDriveFolderSegment(params.branchCode)}/KHACH_HANG/${sanitizeDriveFolderSegment(params.cif)}_${sanitizeDriveFolderSegment(params.customerName ?? "KHACH_HANG")}/LOI_${sanitizeDriveFolderSegment(params.errorCode)}`;
+  }
+  generateCampaignEvidenceFolderPath(params) {
+    return `/KHACH_HANG/${sanitizeDriveFolderSegment(params.cif)}_${sanitizeDriveFolderSegment(params.customerName ?? "KHACH_HANG")}/LOI_${sanitizeDriveFolderSegment(params.errorCode)}`;
   }
   async createResumableUploadSession(params) {
     this.requireGoogleMode();
     const fileName = this.validateUploadMetadata(params.fileName, params.mimeType, params.fileSize);
     this.requireChecksum(params.sha256Checksum);
-    const parentId = await this.ensureGoogleFolderPath(params.folderPath);
+    const parentId = await this.ensureGoogleFolderPath(params.folderPath, params.rootFolderId);
     const driveFileId = await this.generateDriveFileId();
     const response = await this.driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=resumable&supportsAllDrives=true`, { method: "POST", headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": params.mimeType, "X-Upload-Content-Length": String(params.fileSize) }, body: JSON.stringify({ id: driveFileId, name: fileName, mimeType: params.mimeType, parents: [parentId], appProperties: { auditBgsFindingId: params.findingId, auditBgsSha256: params.sha256Checksum } }) });
     const uploadUrl = response.headers.get("location");
@@ -1724,7 +1729,7 @@ var GoogleDriveAdapter = class {
     this.requireGoogleMode();
     const fileName = this.validateUploadMetadata(params.fileName, params.mimeType, params.fileSize);
     this.requireChecksum(params.sha256Checksum);
-    const expectedParentId = await this.ensureGoogleFolderPath(params.folderPath);
+    const expectedParentId = await this.ensureGoogleFolderPath(params.folderPath, params.rootFolderId);
     const metadata = await this.driveFetchJson(`${DRIVE_API}/files/${encodeURIComponent(params.driveFileId)}?fields=id,name,mimeType,size,parents,trashed,appProperties&supportsAllDrives=true`);
     if (metadata.id !== params.driveFileId || metadata.name !== fileName || metadata.mimeType !== params.mimeType || Number(metadata.size) !== params.fileSize || metadata.trashed || !metadata.parents?.includes(expectedParentId) || metadata.appProperties?.auditBgsFindingId !== params.findingId || metadata.appProperties?.auditBgsSha256 !== params.sha256Checksum) throw new HttpProblem(409, "GOOGLE_DRIVE_UPLOAD_VERIFICATION_FAILED", "Kh\xF4ng x\xE1c minh \u0111\u01B0\u1EE3c t\u1EC7p Google Drive", "Metadata t\u1EC7p t\u1EA3i l\xEAn kh\xF4ng kh\u1EDBp v\u1EDBi phi\xEAn minh ch\u1EE9ng \u0111\xE3 y\xEAu c\u1EA7u.");
     return { driveFileId: metadata.id, driveUrl: `/api/v1/evidence/${metadata.id}/content`, sha256Checksum: params.sha256Checksum, fileSize: params.fileSize, mimeType: params.mimeType, folderPath: params.folderPath };
@@ -1826,19 +1831,19 @@ var GoogleDriveAdapter = class {
   async driveFetchJson(url, init) {
     return (await this.driveFetch(url, init)).json();
   }
-  async requireGoogleRootFolder() {
+  async requireGoogleRootFolder(rootFolderId = this.googleDriveRootFolderId) {
     this.requireGoogleMode();
-    await this.requireGoogleRootFolderAccess();
+    await this.requireGoogleRootFolderAccess(rootFolderId);
   }
-  async requireGoogleRootFolderAccess() {
-    if (!this.googleDriveRootFolderId || !this.hasCredential()) throw new HttpProblem(503, "GOOGLE_DRIVE_ADAPTER_NOT_READY", "Google Drive ch\u01B0a s\u1EB5n s\xE0ng", `${this.credentialWarning()} GOOGLE_DRIVE_ROOT_FOLDER_ID l\xE0 b\u1EAFt bu\u1ED9c.`);
-    const folder = await this.driveFetchJson(`${DRIVE_API}/files/${encodeURIComponent(this.googleDriveRootFolderId)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`);
-    if (folder.id !== this.googleDriveRootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, "GOOGLE_DRIVE_ROOT_UNAVAILABLE", "Th\u01B0 m\u1EE5c Google Drive ch\u01B0a s\u1EB5n s\xE0ng", "Credential hi\u1EC7n t\u1EA1i kh\xF4ng c\xF3 quy\u1EC1n th\xEAm t\u1EC7p v\xE0o th\u01B0 m\u1EE5c g\u1ED1c \u0111\xE3 c\u1EA5u h\xECnh.");
+  async requireGoogleRootFolderAccess(rootFolderId = this.googleDriveRootFolderId) {
+    if (!rootFolderId || !this.hasCredential()) throw new HttpProblem(503, "GOOGLE_DRIVE_ADAPTER_NOT_READY", "Google Drive ch\u01B0a s\u1EB5n s\xE0ng", `${this.credentialWarning()} GOOGLE_DRIVE_ROOT_FOLDER_ID l\xE0 b\u1EAFt bu\u1ED9c.`);
+    const folder = await this.driveFetchJson(`${DRIVE_API}/files/${encodeURIComponent(rootFolderId)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`);
+    if (folder.id !== rootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, "GOOGLE_DRIVE_ROOT_UNAVAILABLE", "Th\u01B0 m\u1EE5c Google Drive ch\u01B0a s\u1EB5n s\xE0ng", "Credential hi\u1EC7n t\u1EA1i kh\xF4ng c\xF3 quy\u1EC1n th\xEAm t\u1EC7p v\xE0o th\u01B0 m\u1EE5c g\u1ED1c \u0111\xE3 c\u1EA5u h\xECnh.");
     if (this.googleDriveAuthMode === "service-account" && !folder.driveId) throw new HttpProblem(503, "GOOGLE_DRIVE_SHARED_DRIVE_REQUIRED", "C\u1EA7n d\xF9ng Shared Drive cho Google Drive", "Service account kh\xF4ng c\xF3 storage quota trong My Drive; h\xE3y \u0111\u1EB7t th\u01B0 m\u1EE5c g\u1ED1c trong Shared Drive v\xE0 c\u1EA5p quy\u1EC1n Contributor ho\u1EB7c Content manager.");
   }
-  async ensureGoogleFolderPath(folderPath) {
-    await this.requireGoogleRootFolder();
-    let parentId = this.googleDriveRootFolderId;
+  async ensureGoogleFolderPath(folderPath, rootFolderId = this.googleDriveRootFolderId) {
+    await this.requireGoogleRootFolder(rootFolderId);
+    let parentId = rootFolderId;
     for (const folderName of folderPath.split("/").filter(Boolean)) {
       const query = `name = '${escapeDriveQuery(folderName)}' and '${escapeDriveQuery(parentId)}' in parents and mimeType = '${FOLDER_MIME_TYPE}' and trashed = false`;
       const search = await this.driveFetchJson(`${DRIVE_API}/files?${new URLSearchParams({ q: query, fields: "files(id)", supportsAllDrives: "true", includeItemsFromAllDrives: "true" })}`);
@@ -7508,8 +7513,16 @@ app.post("/api/v1/findings/:id/actions/internal-reject", async (req, reply) => {
   }
 });
 function evidenceFolderPath(finding) {
+  const campaign = auditCampaigns.find((item) => item.id === finding.campaignId);
+  if (campaign?.driveProvisionStatus === "READY" && campaign.driveRootFolderId) {
+    return googleDriveService.generateCampaignEvidenceFolderPath({
+      cif: finding.cif,
+      customerName: finding.customerName,
+      errorCode: finding.errorCode
+    });
+  }
   return googleDriveService.generateFolderPath({
-    campaignCode: auditCampaigns.find((campaign) => campaign.id === finding.campaignId)?.code,
+    campaignCode: campaign?.code,
     channelCode: finding.channelCode,
     year: Number((finding.auditDate || finding.createdAt).slice(0, 4)) || (/* @__PURE__ */ new Date()).getFullYear(),
     clusterName: finding.clusterName,
@@ -7518,6 +7531,13 @@ function evidenceFolderPath(finding) {
     customerName: finding.customerName,
     errorCode: finding.errorCode
   });
+}
+function requireProvisionedCampaignDriveRootFolderId(finding) {
+  const campaign = auditCampaigns.find((item) => item.id === finding.campaignId);
+  if (!campaign || campaign.driveProvisionStatus !== "READY" || !campaign.driveRootFolderId) {
+    throw new HttpProblem(409, "CAMPAIGN_DRIVE_NOT_READY", "Kho chuy\xEAn \u0111\u1EC1 ch\u01B0a s\u1EB5n s\xE0ng", "Qu\u1EA3n tr\u1ECB vi\xEAn ph\u1EA3i t\u1EA1o kho d\u1EEF li\u1EC7u Drive cho chuy\xEAn \u0111\u1EC1 tr\u01B0\u1EDBc khi t\u1EA3i minh ch\u1EE9ng.");
+  }
+  return campaign.driveRootFolderId;
 }
 function requireEvidenceUploadAccess(req, findingId) {
   const user = getCurrentUser(req);
@@ -7555,14 +7575,15 @@ app.post("/api/v1/findings/:id/evidence/upload-session", async (req) => {
   const { finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CreateEvidenceUploadSessionSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
-  if ((await googleDriveService.getStorageStatus()).mode !== "google-drive") return { uploadMode: "local" };
-  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const storageStatus = await googleDriveService.getStorageStatus();
+  if (storageStatus.mode !== "google-drive") return { uploadMode: "local" };
+  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
 });
 app.post("/api/v1/findings/:id/evidence/complete", async (req) => {
   const { user, finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CompleteEvidenceDirectUploadSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
-  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
   const evidence = registerEvidence(finding, user, uploadResult, fileName);
   await persistLocalState();
   return evidence;
