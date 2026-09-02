@@ -46,7 +46,7 @@ class SharedPostgresClient {
 
   public async query(sql: string, params: unknown[] = []): Promise<QueryResult> {
     const normalized = sql.replace(/\s+/g, ' ').trim();
-    if (normalized === 'BEGIN') {
+    if (normalized === 'BEGIN' || normalized === "BEGIN; SET LOCAL app.runtime_role = 'backend'") {
       this.txnPayload = structuredClone(this.db.payload);
       this.txnVersion = this.db.version;
     } else if (normalized === 'ROLLBACK') {

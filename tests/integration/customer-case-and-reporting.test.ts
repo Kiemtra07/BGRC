@@ -540,10 +540,22 @@ describe('customer case, branch control, import and reporting', () => {
 
     expect(csv.statusCode).toBe(200);
     expect(csv.headers['content-type']).toContain('text/csv');
-    // Headers are quoted like the data cells: a report field can be renamed to contain a comma.
-    expect(csv.body).toContain('"CIF","Tên khách hàng","Mã lỗi","Giá trị ảnh hưởng"');
-    expect(csv.body).toContain('10993821');
+    // CSV mặc định xuất đúng bảng đang thiết kế — ở đây là nhóm theo Chi nhánh với chỉ số đã chọn.
+    // Bài kiểm cũ khoá hành vi ngược lại: CSV luôn đổ dòng chi tiết bất kể thiết kế, nên kéo thả kiểu
+    // gì cũng ra một tệp. Đó là lỗi, không phải hợp đồng cần giữ.
+    expect(csv.body).toContain('"Chi nhánh","Mã lỗi"');
+    expect(csv.body).toContain('102 · Chi nhánh Hà Nội');
     expect(csv.body).not.toContain('Chi nhánh Nam Buôn Hồ');
+
+    // Dòng chi tiết vẫn lấy được, nhưng phải nói rõ là muốn nó.
+    const detailCsv = await app.inject({
+      method: 'POST', url: '/api/v1/reports/exports', headers: adminHeaders,
+      payload: { ...exportPayload, format: 'csv', section: 'detail' },
+    });
+    expect(detailCsv.statusCode).toBe(200);
+    // Headers are quoted like the data cells: a report field can be renamed to contain a comma.
+    expect(detailCsv.body).toContain('"CIF","Tên khách hàng","Mã lỗi","Giá trị ảnh hưởng"');
+    expect(detailCsv.body).toContain('10993821');
 
     expect(html.statusCode).toBe(200);
     expect(html.headers['content-type']).toContain('text/html');

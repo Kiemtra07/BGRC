@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, Download, History, RefreshCw, Search, Trash2 } from 'lucide-react';
 import { AuditLogEntry, UserRole, WorkflowCommand } from '../../../shared/contracts';
 import { api } from '../../services/api';
@@ -17,31 +17,47 @@ const eventLabel = (eventType: string): string => {
   return securityEventLabels[eventType] ?? 'Cập nhật hồ sơ';
 };
 const roleLabel = (role: string): string => userRoleLabels[role as UserRole] || 'Hệ thống';
+const AUDIT_PAGE_SIZE = 50;
 
 export const AuditTrailViewer: React.FC = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [logs, setLogs] = useState<AuditLogEntry[]>([]);
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isClearing, setIsClearing] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
+  const requestToken = useRef(0);
 
-  const loadAuditEvents = useCallback(async () => {
+  const loadAuditEvents = useCallback(async (nextPage = 1, query = searchTerm) => {
+    const token = ++requestToken.current;
     setIsLoading(true);
     setError('');
     try {
-      setLogs(await api.getAuditEvents());
+      const result = await api.getAuditEvents({ page: nextPage, limit: AUDIT_PAGE_SIZE, query });
+      if (token !== requestToken.current) return;
+      setLogs(result.items);
+      setPage(result.page);
+      setTotal(result.total);
+      setHasMore(result.hasMore);
     } catch (cause) {
+      if (token !== requestToken.current) return;
       setError(cause instanceof Error ? cause.message : 'Không thể tải nhật ký xử lý.');
     } finally {
-      setIsLoading(false);
+      if (token === requestToken.current) setIsLoading(false);
     }
-  }, []);
+  }, [searchTerm]);
 
   useEffect(() => {
-    void loadAuditEvents();
-  }, [loadAuditEvents]);
+    const timer = window.setTimeout(() => { void loadAuditEvents(1, searchTerm); }, 250);
+    return () => {
+      window.clearTimeout(timer);
+      requestToken.current += 1;
+    };
+  }, [loadAuditEvents, searchTerm]);
 
   const downloadAuditEvents = async (): Promise<void> => {
     setIsDownloading(true);
@@ -76,21 +92,6 @@ export const AuditTrailViewer: React.FC = () => {
       setIsClearing(false);
     }
   };
-
-  const filteredLogs = useMemo(() => {
-    const keyword = searchTerm.trim().toLocaleLowerCase('vi');
-    if (!keyword) return logs;
-    return logs.filter(log => [
-      log.eventType,
-      log.actorName,
-      log.actorRole,
-      log.targetEntity,
-      log.details,
-      log.cif,
-      log.errorCode,
-      log.branchCode,
-    ].some(value => value.toLocaleLowerCase('vi').includes(keyword)));
-  }, [logs, searchTerm]);
 
   return (
     <div className="space-y-6">
@@ -166,15 +167,15 @@ export const AuditTrailViewer: React.FC = () => {
             <RefreshCw className="h-4 w-4 animate-spin" />
             Đang tải nhật ký...
           </div>
-        ) : filteredLogs.length === 0 ? (
+        ) : logs.length === 0 ? (
           <div className="flex min-h-48 flex-col items-center justify-center gap-2 px-4 text-center text-xs text-slate-500">
             <History className="h-8 w-8 text-slate-300" />
-            <p>{logs.length === 0 ? 'Chưa có thao tác nào.' : 'Không có thao tác phù hợp từ khóa.'}</p>
+            <p>{total === 0 && searchTerm.trim() ? 'Không có thao tác phù hợp từ khóa.' : 'Chưa có thao tác nào.'}</p>
           </div>
         ) : (
           <>
             <div className="divide-y divide-slate-100 md:hidden">
-              {filteredLogs.map(log => (
+              {logs.map(log => (
                 <article key={log.id} className="space-y-3 p-4">
                   <div className="flex items-start justify-between gap-3">
                     <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-700">{eventLabel(log.eventType)}</span>
@@ -203,7 +204,7 @@ export const AuditTrailViewer: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100 text-slate-800">
-                  {filteredLogs.map(log => (
+                  {logs.map(log => (
                     <tr key={log.id} className="hover:bg-slate-50/70">
                       <td className="whitespace-nowrap px-5 py-3.5 font-mono text-[11px] text-slate-500">{formatTimestamp(log.timestamp)}</td>
                       <td className="px-5 py-3.5">
@@ -221,6 +222,29 @@ export const AuditTrailViewer: React.FC = () => {
               </table>
             </div>
           </>
+        )}
+        {total > 0 && (
+          <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-rule bg-slate-50 px-4 py-3 text-xs text-slate-600 sm:px-5">
+            <span>Trang {page} · {total.toLocaleString('vi-VN')} bản ghi</span>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void loadAuditEvents(page - 1)}
+                disabled={page <= 1 || isLoading || isClearing || isDownloading}
+                className="min-h-9 rounded-lg border border-rule bg-white px-3 font-bold disabled:opacity-40"
+              >
+                Trang trước
+              </button>
+              <button
+                type="button"
+                onClick={() => void loadAuditEvents(page + 1)}
+                disabled={!hasMore || isLoading || isClearing || isDownloading}
+                className="min-h-9 rounded-lg border border-rule bg-white px-3 font-bold disabled:opacity-40"
+              >
+                Trang sau
+              </button>
+            </div>
+          </footer>
         )}
       </section>
     </div>

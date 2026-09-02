@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ArrowDown, ArrowUp, Database, RefreshCw, Save, Search } from 'lucide-react';
 import {
   REPORT_FIELD_CATALOG,
@@ -21,19 +21,24 @@ export const ReportCatalogManager: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const mountedRef = useRef(true);
 
   const load = async () => {
     try {
       setBusy(true);
       setError(null);
-      setConfiguration(await api.getReportCatalogConfiguration());
+      const result = await api.getReportCatalogConfiguration();
+      if (!mountedRef.current) return;
+      setConfiguration(result);
     } catch (reason) {
+      if (!mountedRef.current) return;
       setError(reason instanceof Error ? reason.message : 'Không thể tải cấu hình trường báo cáo.');
     } finally {
-      setBusy(false);
+      if (mountedRef.current) setBusy(false);
     }
   };
 
+  useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { void load(); }, []);
 
   const fields = useMemo(

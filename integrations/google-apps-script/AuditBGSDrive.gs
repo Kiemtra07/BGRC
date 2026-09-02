@@ -235,4 +235,3 @@ function normalizeEmail_(email) { return String(email || '').trim().toLowerCase(
 function safeMessage_(error) { return error && error.message ? String(error.message).substring(0, 300) : 'Không thể xử lý yêu cầu Drive.'; }
 function fail_(code, message) { var error = new Error(message); error.code = code; throw error; }
 function json_(value) { return ContentService.createTextOutput(JSON.stringify(value)).setMimeType(ContentService.MimeType.JSON); }
-

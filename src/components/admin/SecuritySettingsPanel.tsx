@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { CircleCheck, Loader2, ShieldCheck, ShieldOff, TriangleAlert } from 'lucide-react';
 import { MfaPolicy, SecuritySettingsResponse, mfaPolicyLabels } from '../../../shared/contracts';
 import { api } from '../../services/api';
@@ -23,19 +23,23 @@ export const SecuritySettingsPanel: React.FC = () => {
   const [notice, setNotice] = useState<string | null>(null);
   const [enrolling, setEnrolling] = useState<string | null>(null);
   const [issued, setIssued] = useState<{ fullName: string; secret: string; otpauthUri: string } | null>(null);
+  const mountedRef = useRef(true);
 
   /** Issue or revoke one person's TOTP secret. The server refuses a revoke the policy still needs. */
   const setEnrolment = async (userId: string, fullName: string, enabled: boolean) => {
     try {
       setEnrolling(userId); setError(null); setNotice(null);
       const result = await api.updateUserAuthenticator(userId, { enabled });
+      if (!mountedRef.current) return;
       if (result.setup) setIssued({ fullName, ...result.setup });
       else setNotice(`Đã thu hồi mã Google Authenticator của ${fullName}.`);
-      setData(await api.getSecuritySettings());
+      const refreshed = await api.getSecuritySettings();
+      if (mountedRef.current) setData(refreshed);
     } catch (reason) {
+      if (!mountedRef.current) return;
       setError(reason instanceof Error ? reason.message : 'Không thể cập nhật mã Authenticator.');
     } finally {
-      setEnrolling(null);
+      if (mountedRef.current) setEnrolling(null);
     }
   };
 
@@ -43,13 +47,16 @@ export const SecuritySettingsPanel: React.FC = () => {
     try {
       setError(null);
       const result = await api.getSecuritySettings();
+      if (!mountedRef.current) return;
       setData(result);
       setDraft(result.settings.mfaPolicy);
     } catch (reason) {
+      if (!mountedRef.current) return;
       setError(reason instanceof Error ? reason.message : 'Không thể tải cấu hình bảo mật.');
     }
   };
 
+  useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { void load(); }, []);
 
   const save = async () => {

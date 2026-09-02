@@ -65,14 +65,26 @@ describe('SLA UI behavior', () => {
     expect(markup).not.toContain('BRANCH_CONTROL_APPROVE');
   });
 
-  it('binds the overdue KPI component to dashboard.overdueCount', async () => {
-    const appModule = await import('../../src/App');
-    const OverdueKpi = (appModule as { OverdueKpi?: React.ComponentType<{ overdueCount: number }> }).OverdueKpi;
+  /**
+   * Thẻ số quá hạn nay do `ScopeSummaryTabs` dựng, cho cả hai phạm vi. Kiểm tra ngay tại đó thay vì
+   * qua một component xuất khỏi `App` mà màn hình không còn dựng nữa — một bài kiểm tra chạy trên
+   * code không ai gọi thì chỉ tạo cảm giác an tâm chứ không bảo vệ được gì.
+   */
+  it('renders the overdue count from the summary being shown', async () => {
+    const { ScopeSummaryTabs } = await import('../../src/components/portal/ScopeSummaryTabs');
+    const summary = {
+      totalFindings: 12, activeFindings: 9, pendingRemediation: 3, submittedBranch: 2,
+      submittedInternal: 1, rejected: 0, waivedResolved: 3, onTrackCount: 5, dueSoonCount: 0,
+      overdueCount: 7, totalExposureAmount: 0, resolvedExposureAmount: 0, remediationRatePercent: 25,
+    };
+    const markup = renderToStaticMarkup(React.createElement(ScopeSummaryTabs, {
+      scope: 'SCOPE' as const, onScopeChange: () => undefined, currentUser: null,
+      scopeSummary: summary, campaignSummary: null, loading: false,
+    }));
 
-    expect(OverdueKpi).toBeTypeOf('function');
-    if (!OverdueKpi) return;
-    const markup = renderToStaticMarkup(React.createElement(OverdueKpi, { overdueCount: 7 }));
     expect(markup).toContain('Quá hạn');
     expect(markup).toContain('>7<');
+    // Tab chuyên đề phải bị khoá khi chưa có kết quả tìm kiếm nào.
+    expect(markup).toContain('disabled');
   });
 });

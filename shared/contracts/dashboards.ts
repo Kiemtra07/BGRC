@@ -384,10 +384,83 @@ export const ReportRunRequestSchema = z.object({
 });
 export type ReportRunRequest = z.infer<typeof ReportRunRequestSchema>;
 
+/**
+ * Thuộc tính trình bày: những thứ đổi cách con số **hiện ra**, không đổi con số.
+ *
+ * Tách hẳn khỏi `ReportRunRequest` là có chủ đích. Truy vấn quyết định lấy dữ liệu nào; trình bày
+ * quyết định gọi nó là gì và tô nó màu gì. Trộn hai thứ vào một chỗ thì mỗi lần đổi tên một cột lại
+ * thành một truy vấn mới gửi xuống máy chủ.
+ *
+ * Nhưng nó vẫn phải đi kèm khi xuất tệp: người dùng đổi tên cột và đặt ngưỡng tô đỏ trên màn hình
+ * mà tệp tải về vẫn tên cũ, không màu, thì lại đúng cái lỗi vừa sửa ở phần xuất theo thiết kế.
+ */
+export const REPORT_HIGHLIGHT_TONES = ['risk', 'warn', 'ok'] as const;
+export type ReportHighlightTone = (typeof REPORT_HIGHLIGHT_TONES)[number];
+
+export const ReportMetricFormatSchema = z.object({
+  /** Tên cột do người dùng đặt; bỏ trống thì dùng tên trong danh mục. */
+  label: z.string().trim().max(60).optional(),
+  decimals: z.number().int().min(0).max(4).optional(),
+  /** Hậu tố dán sau con số, ví dụ "hồ sơ" hoặc "%". */
+  suffix: z.string().trim().max(16).optional(),
+  highlight: z.object({
+    operator: z.enum(['gt', 'gte', 'lt', 'lte']),
+    value: z.number(),
+    tone: z.enum(REPORT_HIGHLIGHT_TONES),
+  }).optional(),
+});
+export type ReportMetricFormat = z.infer<typeof ReportMetricFormatSchema>;
+
+export const ReportPresentationOptionsSchema = z.object({
+  title: z.string().trim().max(150).optional(),
+  /** Đổi tên cột đầu tiên (trường ở vùng Hàng). */
+  rowLabel: z.string().trim().max(60).optional(),
+  metrics: z.record(ReportMetricKeySchema, ReportMetricFormatSchema).default({}),
+});
+export type ReportPresentationOptions = z.infer<typeof ReportPresentationOptionsSchema>;
+
+export const emptyPresentationOptions = (): ReportPresentationOptions => ({ metrics: {} });
+
+/**
+ * Áp định dạng lên một con số. Dùng chung cho màn hình và cho tệp xuất, nên hai nơi không thể hiện
+ * ra hai kết quả khác nhau cho cùng một ô.
+ */
+export function formatReportMetricValue(value: number, format?: ReportMetricFormat): string {
+  const decimals = format?.decimals ?? 0;
+  const text = value.toLocaleString('vi-VN', { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  return format?.suffix ? `${text} ${format.suffix}` : text;
+}
+
+/** Ô có vượt ngưỡng tô màu hay không; `undefined` nghĩa là không tô. */
+export function reportHighlightTone(value: number, format?: ReportMetricFormat): ReportHighlightTone | undefined {
+  const rule = format?.highlight;
+  if (!rule) return undefined;
+  const hit = rule.operator === 'gt' ? value > rule.value
+    : rule.operator === 'gte' ? value >= rule.value
+      : rule.operator === 'lt' ? value < rule.value
+        : value <= rule.value;
+  return hit ? rule.tone : undefined;
+}
+
+/**
+ * Xuất cái đang nhìn thấy, hay xuất dữ liệu thô đứng sau nó.
+ *
+ * `design` là mặc định và là nguyên tắc của một công cụ báo cáo tự phục vụ: tệp tải về phải trùng
+ * với bảng trên màn hình — cùng trường Hàng, cùng trường Cột của bảng chéo, cùng những chỉ số đã
+ * chọn. Trước đây mọi định dạng đều bỏ qua thiết kế: CSV luôn đổ dòng thô, còn bảng chéo thì không
+ * một định dạng nào giữ lại, nên kéo thả kiểu gì cũng ra đúng một tệp.
+ *
+ * `detail` giữ lại đường xuất dòng chi tiết theo danh sách `columns` — vẫn cần cho đối chiếu hồ sơ.
+ */
+export const ReportExportSectionSchema = z.enum(['design', 'detail']);
+export type ReportExportSection = z.infer<typeof ReportExportSectionSchema>;
+
 export const ReportExportRequestSchema = z.object({
   query: ReportRunRequestSchema,
   columns: z.array(ReportFieldKeySchema).min(1).max(REPORT_FIELD_KEYS.length),
   format: z.enum(['csv', 'html', 'xlsx']).default('csv'),
+  section: ReportExportSectionSchema.default('design'),
+  presentation: ReportPresentationOptionsSchema.optional(),
 }).superRefine((request, context) => {
   request.columns.forEach((key, index) => {
     if (!REPORT_FIELD_CATALOG.find(item => item.key === key)?.exportable) {
@@ -450,6 +523,8 @@ export interface ReportDefinition {
   columns: Array<z.infer<typeof ReportColumnSchema>>;
   query?: ReportRunRequest;
   exportColumns?: ReportFieldKey[];
+  /** Định dạng trình bày đã lưu cùng mẫu: tên cột, số lẻ, ngưỡng tô màu. */
+  presentation?: ReportPresentationOptions;
   visibility: ReportDefinitionVisibility;
   sharedWithRoles: UserRole[];
   sourceReportDefinitionId?: string;
@@ -474,6 +549,7 @@ export const CreateReportDefinitionSchema = z.object({
   columns: z.array(ReportColumnSchema).max(15).default([]),
   query: ReportRunRequestSchema.optional(),
   exportColumns: z.array(ReportFieldKeySchema).max(REPORT_FIELD_KEYS.length).default([]),
+  presentation: ReportPresentationOptionsSchema.optional(),
   visibility: ReportDefinitionVisibilitySchema.default('PRIVATE'),
   sharedWithRoles: z.array(ReportShareRoleSchema).max(8).default([]),
   sourceReportDefinitionId: z.string().min(1).max(200).optional(),

@@ -1,10 +1,13 @@
 import React, { Suspense, lazy, useEffect, useMemo, useRef, useState } from 'react';
-import { BarChart3, Bookmark, Columns3, FileBarChart, FileDown, FileSpreadsheet, FileText, Filter, Plus, RefreshCw, Rows3, Save, Search, Sigma, Sparkles, Trash2, X } from 'lucide-react';
+import { BarChart3, Bookmark, ChevronDown, Columns3, FileBarChart, FileDown, FileSpreadsheet, FileText, Filter, PanelLeftClose, PanelLeftOpen, Play, Plus, RefreshCw, Rows3, Save, Search, Sigma, Sliders, Sparkles, Trash2, X } from 'lucide-react';
 import {
   ReportCatalog, ReportDefinition, ReportDrillResult, ReportFieldDefinition, ReportFieldKey, ReportFilterRule,
   ReportMetricDefinition, ReportMetricKey, ReportPreset, ReportRunRequest, ReportRunRequestSchema, ReportRunResult,
   DashboardDefinition, REPORT_PRESETS, UserRole,
+  ReportPresentationOptions, emptyPresentationOptions, formatReportMetricValue, reportHighlightTone,
 } from '../../../shared/contracts';
+import { ReportPropertiesPanel } from './ReportPropertiesPanel';
+import { ReportFieldChips } from './ReportFieldChips';
 import { api } from '../../services/api';
 
 const ReportCrosstab = lazy(async () => {
@@ -20,7 +23,6 @@ const ReportChart = lazy(async () => {
 const CONTROL_CLASS = 'min-h-11 w-full rounded-xl border border-rule bg-white px-3 py-2.5 text-sm font-medium text-slate-800 outline-none transition placeholder:text-slate-400 focus:border-brand-500 focus:ring-2 focus:ring-teal-100';
 const ZONE_SELECT_CLASS = 'min-h-9 w-full rounded-lg border border-rule bg-white px-2 text-xs font-bold text-slate-700 outline-none focus:border-brand-500';
 /** The builder re-runs itself; this is the quiet window after the last edit before it does. */
-const AUTO_RUN_DELAY_MS = 450;
 const DRILL_PAGE_SIZE = 25;
 const FALLBACK_QUERY: ReportRunRequest = {
   rules: [], match: 'ALL', groupBy: 'dimension.branch',
@@ -54,22 +56,44 @@ export const ReportsWorkspace: React.FC = () => {
   const [reportSharedRoles, setReportSharedRoles] = useState<UserRole[]>([]);
   const [copySourceId, setCopySourceId] = useState<string | undefined>();
   const [selectedDashboardId, setSelectedDashboardId] = useState('');
+  /** Click vào một chiều sẽ đưa nó vào Cột theo mặc định; người dùng có thể đổi đích ngay tại palette. */
+  const [clickZone, setClickZone] = useState<'rows' | 'columns' | 'filters'>('columns');
   const [showDashboardForm, setShowDashboardForm] = useState(false);
   const [dashboardName, setDashboardName] = useState('');
   const [dashboardReportIds, setDashboardReportIds] = useState<string[]>([]);
   const [dashboardSharedRoles, setDashboardSharedRoles] = useState<UserRole[]>([]);
+  const [dashboardMode, setDashboardMode] = useState<'design' | 'preview'>('design');
   const [error, setError] = useState<string | null>(null);
   const [invalidQueryHint, setInvalidQueryHint] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saving, setSaving] = useState(false);
   const [exporting, setExporting] = useState<'csv' | 'html' | 'xlsx' | null>(null);
-  const [presentation, setPresentation] = useState<Presentation>('table');
+  const [viewPresentation, setViewPresentation] = useState<Presentation>('table');
   const [chartType, setChartType] = useState<ChartType>('bar');
   const [dataSearch, setDataSearch] = useState('');
+  /**
+   * Màn hình có hai chế độ, không phải một trang cuộn dài.
+   *
+   * Trước đây khung thiết kế luôn nằm nguyên trên đầu, nên bấm "Xem báo cáo" xong vẫn phải cuộn qua
+   * danh mục dữ liệu, bốn vùng kéo thả, bộ lọc và cột xuất mới thấy kết quả — thứ vừa yêu cầu lại
+   * là thứ khuất nhất. Chạy xong thì chuyển hẳn sang `result`; nút "Thiết kế" đưa quay lại.
+   */
+  const [viewMode, setViewMode] = useState<'design' | 'result'>('design');
+  /** Danh mục dữ liệu đóng/mở được, như thanh trái của Cognos. */
+  const [dataPanelOpen, setDataPanelOpen] = useState(true);
+  /** Danh sách mẫu gấp lại được; mở sẵn vì đây là đường vào chính của màn hình. */
+  const [presetsOpen, setPresetsOpen] = useState(true);
+  /** Panel Thuộc tính bên phải; mặc định đóng để canvas rộng khi mới vào. */
+  const [propertiesOpen, setPropertiesOpen] = useState(false);
+  /** Tên cột, số lẻ, hậu tố và ngưỡng tô màu — áp cho cả màn hình lẫn tệp xuất. */
+  const [presentation, setPresentation] = useState<ReportPresentationOptions>(emptyPresentationOptions);
+  /** Xuất bảng đang nhìn thấy, hay xuất dòng chi tiết đứng sau nó. */
+  const [exportSection, setExportSection] = useState<'design' | 'detail'>('design');
   const [drillTarget, setDrillTarget] = useState<DrillTarget | null>(null);
   const [drillResult, setDrillResult] = useState<ReportDrillResult | null>(null);
   const [drillLoading, setDrillLoading] = useState(false);
+  const mountedRef = useRef(true);
   const queryRef = useRef(query);
   const selectedColumnsRef = useRef(selectedColumns);
   queryRef.current = query;
@@ -86,64 +110,90 @@ export const ReportsWorkspace: React.FC = () => {
   const availablePresets = useMemo(() => catalog ? REPORT_PRESETS.filter(item => presetIsUsable(item, catalog)) : [], [catalog]);
   const normalizedDataSearch = dataSearch.trim().toLocaleLowerCase('vi-VN');
   const visibleGroupFields = useMemo(() => groupFields.filter(field => !normalizedDataSearch || `${field.label} ${field.key}`.toLocaleLowerCase('vi-VN').includes(normalizedDataSearch)), [groupFields, normalizedDataSearch]);
+  const visiblePresets = useMemo(() => availablePresets.filter(preset => !normalizedDataSearch || `${preset.name} ${preset.description}`.toLocaleLowerCase('vi-VN').includes(normalizedDataSearch)), [availablePresets, normalizedDataSearch]);
   const visibleMetrics = useMemo(() => activeMetrics.filter(metric => !normalizedDataSearch || `${metric.label} ${metric.key}`.toLocaleLowerCase('vi-VN').includes(normalizedDataSearch)), [activeMetrics, normalizedDataSearch]);
   const selectedDashboard = useMemo(() => dashboards.find(item => item.id === selectedDashboardId), [dashboards, selectedDashboardId]);
 
   const loadCatalog = async () => {
     try {
       const loaded = await api.getReportCatalog();
+      if (!mountedRef.current) return;
       setCatalog(loaded);
       setQuery(normalizeQueryForCatalog(FALLBACK_QUERY, loaded));
       setSelectedColumns(defaultExportColumns(loaded));
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu báo cáo.');
+      if (mountedRef.current) setError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu báo cáo.');
     }
   };
 
   const loadDefinitions = async () => {
-    try { setDefinitions(await api.getReportDefinitions()); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thể tải mẫu báo cáo.'); }
+    try {
+      const loaded = await api.getReportDefinitions();
+      if (mountedRef.current) setDefinitions(loaded);
+    } catch (reason) {
+      if (mountedRef.current) setError(reason instanceof Error ? reason.message : 'Không thể tải mẫu báo cáo.');
+    }
   };
   const loadDashboards = async () => {
-    try { setDashboards(await api.getDashboardDefinitions()); }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thể tải bảng điều khiển.'); }
+    try {
+      const loaded = await api.getDashboardDefinitions();
+      if (mountedRef.current) setDashboards(loaded);
+    } catch (reason) {
+      if (mountedRef.current) setError(reason instanceof Error ? reason.message : 'Không thể tải bảng điều khiển.');
+    }
   };
 
   // Report runs are not cancellable server-side, so a slower earlier response must not overwrite a
   // newer one; only the most recently issued run is allowed to publish its result.
   const runSequence = useRef(0);
   const runReport = async (candidate: ReportRunRequest = queryRef.current) => {
+    const parsed = ReportRunRequestSchema.safeParse(candidate);
+    if (!parsed.success) {
+      setInvalidQueryHint(parsed.error.issues[0]?.message || 'Điều kiện lọc chưa hợp lệ.');
+      setViewMode('design');
+      return;
+    }
+    setInvalidQueryHint(null);
     const sequence = runSequence.current + 1;
     runSequence.current = sequence;
     setBusy(true);
     setError(null);
     try {
-      const outcome = await api.runReport(candidate);
+      const outcome = await api.runReport(parsed.data);
       if (sequence !== runSequence.current) return;
       setResult(outcome);
+      // Chạy xong thì đưa kết quả ra trước mặt, đó là thứ vừa được yêu cầu.
+      setViewMode('result');
     } catch (reason) {
       if (sequence !== runSequence.current) return;
       setError(reason instanceof Error ? reason.message : 'Không thể tạo báo cáo.');
+      setResult(null);
+      setViewMode('design');
     } finally {
       if (sequence === runSequence.current) setBusy(false);
     }
   };
 
+  useEffect(() => () => { mountedRef.current = false; }, []);
   useEffect(() => { void loadCatalog(); void loadDefinitions(); void loadDashboards(); }, []);
 
-  // Auto-run replaces the old "edit here, then press apply down there" gap. A half-typed filter parks
-  // the run behind a hint instead of firing an invalid request.
+  /**
+   * Báo cáo chỉ chạy khi được yêu cầu, không tự chạy sau mỗi lần chạm vào thiết kế.
+   *
+   * Bản cũ đặt hẹn giờ chạy lại mỗi khi `query` đổi: kéo một trường, đổi một chỉ số, gõ dở một điều
+   * kiện lọc — mỗi thao tác là một truy vấn nữa gửi đi, trong khi người dùng còn đang dựng dở. Đó
+   * cũng không phải cách một công cụ báo cáo làm việc: dựng xong rồi mới bấm chạy.
+   *
+   * Chỉ giữ lại phần báo điều kiện chưa hợp lệ, để nút chạy nói được lý do nó đang bị chặn.
+   */
   useEffect(() => {
     if (!catalog) return;
     const parsed = ReportRunRequestSchema.safeParse(query);
-    if (!parsed.success) { setInvalidQueryHint(parsed.error.issues[0]?.message || 'Điều kiện lọc chưa hợp lệ.'); return; }
-    setInvalidQueryHint(null);
-    const timer = setTimeout(() => { void runReport(parsed.data); }, AUTO_RUN_DELAY_MS);
-    return () => clearTimeout(timer);
+    setInvalidQueryHint(parsed.success ? null : parsed.error.issues[0]?.message || 'Điều kiện lọc chưa hợp lệ.');
   }, [query, catalog]);
 
   // A crosstab needs a column field; dropping that field must not strand the user on an empty tab.
-  useEffect(() => { if (presentation === 'pivot' && !query.pivotBy) setPresentation('table'); }, [presentation, query.pivotBy]);
+  useEffect(() => { if (viewPresentation === 'pivot' && !query.pivotBy) setViewPresentation('table'); }, [viewPresentation, query.pivotBy]);
 
   useEffect(() => {
     if (!drillTarget) { setDrillResult(null); return; }
@@ -166,11 +216,19 @@ export const ReportsWorkspace: React.FC = () => {
   }, [drillTarget]);
 
   const setGroupBy = (key: ReportFieldKey) => setQuery(current => ({ ...current, groupBy: key, pivotBy: current.pivotBy === key ? undefined : current.pivotBy }));
-  const setPivotBy = (key?: ReportFieldKey) => setQuery(current => ({ ...current, pivotBy: key && key !== current.groupBy ? key : undefined }));
+  const setPivotBy = (key?: ReportFieldKey) => setQuery(current => key === current.groupBy
+    ? current
+    : { ...current, pivotBy: key });
   const addMetric = (key: ReportMetricKey) => setQuery(current => current.metrics.includes(key) ? current : ({ ...current, metrics: [...current.metrics, key] }));
   const removeMetric = (key: ReportMetricKey) => setQuery(current => current.metrics.length > 1
     ? { ...current, metrics: current.metrics.filter(item => item !== key), sort: current.sort?.key === key ? undefined : current.sort }
     : current);
+
+  const assignField = (key: ReportFieldKey, zone: 'rows' | 'columns' | 'filters') => {
+    if (zone === 'rows') setGroupBy(key);
+    else if (zone === 'columns') setPivotBy(key);
+    else addRule(key);
+  };
 
   const addRule = (key?: ReportFieldKey) => {
     const field = filterFields.find(item => item.key === key) || filterFields.find(item => item.key === 'dimension.branch') || filterFields[0];
@@ -197,45 +255,47 @@ export const ReportsWorkspace: React.FC = () => {
     else if (zone === 'filters') addRule(payload.key);
   };
 
-  /**
-   * The no-drag path. A click always means "xem theo trường này" so the outcome is predictable;
-   * a field already used as a row or column becomes a filter instead of silently doing nothing.
-   */
-  const quickAddField = (key: ReportFieldKey) => {
-    if (query.groupBy === key || query.pivotBy === key) { addRule(key); return; }
-    setGroupBy(key);
-  };
-
   const resetBuilder = () => {
     if (!catalog) return;
     setSelectedTemplateId('');
     setQuery(normalizeQueryForCatalog(FALLBACK_QUERY, catalog));
     setSelectedColumns(defaultExportColumns(catalog));
-    setPresentation('table');
+    setPresentation(emptyPresentationOptions());
+    setViewPresentation('table');
     setOpenRuleIndex(null);
     setNotice(null);
   };
 
+  /**
+   * Mở một mẫu là chạy nó luôn, giống bấm vào một báo cáo có sẵn trong danh mục: người dùng chọn
+   * mẫu để xem kết quả, không phải để ngắm lại cấu hình của mẫu.
+   */
   const applyTemplate = (id: string) => {
     setSelectedTemplateId(id);
     setOpenRuleIndex(null);
     if (!id || !catalog) { resetBuilder(); return; }
     const preset = REPORT_PRESETS.find(item => item.id === id);
     if (preset) {
-      setQuery(normalizeQueryForCatalog(preset.query, catalog));
+      const nextQuery = normalizeQueryForCatalog(preset.query, catalog);
+      setQuery(nextQuery);
       setSelectedColumns(defaultExportColumns(catalog));
-      setPresentation(preset.presentation);
+      setViewPresentation(preset.presentation);
+      setPresentation(emptyPresentationOptions());
       if (preset.chartType) setChartType(preset.chartType);
       setNotice(`Đang xem mẫu dựng sẵn “${preset.name}”.`);
+      void runReport(nextQuery);
       return;
     }
     const definition = definitions.find(item => item.id === id);
     if (!definition) return;
     const allowedColumns = new Set(catalog.fields.filter(field => field.exportable).map(field => field.key));
     const definitionColumns = (definition.exportColumns || []).filter(key => allowedColumns.has(key));
-    setQuery(normalizeQueryForCatalog(definition.query || legacyDefinitionToQuery(definition), catalog));
+    const nextQuery = normalizeQueryForCatalog(definition.query || legacyDefinitionToQuery(definition), catalog);
+    setQuery(nextQuery);
     setSelectedColumns(definitionColumns.length ? definitionColumns : defaultExportColumns(catalog));
+    setPresentation(definition.presentation || emptyPresentationOptions());
     setNotice(`Đang xem mẫu “${definition.name}”.`);
+    void runReport(nextQuery);
   };
 
   const saveDefinition = async () => {
@@ -245,7 +305,7 @@ export const ReportsWorkspace: React.FC = () => {
     if (!selectedColumns.length) { setError('Chọn ít nhất một cột trong “Cột xuất” trước khi lưu mẫu.'); return; }
     try {
       setSaving(true); setError(null);
-      const definition = await api.createReportDefinition({ name: reportName.trim(), filters: {}, columns: [], query: parsed.data, exportColumns: selectedColumns, visibility: reportSharedRoles.length ? 'ROLE_SHARED' : 'PRIVATE', sharedWithRoles: reportSharedRoles, sourceReportDefinitionId: copySourceId });
+      const definition = await api.createReportDefinition({ name: reportName.trim(), filters: {}, columns: [], query: parsed.data, exportColumns: selectedColumns, presentation, visibility: reportSharedRoles.length ? 'ROLE_SHARED' : 'PRIVATE', sharedWithRoles: reportSharedRoles, sourceReportDefinitionId: copySourceId });
       setDefinitions(current => [definition, ...current.filter(item => item.id !== definition.id)]);
       setSelectedTemplateId(definition.id); setReportName(''); setReportSharedRoles([]); setCopySourceId(undefined); setShowSaveForm(false);
       setNotice(`Đã lưu mẫu “${definition.name}”.`);
@@ -269,7 +329,7 @@ export const ReportsWorkspace: React.FC = () => {
       setSaving(true); setError(null);
       const dashboard = await api.createDashboardDefinition({ name: dashboardName.trim(), reportDefinitionIds: dashboardReportIds, visibility: dashboardSharedRoles.length ? 'ROLE_SHARED' : 'PRIVATE', sharedWithRoles: dashboardSharedRoles });
       setDashboards(current => [dashboard, ...current.filter(item => item.id !== dashboard.id)]);
-      setSelectedDashboardId(dashboard.id); setDashboardName(''); setDashboardReportIds([]); setDashboardSharedRoles([]); setShowDashboardForm(false);
+       setSelectedDashboardId(dashboard.id); setDashboardMode('preview'); setDashboardName(''); setDashboardReportIds([]); setDashboardSharedRoles([]); setShowDashboardForm(false);
       setNotice(`Đã lưu bảng điều khiển “${dashboard.name}”.`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thể lưu bảng điều khiển.'); }
     finally { setSaving(false); }
@@ -280,7 +340,9 @@ export const ReportsWorkspace: React.FC = () => {
     if (!columns.length) { setError('Chọn ít nhất một cột trong “Cột xuất” trước khi tải báo cáo.'); return; }
     try {
       setExporting(format); setError(null);
-      const request = { query: queryRef.current, columns };
+      // `section` đi cùng yêu cầu: máy chủ dựng tệp theo đúng thiết kế đang hiển thị, hoặc theo dòng
+      // chi tiết khi người dùng chọn vậy. Thiếu nó thì mọi thiết kế đều cho ra cùng một tệp.
+      const request = { query: queryRef.current, columns, section: exportSection, presentation };
       setNotice(`Đang gửi yêu cầu xuất ${format.toUpperCase()}...`);
       if (format === 'html') await api.downloadReportHtml(request);
       else if (format === 'xlsx') await api.downloadReportXlsx(request);
@@ -291,75 +353,99 @@ export const ReportsWorkspace: React.FC = () => {
   };
 
   const groupLabel = fieldsByKey.get(query.groupBy)?.label || 'Nhóm';
+  /**
+   * Một class lưới duy nhất cho bốn tổ hợp đóng/mở của hai panel. Ghép hai class `grid-cols` rồi
+   * trông chờ cái sau đè cái trước là đặt cược vào thứ tự khai báo trong stylesheet — Tailwind sinh
+   * theo thứ tự nào là chuyện của nó, không phải theo thứ tự chuỗi mình viết.
+   */
+  const authoringColumns = dataPanelOpen
+    ? (propertiesOpen ? 'lg:grid-cols-[17rem_minmax(0,1fr)_16rem]' : 'lg:grid-cols-[17rem_minmax(0,1fr)]')
+    : (propertiesOpen ? 'lg:grid-cols-[3rem_minmax(0,1fr)_16rem]' : 'lg:grid-cols-[3rem_minmax(0,1fr)]');
+  /** Tên mẫu đang mở, hiện cạnh tiêu đề để biết mình đang đứng ở báo cáo nào. */
+  const activeTemplateName = selectedTemplateId
+    ? REPORT_PRESETS.find(item => item.id === selectedTemplateId)?.name
+      ?? definitions.find(item => item.id === selectedTemplateId)?.name
+      ?? 'Báo cáo tuỳ chỉnh'
+    : 'Báo cáo tổng hợp';
 
   return <section className="space-y-5" data-testid="reports-workspace">
     {/* Page header on the canvas rather than a coloured slab: the three export buttons carried
         equal weight before, so nothing said which one people actually reach for. */}
-    <div className="flex flex-wrap items-end justify-between gap-3 border-b border-rule pb-4">
-      <div className="min-w-0">
-        <h2 className="flex items-center gap-2 text-lg font-black tracking-tight text-slate-900"><FileBarChart className="h-5 w-5 text-brand-500" />Báo cáo</h2>
-        <p className="mt-0.5 text-xs text-slate-500">Chọn mẫu, đổi chiều xem, rồi xuất khi cần.</p>
+    <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-rule pb-3">
+      <h2 className="flex shrink-0 items-center gap-2 text-base font-black tracking-tight text-slate-900"><FileBarChart className="h-4.5 w-4.5 text-brand-500" />Báo cáo</h2>
+      <span className="min-w-0 truncate text-xs font-semibold text-slate-500">{activeTemplateName}</span>
+
+      {/* Chuyển giữa dựng báo cáo và đọc kết quả. Tab Kết quả bị khoá tới khi có kết quả — bấm vào
+          một tab trống là thao tác không nói được điều gì. */}
+      <div role="tablist" aria-label="Chế độ màn hình báo cáo" className="ml-auto flex shrink-0 gap-1 rounded-xl bg-slate-100 p-1">
+        <button type="button" role="tab" aria-selected={viewMode === 'design'} onClick={() => setViewMode('design')} className={`min-h-8 rounded-lg px-3 text-[11px] font-bold transition-colors ${viewMode === 'design' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Thiết kế</button>
+        <button type="button" role="tab" aria-selected={viewMode === 'result'} disabled={!result} onClick={() => setViewMode('result')} className={`min-h-8 rounded-lg px-3 text-[11px] font-bold transition-colors disabled:cursor-not-allowed disabled:text-slate-300 ${viewMode === 'result' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Kết quả</button>
       </div>
-      <div className="flex flex-wrap items-center gap-2">
-        <button type="button" onClick={() => void runReport()} disabled={!catalog || busy} className="grid h-10 w-10 place-items-center rounded-xl border border-rule bg-white text-slate-500 shadow-panel transition-colors hover:border-brand-300 hover:text-brand-600 disabled:opacity-50" aria-label="Làm mới báo cáo"><RefreshCw className={`h-4 w-4 ${busy ? 'animate-spin' : ''}`} /></button>
-        <button
-          type="button"
-          disabled={exporting === 'xlsx'}
-          onClick={() => { exportReport('xlsx'); }}
-          className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-brand-500 px-3.5 py-2 text-xs font-bold text-white shadow-raised transition-colors hover:bg-brand-600 disabled:opacity-60"
-        >
-          {exporting === 'xlsx' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}Xuất Excel
-        </button>
-        <button type="button" disabled={exporting === 'csv'} onClick={() => { exportReport('csv'); }} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-rule bg-white px-3.5 py-2 text-xs font-bold text-slate-700 shadow-panel transition-colors hover:border-brand-300 hover:text-brand-600 disabled:opacity-60">{exporting === 'csv' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}Xuất CSV</button>
-        <button type="button" disabled={exporting === 'html'} onClick={() => { exportReport('html'); }} className="inline-flex min-h-10 items-center gap-2 rounded-xl border border-rule bg-white px-3.5 py-2 text-xs font-bold text-slate-700 shadow-panel transition-colors hover:border-brand-300 hover:text-brand-600 disabled:opacity-60">{exporting === 'html' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}Xuất HTML</button>
+
+      <button type="button" onClick={() => void runReport()} disabled={!catalog || busy || Boolean(invalidQueryHint)} title={invalidQueryHint || 'Chạy báo cáo'} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl bg-brand-500 px-3.5 text-xs font-bold text-white shadow-raised transition-colors hover:bg-brand-600 disabled:opacity-50">
+        {busy ? <RefreshCw className="h-4 w-4 animate-spin" /> : <Play className="h-4 w-4" />}Chạy báo cáo
+      </button>
+
+      {/* Xuất cái gì: bảng đang nhìn thấy, hay dòng chi tiết đứng sau nó. Chọn ngay cạnh nút xuất,
+          vì đây là điều quyết định nội dung tệp tải về. */}
+      <label className="inline-flex shrink-0 items-center gap-1.5 text-[11px] font-bold text-slate-600">
+        <span className="hidden sm:inline">Xuất</span>
+        <select aria-label="Nội dung tệp xuất" value={exportSection} onChange={event => setExportSection(event.target.value as 'design' | 'detail')} className="min-h-10 rounded-xl border border-rule bg-white px-2 text-[11px] font-bold text-slate-700">
+          <option value="design">theo thiết kế</option>
+          <option value="detail">dòng chi tiết</option>
+        </select>
+      </label>
+      <div className="flex shrink-0 items-center gap-1.5">
+        <button type="button" disabled={exporting === 'xlsx'} onClick={() => { exportReport('xlsx'); }} title="Xuất Excel" className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-rule bg-white px-3 text-xs font-bold text-slate-700 shadow-panel transition-colors hover:border-brand-300 hover:text-brand-600 disabled:opacity-60">{exporting === 'xlsx' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}<span className="hidden lg:inline">Excel</span></button>
+        <button type="button" disabled={exporting === 'csv'} onClick={() => { exportReport('csv'); }} title="Xuất CSV" className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-rule bg-white px-3 text-xs font-bold text-slate-700 shadow-panel transition-colors hover:border-brand-300 hover:text-brand-600 disabled:opacity-60">{exporting === 'csv' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <FileDown className="h-4 w-4" />}<span className="hidden lg:inline">CSV</span></button>
+        <button type="button" disabled={exporting === 'html'} onClick={() => { exportReport('html'); }} title="Xuất HTML" className="inline-flex min-h-10 items-center gap-1.5 rounded-xl border border-rule bg-white px-3 text-xs font-bold text-slate-700 shadow-panel transition-colors hover:border-brand-300 hover:text-brand-600 disabled:opacity-60">{exporting === 'html' ? <RefreshCw className="h-4 w-4 animate-spin" /> : <FileText className="h-4 w-4" />}<span className="hidden lg:inline">HTML</span></button>
       </div>
     </div>
 
-    {error && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800">{error}</div>}
+    {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800">
+      <span className="min-w-0 flex-1">{error}</span>
+      <button type="button" onClick={() => void runReport()} disabled={!catalog || busy || Boolean(invalidQueryHint)} className="min-h-9 shrink-0 rounded-lg border border-red-300 bg-white px-3 text-[11px] font-black text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50">Thử lại báo cáo</button>
+    </div>}
     {notice && <div role="status" className="rounded-xl border border-brand-200 bg-brand-50 p-3 text-xs font-semibold text-brand-600">{notice}</div>}
 
-    <div data-testid="cognos-authoring-workspace" className="overflow-hidden rounded-2xl border border-rule bg-white shadow-panel lg:grid lg:grid-cols-[17rem_minmax(0,1fr)]">
-      <aside data-testid="report-data-panel" className="border-b border-rule bg-slate-50 lg:border-b-0 lg:border-r">
+    {viewMode === 'design' && <div data-testid="cognos-authoring-workspace" className={`overflow-hidden rounded-2xl border border-rule bg-white shadow-panel lg:grid ${authoringColumns}`}>
+      {/* Thanh trái đóng lại thành một dải biểu tượng thay vì biến mất: chỗ mở lại phải nằm đúng nơi
+          nó vừa đóng, không phải đi tìm ở một nút khác trên đầu trang. */}
+      {!dataPanelOpen && <aside className="hidden border-r border-rule bg-slate-50 p-2 lg:block">
+        <button type="button" onClick={() => setDataPanelOpen(true)} aria-label="Mở danh mục dữ liệu" title="Mở danh mục dữ liệu" className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition-colors hover:bg-white hover:text-brand-600"><PanelLeftOpen className="h-4 w-4" /></button>
+      </aside>}
+      <aside data-testid="report-data-panel" className={`border-b border-rule bg-slate-50 lg:border-b-0 lg:border-r ${dataPanelOpen ? '' : 'lg:hidden'}`}>
         <details className="group" open>
-          <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between px-4 text-sm font-bold text-slate-800 lg:cursor-default"><span>Danh mục dữ liệu</span><span className="text-[10px] font-medium text-slate-400 lg:hidden">Mở/đóng</span></summary>
+          <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between px-4 text-sm font-bold text-slate-800 lg:cursor-default">
+            <span>Danh mục dữ liệu</span>
+            <span className="text-[10px] font-medium text-slate-400 lg:hidden">Mở/đóng</span>
+            <button type="button" onClick={event => { event.preventDefault(); setDataPanelOpen(false); }} aria-label="Thu gọn danh mục dữ liệu" title="Thu gọn danh mục dữ liệu" className="hidden h-7 w-7 place-items-center rounded-lg text-slate-400 transition-colors hover:bg-white hover:text-slate-700 lg:grid"><PanelLeftClose className="h-4 w-4" /></button>
+          </summary>
           <div className="border-t border-rule p-3">
-            <p className="mb-3 rounded-lg bg-white px-2.5 py-2 text-[10px] font-medium leading-relaxed text-slate-500">Kéo một mục sang vùng Hàng, Cột, Giá trị hoặc Bộ lọc ở bên phải. Bấm nhanh vào một chiều là xem theo chiều đó.</p>
-            <label className="relative block"><span className="sr-only">Tìm trường hoặc chỉ số</span><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" /><input value={dataSearch} onChange={event => setDataSearch(event.target.value)} className="min-h-10 w-full rounded-lg border border-rule bg-white pl-9 pr-3 text-xs outline-none focus:border-brand-500" placeholder="Tìm dữ liệu" /></label>
+            <label className="relative block"><span className="sr-only">Tìm mẫu báo cáo</span><Search className="pointer-events-none absolute left-3 top-3 h-4 w-4 text-slate-400" /><input value={dataSearch} onChange={event => setDataSearch(event.target.value)} className="min-h-10 w-full rounded-lg border border-rule bg-white pl-9 pr-3 text-xs outline-none focus:border-brand-500" placeholder="Tìm mẫu hoặc dữ liệu" /></label>
             <div className="mt-4 space-y-4">
+              {/* Danh sách mẫu dài tới chín mục và chiếm gần hết chiều cao thanh bên. Gấp lại được
+                  thì người dùng mở nó lúc cần chọn mẫu, rồi thu lại để nhìn thấy phần còn lại. */}
               <section>
-                <h3 className="mb-2 flex items-center gap-2 text-[11px] font-black text-slate-500"><Sparkles className="h-3.5 w-3.5" />Mẫu dựng sẵn</h3>
-                <div data-testid="report-preset-list" className="space-y-1">{availablePresets.map(preset => <button
+                <button
+                  type="button"
+                  onClick={() => setPresetsOpen(open => !open)}
+                  aria-expanded={presetsOpen}
+                  aria-controls="report-preset-list"
+                  className="mb-2 flex w-full items-center gap-2 text-[11px] font-black text-slate-500 transition-colors hover:text-slate-800"
+                >
+                  <Sparkles className="h-3.5 w-3.5" />
+                  <span className="flex-1 text-left">Mẫu dựng sẵn</span>
+                  <span data-numeric className="rounded bg-slate-200 px-1 text-[9px] font-black text-slate-600">{visiblePresets.length}</span>
+                  <ChevronDown className={`h-3.5 w-3.5 transition-transform ${presetsOpen ? 'rotate-180' : ''}`} aria-hidden />
+                </button>
+                {presetsOpen && <div id="report-preset-list" data-testid="report-preset-list" className="max-h-72 space-y-1 overflow-y-auto">{visiblePresets.map(preset => <button
                   key={preset.id}
                   type="button"
                   onClick={() => applyTemplate(preset.id)}
                   className={`w-full rounded-lg px-2.5 py-2 text-left ${selectedTemplateId === preset.id ? 'bg-brand-100 text-brand-600' : 'text-slate-700 hover:bg-white'}`}
-                ><span className="block text-xs font-bold">{preset.name}</span><span className="mt-0.5 block text-[10px] font-medium leading-relaxed text-slate-500">{preset.description}</span></button>)}</div>
-              </section>
-              <section>
-                <h3 className="mb-2 flex items-center gap-2 text-[11px] font-black text-slate-500"><Columns3 className="h-3.5 w-3.5" />Chiều phân tích</h3>
-                <div className="max-h-52 space-y-1 overflow-y-auto">{visibleGroupFields.map(field => <button
-                  key={field.key}
-                  type="button"
-                  draggable
-                  onDragStart={event => startDrag(event, { kind: 'field', key: field.key })}
-                  onClick={() => quickAddField(field.key)}
-                  className="w-full cursor-grab rounded-lg px-2.5 py-2 text-left text-slate-700 hover:bg-white active:cursor-grabbing"
-                ><span className="block text-xs font-bold">{field.label}</span><span className="block text-[9px] font-medium text-slate-400">{fieldCategoryLabel(field)}</span></button>)}</div>
-              </section>
-              <section>
-                <h3 className="mb-2 flex items-center gap-2 text-[11px] font-black text-slate-500"><Sigma className="h-3.5 w-3.5" />Chỉ số</h3>
-                <div className="max-h-52 space-y-1 overflow-y-auto">{visibleMetrics.map(metric => {
-                  const used = query.metrics.includes(metric.key);
-                  return <button
-                    key={metric.key}
-                    type="button"
-                    draggable={!used}
-                    onDragStart={event => startDrag(event, { kind: 'metric', key: metric.key })}
-                    onClick={() => addMetric(metric.key)}
-                    disabled={used}
-                    className={`w-full rounded-lg px-2.5 py-2 text-left ${used ? 'cursor-default text-slate-400' : 'cursor-grab text-slate-700 hover:bg-white active:cursor-grabbing'}`}
-                  ><span className="block text-xs font-bold">{metric.label}</span><span className="block text-[9px] font-medium text-slate-400">{used ? 'Đang dùng' : metricUnitLabel(metric)}</span></button>;
-                })}</div>
+                ><span className="block text-xs font-bold">{preset.name}</span><span className="mt-0.5 block text-[10px] font-medium leading-relaxed text-slate-500">{preset.description}</span></button>)}
+                {!visiblePresets.length && <p className="px-2.5 py-3 text-[11px] text-slate-500">Không có mẫu nào khớp từ khoá.</p>}</div>}
               </section>
             </div>
           </div>
@@ -380,7 +466,26 @@ export const ReportsWorkspace: React.FC = () => {
           </div>
         </div>
 
-        <div className="mt-4 grid gap-px overflow-hidden rounded-xl border border-rule bg-slate-200 sm:grid-cols-2 xl:grid-cols-4">
+        {/* Chọn chiều ngay tại đây, ngay trên bốn vùng: thao tác chọn và nơi nó rơi vào nằm cùng
+            một tầm mắt. Trước đây chọn ở thanh trái rồi phải nhìn sang chỗ khác mới biết đã xảy ra gì. */}
+        <div className="mt-4">
+          <ReportFieldChips
+            fields={visibleGroupFields}
+            metrics={visibleMetrics}
+            groupBy={query.groupBy}
+            pivotBy={query.pivotBy}
+            filterKeys={query.rules.map(rule => rule.key)}
+            activeMetricKeys={query.metrics}
+            clickZone={clickZone}
+            onClickZoneChange={setClickZone}
+            onAssignField={assignField}
+            onToggleMetric={key => (query.metrics.includes(key) ? removeMetric(key) : addMetric(key))}
+            onDragStartField={(event, key) => startDrag(event, { kind: 'field', key })}
+            onDragStartMetric={(event, key) => startDrag(event, { kind: 'metric', key })}
+          />
+        </div>
+
+        <div className="mt-4 grid gap-px overflow-hidden rounded-xl border border-rule bg-slate-200 sm:grid-cols-2 xl:grid-cols-4" aria-label="Vùng thiết kế báo cáo">
           <DropZone zone="rows" icon={<Rows3 className="h-3.5 w-3.5" />} title="Hàng" onDrop={dropInto}>
             <select aria-label="Xem theo" value={query.groupBy} onChange={event => setGroupBy(event.target.value as ReportFieldKey)} className={ZONE_SELECT_CLASS}>{groupFields.map(field => <option key={field.key} value={field.key}>{field.label}</option>)}</select>
           </DropZone>
@@ -411,20 +516,39 @@ export const ReportsWorkspace: React.FC = () => {
 
         <div className="mt-4 grid gap-3 border-t border-slate-100 pt-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto_auto] lg:items-end">
           <ExportColumnPicker fields={exportableFields} selected={selectedColumns} onChange={setSelectedColumns} />
-          <label className="space-y-1.5 text-xs font-bold text-slate-600"><span>Bảng điều khiển</span><select aria-label="Bảng điều khiển" value={selectedDashboardId} onChange={event => setSelectedDashboardId(event.target.value)} className={CONTROL_CLASS}><option value="">Chưa chọn</option>{dashboards.map(dashboard => <option key={dashboard.id} value={dashboard.id}>{dashboard.name}</option>)}</select></label>
+          <label className="space-y-1.5 text-xs font-bold text-slate-600"><span>Bảng điều khiển</span><select aria-label="Bảng điều khiển" value={selectedDashboardId} onChange={event => { setSelectedDashboardId(event.target.value); if (event.target.value) setDashboardMode('preview'); }} className={CONTROL_CLASS}><option value="">Chưa chọn</option>{dashboards.map(dashboard => <option key={dashboard.id} value={dashboard.id}>{dashboard.name}</option>)}</select></label>
           <button type="button" onClick={() => setShowDashboardForm(current => !current)} className="min-h-11 rounded-xl border border-rule px-3 text-xs font-bold text-slate-600 hover:bg-slate-50">Tạo bảng điều khiển</button>
           <button type="button" onClick={() => void runReport()} className="min-h-11 rounded-xl bg-brand-500 px-4 text-xs font-bold text-white hover:bg-brand-600">Xem báo cáo</button>
         </div>
 
-        {invalidQueryHint && <p role="status" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">{invalidQueryHint} — báo cáo sẽ tự chạy lại khi điều kiện hợp lệ.</p>}
+        {invalidQueryHint && <p role="status" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">{invalidQueryHint} — sửa xong rồi bấm “Chạy báo cáo”.</p>}
 
         {showSaveForm && <div className="mt-3 space-y-3 rounded-xl bg-slate-50 p-3"><div className="flex flex-col gap-2 sm:flex-row"><label className="sr-only" htmlFor="report-name">Tên mẫu báo cáo</label><input id="report-name" value={reportName} onChange={event => setReportName(event.target.value)} className={`${CONTROL_CLASS} flex-1`} placeholder="Tên mẫu, ví dụ: Tồn đọng Chi nhánh 635" /><button type="button" disabled={saving} onClick={() => void saveDefinition()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-2.5 text-xs font-bold text-white hover:bg-brand-600 disabled:opacity-50"><Save className="h-4 w-4" />{saving ? 'Đang lưu' : 'Lưu mẫu'}</button></div><RoleSharePicker selectedRoles={reportSharedRoles} onChange={setReportSharedRoles} /></div>}
         {showDashboardForm && <div className="mt-3 space-y-3 rounded-xl bg-slate-50 p-3"><div className="flex flex-col gap-2 sm:flex-row"><label className="sr-only" htmlFor="dashboard-name">Tên bảng điều khiển</label><input id="dashboard-name" value={dashboardName} onChange={event => setDashboardName(event.target.value)} className={`${CONTROL_CLASS} flex-1`} placeholder="Tên bảng điều khiển" /><button type="button" disabled={saving} onClick={() => void createDashboard()} className="min-h-11 rounded-xl bg-brand-500 px-4 text-xs font-bold text-white disabled:opacity-50">{saving ? 'Đang lưu' : 'Lưu bảng điều khiển'}</button></div><fieldset><legend className="text-xs font-bold text-slate-600">Báo cáo hiển thị</legend><div className="mt-2 grid gap-2 sm:grid-cols-2">{definitions.map(definition => <label key={definition.id} className="flex items-center gap-2 rounded-lg border border-rule bg-white p-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={dashboardReportIds.includes(definition.id)} onChange={() => setDashboardReportIds(current => current.includes(definition.id) ? current.filter(id => id !== definition.id) : [...current, definition.id])} />{definition.name}</label>)}</div></fieldset><RoleSharePicker selectedRoles={dashboardSharedRoles} onChange={setDashboardSharedRoles} /></div>}
       </div>
-    </div>
 
-    {selectedDashboard && <ReportDashboard dashboard={selectedDashboard} definitions={definitions} metricsByKey={metricsByKey} />}
-    {result && <>
+      {propertiesOpen
+        ? <ReportPropertiesPanel
+          presentation={presentation}
+          metrics={query.metrics}
+          metricsByKey={metricsByKey}
+          defaultRowLabel={groupLabel}
+          onChange={setPresentation}
+          onClose={() => setPropertiesOpen(false)}
+        />
+        : <aside className="hidden border-l border-rule bg-slate-50 p-2 lg:block">
+          <button type="button" onClick={() => setPropertiesOpen(true)} aria-label="Mở thuộc tính" title="Mở thuộc tính" className="grid h-8 w-8 place-items-center rounded-lg text-slate-500 transition-colors hover:bg-white hover:text-brand-600"><Sliders className="h-4 w-4" /></button>
+        </aside>}
+    </div>}
+
+    {selectedDashboard && <DashboardWorkspace
+      dashboard={selectedDashboard}
+      definitions={definitions}
+      metricsByKey={metricsByKey}
+      mode={dashboardMode}
+      onModeChange={setDashboardMode}
+    />}
+    {viewMode === 'result' && result && <>
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-black text-slate-800">Kết quả truy vấn</h3>
         <span className="rounded-full bg-brand-500 px-2.5 py-1 text-[11px] font-bold text-white">{result.matchedFindingCount.toLocaleString('vi-VN')} dòng</span>
@@ -435,12 +559,12 @@ export const ReportsWorkspace: React.FC = () => {
         Màn hình chỉ hiển thị {query.limit} nhóm đầu tiên. Bấm “Xuất Excel” để tải toàn bộ dữ liệu chi tiết.
       </p>}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{query.metrics.map(metricKey => <MetricCard key={metricKey} metric={metricsByKey.get(metricKey)} value={result.metricValues[metricKey] || 0} onDrill={() => setDrillTarget({ page: 1 })} />)}</div>
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rule bg-white p-2"><div className="flex gap-1" role="tablist" aria-label="Kiểu hiển thị báo cáo"><button type="button" role="tab" aria-selected={presentation === 'table'} onClick={() => setPresentation('table')} className={`min-h-9 rounded-lg px-3 text-xs font-bold ${presentation === 'table' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Bảng</button><button type="button" role="tab" aria-selected={presentation === 'pivot'} disabled={!result.pivot} onClick={() => setPresentation('pivot')} className={`min-h-9 rounded-lg px-3 text-xs font-bold disabled:opacity-40 ${presentation === 'pivot' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Bảng chéo</button><button type="button" role="tab" aria-selected={presentation === 'chart'} onClick={() => setPresentation('chart')} className={`min-h-9 rounded-lg px-3 text-xs font-bold ${presentation === 'chart' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Biểu đồ</button></div>{presentation === 'chart' && <label className="flex items-center gap-2 px-2 text-xs font-bold text-slate-600"><span>Loại biểu đồ</span><select aria-label="Loại biểu đồ" value={chartType} onChange={event => setChartType(event.target.value as ChartType)} className="min-h-9 rounded-lg border border-rule bg-white px-2 text-xs"><option value="bar">Cột</option><option value="line">Đường</option><option value="pie">Tròn</option></select></label>}</div>
-      {presentation === 'pivot' && result.pivot
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rule bg-white p-2"><div className="flex gap-1" role="tablist" aria-label="Kiểu hiển thị báo cáo"><button type="button" role="tab" aria-selected={viewPresentation === 'table'} onClick={() => setViewPresentation('table')} className={`min-h-9 rounded-lg px-3 text-xs font-bold ${viewPresentation === 'table' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Bảng</button><button type="button" role="tab" aria-selected={viewPresentation === 'pivot'} disabled={!result.pivot} onClick={() => setViewPresentation('pivot')} className={`min-h-9 rounded-lg px-3 text-xs font-bold disabled:opacity-40 ${viewPresentation === 'pivot' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Bảng chéo</button><button type="button" role="tab" aria-selected={viewPresentation === 'chart'} onClick={() => setViewPresentation('chart')} className={`min-h-9 rounded-lg px-3 text-xs font-bold ${viewPresentation === 'chart' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Biểu đồ</button></div>{viewPresentation === 'chart' && <label className="flex items-center gap-2 px-2 text-xs font-bold text-slate-600"><span>Loại biểu đồ</span><select aria-label="Loại biểu đồ" value={chartType} onChange={event => setChartType(event.target.value as ChartType)} className="min-h-9 rounded-lg border border-rule bg-white px-2 text-xs"><option value="bar">Cột</option><option value="line">Đường</option><option value="pie">Tròn</option></select></label>}</div>
+      {viewPresentation === 'pivot' && result.pivot
         ? <Suspense fallback={<ReportPresentationLoading />}><ReportCrosstab pivot={result.pivot} metric={metricsByKey.get(result.pivot.metric)} onDrill={(rowKey, columnKey) => setDrillTarget({ rowKey, columnKey, page: 1 })} /></Suspense>
-        : presentation === 'chart'
+        : viewPresentation === 'chart'
           ? <Suspense fallback={<ReportPresentationLoading />}><ReportChart result={result} metricKey={query.metrics[0]} metric={metricsByKey.get(query.metrics[0])} type={chartType} /></Suspense>
-          : <ReportBreakdown result={result} metrics={query.metrics} metricsByKey={metricsByKey} groupLabel={groupLabel} sort={query.sort} onSort={toggleSort} onDrill={rowKey => setDrillTarget({ rowKey, page: 1 })} />}
+          : <ReportBreakdown result={result} metrics={query.metrics} metricsByKey={metricsByKey} groupLabel={groupLabel} presentation={presentation} sort={query.sort} onSort={toggleSort} onDrill={rowKey => setDrillTarget({ rowKey, page: 1 })} />}
     </>}
 
     {drillTarget && <DrillPanel
@@ -478,10 +602,10 @@ const DropZone: React.FC<{
     onDragOver={event => { event.preventDefault(); event.dataTransfer.dropEffect = 'copy'; setOver(true); }}
     onDragLeave={() => setOver(false)}
     onDrop={event => { event.preventDefault(); setOver(false); const payload = readDrag(event); if (payload) onDrop(zone, payload); }}
-    className={`p-3 transition ${over ? 'bg-brand-50 ring-2 ring-inset ring-brand-500' : 'bg-white'}`}
+    className={`flex min-h-[116px] min-w-0 flex-col p-3 transition ${over ? 'bg-brand-50 ring-2 ring-inset ring-brand-500' : 'bg-white'}`}
   >
     <span className="mb-2 flex items-center gap-2 text-[10px] font-black text-slate-500">{icon}{title}</span>
-    {children}
+    <div className="min-w-0 flex-1">{children}</div>
   </div>;
 };
 
@@ -554,23 +678,71 @@ const DrillPanel: React.FC<{ groupLabel: string; loading: boolean; result: Repor
   </div>;
 };
 
+const DashboardWorkspace: React.FC<{
+  dashboard: DashboardDefinition;
+  definitions: ReportDefinition[];
+  metricsByKey: Map<ReportMetricKey, ReportMetricDefinition>;
+  mode: 'design' | 'preview';
+  onModeChange: (mode: 'design' | 'preview') => void;
+}> = ({ dashboard, definitions, metricsByKey, mode, onModeChange }) => {
+  const widgets = useMemo(() => dashboard.reportDefinitionIds
+    .map(id => definitions.find(definition => definition.id === id))
+    .filter((definition): definition is ReportDefinition => Boolean(definition)), [dashboard, definitions]);
+
+  return <section data-testid="report-dashboard-workspace" className="space-y-3 rounded-2xl border border-rule bg-white p-4 shadow-panel sm:p-5">
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div>
+        <p className="text-[10px] font-black uppercase tracking-wide text-slate-400">Bảng điều khiển</p>
+        <h3 className="mt-1 text-base font-black text-slate-900">{dashboard.name}</h3>
+      </div>
+      <div role="tablist" aria-label="Chế độ bảng điều khiển" className="flex gap-1 rounded-xl bg-slate-100 p-1">
+        <button type="button" role="tab" aria-selected={mode === 'design'} onClick={() => onModeChange('design')} className={`min-h-9 rounded-lg px-3 text-[11px] font-black transition-colors ${mode === 'design' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Thiết kế bảng điều khiển</button>
+        <button type="button" role="tab" aria-selected={mode === 'preview'} onClick={() => onModeChange('preview')} className={`min-h-9 rounded-lg px-3 text-[11px] font-black transition-colors ${mode === 'preview' ? 'bg-brand-500 text-white' : 'text-slate-500 hover:text-slate-800'}`}>Xem trước bảng điều khiển</button>
+      </div>
+    </div>
+    {mode === 'design'
+      ? <DashboardDesignView widgets={widgets} />
+      : <div data-testid="dashboard-preview-view"><ReportDashboard dashboard={dashboard} definitions={definitions} metricsByKey={metricsByKey} /></div>}
+  </section>;
+};
+
+const DashboardDesignView: React.FC<{ widgets: ReportDefinition[] }> = ({ widgets }) => <div data-testid="dashboard-design-view" className="rounded-xl border border-dashed border-brand-300 bg-brand-50/50 p-3">
+  <div className="flex flex-wrap items-center justify-between gap-2">
+    <div>
+      <h4 className="text-sm font-black text-slate-900">Thiết kế bảng điều khiển</h4>
+      <p className="mt-1 text-[11px] font-medium text-slate-600">Bố cục dưới đây là các báo cáo đã chọn. Chuyển sang “Xem trước bảng điều khiển” để đọc số liệu thực tế.</p>
+    </div>
+    <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-black text-brand-700">{widgets.length} khối báo cáo</span>
+  </div>
+  {widgets.length > 0
+    ? <div className="mt-3 grid gap-3 md:grid-cols-2">{widgets.map((definition, index) => <article key={definition.id} className="rounded-xl border border-rule bg-white p-3">
+      <div className="flex items-center justify-between gap-2"><span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-black text-slate-500">Vị trí {index + 1}</span><span className="text-[10px] font-bold text-slate-400">Báo cáo</span></div>
+      <h5 className="mt-3 text-sm font-black text-slate-900">{definition.name}</h5>
+      <p className="mt-1 text-[11px] font-medium text-slate-500">{definition.query ? `${definition.query.metrics.length} chỉ số · nhóm theo ${definition.query.groupBy}` : 'Chưa có truy vấn mới'}</p>
+    </article>)}</div>
+    : <p className="mt-3 rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Chưa có báo cáo hợp lệ trong bảng điều khiển này.</p>}
+</div>;
+
 const ReportDashboard: React.FC<{ dashboard: DashboardDefinition; definitions: ReportDefinition[]; metricsByKey: Map<ReportMetricKey, ReportMetricDefinition> }> = ({ dashboard, definitions, metricsByKey }) => {
   const widgets = useMemo(() => dashboard.reportDefinitionIds.map(id => definitions.find(definition => definition.id === id)).filter((definition): definition is ReportDefinition => Boolean(definition?.query)), [dashboard, definitions]);
   const [results, setResults] = useState<Record<string, ReportRunResult>>({});
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
     setLoading(true);
+    setLoadError(null);
     void Promise.all(widgets.map(async definition => [definition.id, await api.runReport(definition.query!)] as const))
       .then(entries => { if (active) setResults(Object.fromEntries(entries)); })
-      .catch(() => { if (active) setResults({}); })
+      .catch(reason => { if (active) { setResults({}); setLoadError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu bảng điều khiển.'); } })
       .finally(() => { if (active) setLoading(false); });
     return () => { active = false; };
   }, [widgets]);
 
   return <section data-testid="report-dashboard" className="rounded-2xl border border-rule bg-slate-50 p-4 shadow-panel sm:p-5">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-black text-slate-900">{dashboard.name}</h3><span className="text-[11px] font-semibold text-slate-500">{widgets.length} báo cáo</span></div>
+    {loadError && <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">{loadError}</p>}
     {loading ? <p className="text-sm text-slate-500">Đang cập nhật bảng điều khiển…</p> : <div className="grid gap-3 lg:grid-cols-2">{widgets.map(definition => {
       const outcome = results[definition.id];
       const metricKey = definition.query?.metrics[0];
@@ -623,20 +795,26 @@ const ReportBreakdown: React.FC<{
   metrics: ReportMetricKey[];
   metricsByKey: Map<ReportMetricKey, ReportMetricDefinition>;
   groupLabel: string;
+  presentation: ReportPresentationOptions;
   sort?: ReportRunRequest['sort'];
   onSort: (key: ReportMetricKey) => void;
   onDrill: (rowKey: string) => void;
-}> = ({ result, metrics, metricsByKey, groupLabel, sort, onSort, onDrill }) => <div className="min-w-0 overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
+}> = ({ result, metrics, metricsByKey, groupLabel, presentation, sort, onSort, onDrill }) => <div className="min-w-0 overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-3"><h3 className="text-sm font-bold text-slate-900">Kết quả theo {groupLabel}</h3><span className="text-[10px] font-bold text-slate-500">{result.matchedFindingCount} mã lỗi phù hợp</span></div>
-  <div className="divide-y divide-slate-100 md:hidden">{result.groups.map(row => <button key={row.key} type="button" onClick={() => onDrill(row.key)} className="w-full p-4 text-left"><div className="mb-3 text-xs font-bold text-slate-900">{row.label}</div><div className="grid grid-cols-2 gap-2">{metrics.map(key => <div key={key} className="rounded-lg bg-slate-50 p-2"><div className="text-[9px] font-bold text-slate-500">{metricsByKey.get(key)?.label}</div><div className="mt-1 text-xs font-black text-brand-600">{formatMetric(row.metricValues[key] || 0, metricsByKey.get(key))}</div></div>)}</div></button>)}</div>
+  <div className="divide-y divide-slate-100 md:hidden">{result.groups.map(row => <button key={row.key} type="button" onClick={() => onDrill(row.key)} className="w-full p-4 text-left"><div className="mb-3 text-xs font-bold text-slate-900">{row.label}</div><div className="grid grid-cols-2 gap-2">{metrics.map(key => <div key={key} className="rounded-lg bg-slate-50 p-2"><div className="text-[9px] font-bold text-slate-500">{columnLabel(key, presentation, metricsByKey)}</div><div className={`mt-1 inline-block rounded px-1 text-xs font-black ${reportHighlightTone(row.metricValues[key] || 0, presentation.metrics?.[key]) ? HIGHLIGHT_CELL_CLASS[reportHighlightTone(row.metricValues[key] || 0, presentation.metrics?.[key])!] : 'text-brand-600'}`}>{metricText(row.metricValues[key] || 0, key, presentation, metricsByKey)}</div></div>)}</div></button>)}</div>
   <div className="hidden overflow-x-auto md:block"><table className="w-full min-w-[680px] text-left text-xs">
     <thead className="bg-slate-50 text-[10px] font-bold text-slate-500"><tr>
-      <th className="px-4 py-3">{groupLabel}</th>
-      {metrics.map(key => <th key={key} className="px-4 py-3 text-right"><button type="button" onClick={() => onSort(key)} className="inline-flex items-center gap-1 font-bold hover:text-brand-600" aria-label={`Sắp xếp theo ${metricsByKey.get(key)?.label || 'chỉ số'}`}>{metricsByKey.get(key)?.label}<span aria-hidden className="text-[9px] text-brand-600">{sort?.key === key ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>)}
+      <th className="px-4 py-3">{presentation.rowLabel || groupLabel}</th>
+      {metrics.map(key => <th key={key} className="px-4 py-3 text-right"><button type="button" onClick={() => onSort(key)} className="inline-flex items-center gap-1 font-bold hover:text-brand-600" aria-label={`Sắp xếp theo ${columnLabel(key, presentation, metricsByKey)}`}>{columnLabel(key, presentation, metricsByKey)}<span aria-hidden className="text-[9px] text-brand-600">{sort?.key === key ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>)}
     </tr></thead>
     <tbody className="divide-y divide-slate-100">{result.groups.map(row => <tr key={row.key} className="hover:bg-slate-50">
       <td className="px-4 py-3 font-semibold text-slate-800">{row.label}</td>
-      {metrics.map(key => <td key={key} className="px-4 py-3 text-right"><button type="button" onClick={() => onDrill(row.key)} className="font-bold text-brand-600 underline-offset-2 hover:underline">{formatMetric(row.metricValues[key] || 0, metricsByKey.get(key))}</button></td>)}
+      {metrics.map(key => {
+        const value = row.metricValues[key] || 0;
+        const format = presentation.metrics?.[key];
+        const tone = reportHighlightTone(value, format);
+        return <td key={key} className={`px-4 py-3 text-right ${tone ? HIGHLIGHT_CELL_CLASS[tone] : ''}`}><button type="button" onClick={() => onDrill(row.key)} className={`font-bold underline-offset-2 hover:underline ${tone ? '' : 'text-brand-600'}`}>{metricText(value, key, presentation, metricsByKey)}</button></td>;
+      })}
     </tr>)}</tbody>
   </table></div>
   {result.groups.length === 0 && <p className="p-5 text-xs text-slate-500">Không có dữ liệu phù hợp với bộ lọc.</p>}
@@ -644,6 +822,27 @@ const ReportBreakdown: React.FC<{
 
 const fieldCategoryLabel = (field: ReportFieldDefinition): string => field.category === 'DATE' ? 'Ngày tháng' : field.category === 'FLAG' ? 'Đánh dấu' : field.category === 'MEASURE' ? 'Số liệu' : 'Phân loại';
 const metricUnitLabel = (metric: ReportMetricDefinition): string => metric.unit === 'MILLION_VND' ? 'Triệu đồng' : metric.unit === 'PERCENT' ? 'Phần trăm' : 'Số lượng';
+/** Lớp nền cho ô vượt ngưỡng; giữ ở một chỗ để bảng và thẻ không lệch màu nhau. */
+const HIGHLIGHT_CELL_CLASS: Record<'risk' | 'warn' | 'ok', string> = {
+  risk: 'bg-risk-surface text-risk',
+  warn: 'bg-amber-50 text-amber-800',
+  ok: 'bg-ok-surface text-ok',
+};
+
+/** Tên cột: tên người dùng đặt ở panel Thuộc tính thắng tên mặc định trong danh mục. */
+const columnLabel = (key: ReportMetricKey, presentation: ReportPresentationOptions, metricsByKey: Map<ReportMetricKey, ReportMetricDefinition>): string =>
+  presentation.metrics?.[key]?.label || metricsByKey.get(key)?.label || key;
+
+/**
+ * Con số hiện ra. Khi người dùng đặt số lẻ hoặc hậu tố thì dùng đúng hàm mà máy chủ dùng lúc xuất
+ * tệp, nên màn hình và tệp không thể hiện ra hai chuỗi khác nhau cho cùng một ô.
+ */
+const metricText = (value: number, key: ReportMetricKey, presentation: ReportPresentationOptions, metricsByKey: Map<ReportMetricKey, ReportMetricDefinition>): string => {
+  const format = presentation.metrics?.[key];
+  if (format?.decimals !== undefined || format?.suffix) return formatReportMetricValue(value, format);
+  return formatMetric(value, metricsByKey.get(key));
+};
+
 const formatMetric = (value: number, metric?: ReportMetricDefinition): string => metric?.unit === 'PERCENT' ? `${value.toLocaleString('vi-VN')}%` : metric?.unit === 'MILLION_VND' ? `${value.toLocaleString('vi-VN')} triệu` : value.toLocaleString('vi-VN');
 const describeRule = (rule: ReportFilterRule, field?: ReportFieldDefinition, operatorLabel?: string): string => {
   const value = rule.operator === 'op.between' ? `${String(rule.from ?? '...')} đến ${String(rule.to ?? '...')}` : rule.operator === 'op.in' ? (rule.values || []).join(', ') : rule.operator === 'op.is_true' || rule.operator === 'op.is_false' ? '' : String(rule.value ?? '');

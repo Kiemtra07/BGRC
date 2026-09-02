@@ -6,6 +6,7 @@ import {
   PostgresPoolLike,
   PostgresStateRepository,
 } from '../server/src/repositories/postgres-state';
+import type { WorkflowEvent } from '../shared/contracts';
 
 interface LocalStateEnvelope<T> {
   schemaVersion: number;
@@ -70,7 +71,22 @@ export async function backfillLocalState<T>(options: BackfillOptions<T>): Promis
       'BACKFILL_TARGET_NOT_EMPTY — Postgres đã có app state; dùng --force chỉ sau khi đã backup và xác nhận ghi đè.',
     );
   }
-  await options.target.save(structuredClone(options.data));
+  const data = structuredClone(options.data);
+  if (
+    options.target instanceof PostgresStateRepository
+    && data
+    && typeof data === 'object'
+    && !Array.isArray(data)
+  ) {
+    const snapshot = data as Record<string, unknown>;
+    const workflowEvents = Array.isArray(snapshot.workflowEvents)
+      ? snapshot.workflowEvents as WorkflowEvent[]
+      : [];
+    delete snapshot.workflowEvents;
+    await options.target.saveWithWorkflowEvents(snapshot as T, workflowEvents);
+  } else {
+    await options.target.save(data);
+  }
   return { written: true };
 }
 
@@ -94,8 +110,13 @@ async function runCli(): Promise<void> {
   const repository = new PostgresStateRepository<Record<string, unknown>>({
     pool: pool as unknown as PostgresPoolLike,
   });
+  const workflowEvents = Array.isArray(parsed.data.workflowEvents)
+    ? parsed.data.workflowEvents as WorkflowEvent[]
+    : [];
   await backfillLocalState({ data: parsed.data, target: repository, force });
-  console.log('Backfill hoàn tất: app_state_snapshots/primary đã được ghi bền vững.');
+  console.log(
+    `Backfill hoàn tất: app_state_snapshots/primary đã được ghi bền vững; ${workflowEvents.length} workflow event đã vào ledger.`,
+  );
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

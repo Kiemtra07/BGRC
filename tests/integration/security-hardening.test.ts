@@ -106,7 +106,7 @@ describe('security hardening', () => {
         headers: { 'x-user-id': 'user-admin' },
       });
 
-      const eventTypes = auditTrail.json().map((entry: { eventType: string }) => entry.eventType);
+      const eventTypes = auditTrail.json().items.map((entry: { eventType: string }) => entry.eventType);
       expect(eventTypes).toContain('DATA_REPORT_EXPORTED');
       expect(eventTypes).toContain('DATA_EVIDENCE_DOWNLOADED');
     });
@@ -125,7 +125,7 @@ describe('security hardening', () => {
         headers: { 'x-user-id': 'user-admin' },
       });
 
-      const failure = auditTrail.json()
+      const failure = auditTrail.json().items
         .find((entry: { eventType: string; targetEntity: string }) => (
           entry.eventType === 'AUTH_LOGIN_FAILED' && entry.targetEntity === username
         ));

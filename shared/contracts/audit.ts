@@ -1,3 +1,5 @@
+import type { PaginatedResult } from './common';
+
 export interface AuditLogEntry {
   id: string;
   timestamp: string;
@@ -11,3 +13,5 @@ export interface AuditLogEntry {
   errorCode: string;
   branchCode: string;
 }
+
+export type AuditLogPage = PaginatedResult<AuditLogEntry>;

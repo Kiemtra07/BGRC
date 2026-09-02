@@ -84,7 +84,12 @@ export const ReportTypeEditor: React.FC<Props> = ({ channel, onClose, onSave }) 
 
   useEffect(() => {
     if (!channel) return;
-    api.getChannelIntegrationReadiness(channel.id).then(setReadiness).catch(() => setReadiness(undefined));
+    let active = true;
+    setReadiness(undefined);
+    void api.getChannelIntegrationReadiness(channel.id)
+      .then(result => { if (active) setReadiness(result); })
+      .catch(() => { if (active) setReadiness(undefined); });
+    return () => { active = false; };
   }, [channel]);
 
   const tabs = useMemo(() => [

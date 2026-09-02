@@ -1,7 +1,7 @@
 import React, { lazy, Suspense, useEffect, useMemo, useState } from 'react';
 import {
-  BarChart3, ChevronRight, CircleCheck, ClipboardList, FileUp, LayoutDashboard, LucideIcon,
-  Funnel, Plus, Search, Settings, LogOut, Menu, TriangleAlert, UserCheck, Users, X, Key as KeyIcon,
+  BarChart3, ChevronRight, FileUp, LayoutDashboard,
+  Plus, Search, Settings, LogOut, Menu, TriangleAlert, Key as KeyIcon,
 } from 'lucide-react';
 import { AuditCampaign, DashboardSummary, Finding, LoginDTO, MyWorkQueue, OrgUnit, ReportChannel, UserProfile, WebFormFindingDTO, WorkspaceTarget, coplusRoleLabel } from '../shared/contracts';
 import { ApiError, api } from './services/api';
@@ -13,7 +13,8 @@ import { UserProfile as LegacyUserProfile } from './types';
 import { slaStatusLabels, userRoleLabels, workflowStatusLabels } from './content/ui-copy';
 import { LoginPage } from './components/auth/LoginPage';
 import { CodeChip, EmptyHint, SlaPill, WorkflowPill } from './components/common/StatusPill';
-import { QueueFilterPanel, QueueFilters, countActiveFilters, emptyQueueFilters, matchesQueueFilters } from './components/portal/QueueFilterPanel';
+import { QueueSearchCriteria, QueueSearchPanel, criteriaToQuery, emptySearchCriteria } from './components/portal/QueueSearchPanel';
+import { ScopeSummaryTabs, SummaryScope } from './components/portal/ScopeSummaryTabs';
 
 const AdminPortal = lazy(() => import('./components/admin/AdminPortal').then(module => ({ default: module.AdminPortal })));
 const FastDataIngestion = lazy(() => import('./components/internal/FastDataIngestion').then(module => ({ default: module.FastDataIngestion })));
@@ -37,25 +38,36 @@ export const App: React.FC = () => {
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [channels, setChannels] = useState<ReportChannel[]>([]);
   const [campaigns, setCampaigns] = useState<AuditCampaign[]>([]);
-  const [campaignId, setCampaignId] = useState('');
-  const [channelId, setChannelId] = useState('chan-audit-bgs');
+  // `criteria` là điều kiện đã thực sự gửi xuống máy chủ; `draftCriteria` là thứ panel đang sửa.
+  // Tách hai cái ra chính là điều làm cho nút "Tìm kiếm" có ý nghĩa — nếu không, mỗi lần chạm vào
+  // một ô select là lại kéo dữ liệu một lần.
+  const [criteria, setCriteria] = useState<QueueSearchCriteria>(() => emptySearchCriteria());
+  const [draftCriteria, setDraftCriteria] = useState<QueueSearchCriteria>(() => emptySearchCriteria());
+  const [hasSearched, setHasSearched] = useState(false);
+  const [summaryScope, setSummaryScope] = useState<SummaryScope>('SCOPE');
   const [orgUnits, setOrgUnits] = useState<OrgUnit[]>([]);
   const [findings, setFindings] = useState<Finding[]>([]);
   const [findingsTotal, setFindingsTotal] = useState(0);
   const [findingsPage, setFindingsPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
+  /** Thẻ số toàn phạm vi của người dùng — không phụ thuộc điều kiện tìm kiếm. */
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
+  /** Thẻ số của riêng lần tìm kiếm hiện tại; `null` cho tới khi có lần tìm đầu tiên. */
+  const [campaignDashboard, setCampaignDashboard] = useState<DashboardSummary | null>(null);
   const [selectedCase, setSelectedCase] = useState<Finding[] | null>(null);
   const [selectedFindingId, setSelectedFindingId] = useState<string | undefined>();
   const [workQueue, setWorkQueue] = useState<MyWorkQueue>({ actionable: [], following: [], accepted: [], watchTargets: [] });
-  const [search, setSearch] = useState('');
-  // `queueFilters` is what the list obeys; `draftFilters` is what the panel edits. Splitting them
-  // is what makes "Tìm kiếm" mean something — otherwise every select would re-filter mid-thought.
-  const [queueFilters, setQueueFilters] = useState<QueueFilters>(emptyQueueFilters);
-  const [draftFilters, setDraftFilters] = useState<QueueFilters>(emptyQueueFilters);
-  const [filterPanelOpen, setFilterPanelOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [loading, setLoading] = useState(true);
+  /**
+   * Ba trạng thái tải, không phải một.
+   *
+   * Trước đây chỉ có một cờ `loading` dùng chung cho khởi động, cho đổi bộ lọc, cho vào trang quản
+   * trị và cho cả đăng xuất — nên băng "Đang tải dữ liệu..." bật lên ở mọi thao tác, kể cả khi dữ
+   * liệu cũ vẫn còn nguyên trên màn hình và hoàn toàn dùng được. Tách ra thì chỉ lần khởi động mới
+   * chặn màn hình; những lần sau chỉ làm mờ nhẹ đúng phần đang chờ.
+   */
+  const [bootstrapping, setBootstrapping] = useState(true);
+  const [queueLoading, setQueueLoading] = useState(false);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   const [authChecked, setAuthChecked] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
@@ -67,21 +79,107 @@ export const App: React.FC = () => {
   const [newPassword, setNewPassword] = useState('');
   const [passwordMessage, setPasswordMessage] = useState<string | null>(null);
 
+  /** Số thứ tự lần tìm gần nhất; kết quả đến muộn của lần cũ hơn sẽ bị bỏ qua. */
+  const searchToken = React.useRef(0);
+  /**
+   * Kho giá trị đã từng thấy cho các trường phụ thuộc dữ liệu (mã lỗi, nhóm lỗi, phòng, cụm, cán bộ).
+   *
+   * Nếu lấy lựa chọn thẳng từ hồ sơ đang tải thì bộ lọc sẽ tự bóp nghẹt chính nó: lọc theo mã lỗi
+   * TD01.01 xong, danh sách chỉ còn hồ sơ TD01.01, nên dropdown mã lỗi cũng chỉ còn đúng TD01.01 —
+   * người dùng không thể đổi sang mã khác nếu không xoá điều kiện trước. Gom dồn các giá trị đã thấy
+   * thì lựa chọn chỉ nở ra chứ không bao giờ co lại.
+   */
+  const [facetValues, setFacetValues] = useState<Record<string, string[]>>({});
+
   const isAdmin = currentUser?.roles.includes('ADMIN') || false;
   const canConfigureCatalog = currentUser?.roles.some(role => ['ADMIN', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'SUPERVISOR'].includes(role)) || false;
   const canImport = currentUser?.roles.some(role => ['ADMIN', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'SUPERVISOR'].includes(role)) || false;
 
+  const FACET_FIELDS = ['clusterName', 'department', 'errorCode', 'errorGroup', 'officerName'] as const;
+
+  /** Gộp giá trị của lô hồ sơ vừa nhận vào kho lựa chọn, giữ nguyên những gì đã biết trước đó. */
+  const rememberFacetValues = (items: Finding[]) => {
+    setFacetValues(previous => {
+      const merged: Record<string, string[]> = { ...previous };
+      let changed = false;
+      for (const field of FACET_FIELDS) {
+        const seen = new Set(previous[field] ?? []);
+        const before = seen.size;
+        for (const item of items) {
+          const value = item[field];
+          if (value) seen.add(value);
+        }
+        if (seen.size !== before) {
+          merged[field] = [...seen].sort((a, b) => a.localeCompare(b, 'vi'));
+          changed = true;
+        }
+      }
+      return changed ? merged : previous;
+    });
+  };
+
+  /**
+   * Chạy đúng một lần tìm kiếm: danh sách hồ sơ và thẻ số của chuyên đề đi cùng một bộ điều kiện,
+   * nên hai con số không bao giờ lệch nhau.
+   *
+   * Điều kiện được lọc ngay dưới máy chủ, nên chỉ những hồ sơ khớp mới đi qua đường truyền — khác
+   * hẳn cách cũ là kéo cả phạm vi dữ liệu về rồi mới lọc trên trình duyệt.
+   */
+  const runSearch = async (next: QueueSearchCriteria, options: { focusCampaignTab?: boolean } = {}) => {
+    // Đánh số từng lần tìm. Tìm kiếm chạy được từ nhiều chỗ — nút Tìm kiếm, chọn kênh ở thanh bên,
+    // mở một mục công việc, làm mới sau khi ghi — nên hai lần tìm hoàn toàn có thể chồng nhau. Không
+    // có số thứ tự thì lần trả về sau cùng thắng, kể cả khi nó là lần tìm cũ hơn: màn hình hiện kết
+    // quả của điều kiện này trong khi khung điều kiện lại ghi điều kiện khác.
+    const token = ++searchToken.current;
+    const query = criteriaToQuery(next);
+    setQueueLoading(true);
+    setSummaryLoading(true);
+    // A page-2 request may still be in flight while the user starts a new search. Its result must
+    // never append to the new result set, and its spinner must not outlive the search that replaced it.
+    setLoadingMore(false);
+    setLoadError(null);
+    try {
+      const [findingsResult, campaignSummary] = await Promise.all([
+        api.getFindings({ ...query, page: '1', limit: String(FINDINGS_PAGE_SIZE) }),
+        api.getDashboardSummary(query),
+      ]);
+      if (token !== searchToken.current) return;
+      setFindings(findingsResult.items);
+      setFindingsTotal(findingsResult.total);
+      setFindingsPage(1);
+      setCampaignDashboard(campaignSummary);
+      setCriteria(next);
+      setHasSearched(true);
+      rememberFacetValues(findingsResult.items);
+      // Chỉ lần tìm do người dùng chủ động mới kéo tab sang chuyên đề. Làm mới sau một thao tác ghi
+      // thì giữ nguyên tab đang đọc — nhảy tab dưới chân người dùng là một cách đánh mất ngữ cảnh.
+      if (options.focusCampaignTab) setSummaryScope('CAMPAIGN');
+    } catch (reason) {
+      if (token !== searchToken.current) return;
+      setLoadError(reason instanceof Error ? reason.message : 'Không thể tải danh sách hồ sơ.');
+    } finally {
+      if (token === searchToken.current) {
+        setQueueLoading(false);
+        setSummaryLoading(false);
+      }
+    }
+  };
+
+  /**
+   * Sau một thao tác ghi (tạo hồ sơ, nhập liệu, duyệt), làm mới đúng những gì đang hiển thị. Danh
+   * sách chỉ được tải lại nếu người dùng đã thực sự tìm kiếm — nếu chưa, không có gì trên màn hình
+   * để mà làm mới, và một request findings ở đây chỉ là lãng phí.
+   */
   const refreshScopedData = async () => {
-    const [findingsResult, dashboardResult, workResult] = await Promise.all([
-      api.getFindings({ channelId, ...(campaignId ? { campaignId } : {}), page: '1', limit: String(FINDINGS_PAGE_SIZE) }),
+    const [dashboardResult, workResult] = await Promise.all([
       api.getDashboardSummary(),
       api.getMyWork(),
     ]);
-    setFindings(findingsResult.items);
-    setFindingsTotal(findingsResult.total);
-    setFindingsPage(1);
     setDashboard(dashboardResult);
     setWorkQueue(workResult);
+    // Không truyền `focusCampaignTab`: người dùng vừa ghi dữ liệu, không phải vừa bấm tìm kiếm, nên
+    // tab họ đang đọc phải giữ nguyên.
+    if (hasSearched) await runSearch(criteria);
   };
 
   /**
@@ -91,44 +189,63 @@ export const App: React.FC = () => {
    * lỗi across two pages.
    */
   const loadMoreFindings = async () => {
+    const token = searchToken.current;
     try {
       setLoadingMore(true);
       const next = findingsPage + 1;
-      const result = await api.getFindings({ channelId, ...(campaignId ? { campaignId } : {}), page: String(next), limit: String(FINDINGS_PAGE_SIZE) });
+      const result = await api.getFindings({ ...criteriaToQuery(criteria), page: String(next), limit: String(FINDINGS_PAGE_SIZE) });
+      if (token !== searchToken.current) return;
       setFindings(previous => {
         const seen = new Set(previous.map(item => item.id));
         return [...previous, ...result.items.filter(item => !seen.has(item.id))];
       });
       setFindingsTotal(result.total);
       setFindingsPage(next);
+      rememberFacetValues(result.items);
     } catch (reason) {
+      if (token !== searchToken.current) return;
       setLoadError(reason instanceof Error ? reason.message : 'Không thể tải thêm hồ sơ.');
     } finally {
-      setLoadingMore(false);
+      if (token === searchToken.current) setLoadingMore(false);
     }
   };
 
+  /**
+   * Khởi động chỉ tải những thứ cần để dựng khung màn hình: danh tính, kênh, chuyên đề, danh sách
+   * chi nhánh, thẻ số toàn phạm vi và hàng chờ công việc.
+   *
+   * Danh sách hồ sơ cố tình **không** nằm ở đây. Nó chờ người dùng chọn chuyên đề và bấm Tìm kiếm —
+   * mở màn hình lên không còn kéo về cả phạm vi dữ liệu chỉ để rồi bị lọc bớt ngay sau đó.
+   */
   const load = async () => {
     try {
-      setLoading(true);
+      setBootstrapping(true);
       setLoadError(null);
       const me = await api.getMe();
-      setCurrentUser(me.user);
       // Every role that can create a hồ sơ needs the branch list; only admins get the full org tree.
-      const [activeChannels, accessibleCampaigns, branches] = await Promise.all([
+      const [activeChannels, accessibleCampaigns, branches, summary, work] = await Promise.all([
         api.getActiveChannels(), api.getCampaigns(), api.getScopedBranches(),
+        api.getDashboardSummary(), api.getMyWork(),
       ]);
       setChannels(activeChannels);
       setCampaigns(accessibleCampaigns);
       setOrgUnits(branches);
-      if (!campaignId && accessibleCampaigns.length) setCampaignId(accessibleCampaigns[0].id);
-      // Findings/dashboard/work-queue are loaded by the filter effect once currentUser is set.
+      setDashboard(summary);
+      setWorkQueue(work);
+      // Chuyên đề mới nhất được điền sẵn vào form để lần tìm đầu tiên chỉ còn một cú bấm.
+      if (accessibleCampaigns.length) {
+        setDraftCriteria(previous => previous.campaignId ? previous : { ...previous, campaignId: accessibleCampaigns[0].id });
+      }
+      // `setCurrentUser` để cuối cùng: React gộp nó chung với các setState phía trên thành một lần
+      // render. Trước đây nó nằm trước `await`, nên màn hình render một lần với chuyên đề rỗng rồi
+      // render lại khi chuyên đề được chọn — hai vòng effect và ba request bị lặp vô ích.
+      setCurrentUser(me.user);
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) setCurrentUser(null);
       setLoadError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu.');
     } finally {
       setAuthChecked(true);
-      setLoading(false);
+      setBootstrapping(false);
     }
   };
 
@@ -139,7 +256,7 @@ export const App: React.FC = () => {
   useEffect(() => {
     if (surface !== 'ADMIN' || !canConfigureCatalog || adminCatalogLoaded) return;
     let active = true;
-    setLoading(true);
+    setQueueLoading(true);
     Promise.all([api.getUsers(), api.getOrgUnits(), api.getChannels()])
       .then(([userList, units, allChannels]) => {
         if (!active) return;
@@ -149,18 +266,9 @@ export const App: React.FC = () => {
         setAdminCatalogLoaded(true);
       })
       .catch(reason => active && setLoadError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu cấu hình.'))
-      .finally(() => { if (active) setLoading(false); });
+      .finally(() => { if (active) setQueueLoading(false); });
     return () => { active = false; };
   }, [surface, canConfigureCatalog, adminCatalogLoaded]);
-  useEffect(() => {
-    if (!currentUser) return;
-    let active = true;
-    setLoading(true);
-    refreshScopedData()
-      .catch(reason => active && setLoadError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu.'))
-      .finally(() => { if (active) setLoading(false); });
-    return () => { active = false; };
-  }, [channelId, campaignId, currentUser?.id]);
 
   const login = async (credentials: LoginDTO) => {
     setLoadError(null);
@@ -170,13 +278,19 @@ export const App: React.FC = () => {
 
   const logout = async () => {
     try {
-      setLoading(true);
+      setBootstrapping(true);
       await api.logout();
       setCurrentUser(null);
       setAdminCatalogLoaded(false);
       setUsers([]);
       setFindings([]);
+      setFindingsTotal(0);
       setDashboard(null);
+      setCampaignDashboard(null);
+      setHasSearched(false);
+      setCriteria(emptySearchCriteria());
+      setDraftCriteria(emptySearchCriteria());
+      setSummaryScope('SCOPE');
       setWorkQueue({ actionable: [], following: [], accepted: [], watchTargets: [] });
       setSurface('CASES');
       setSelectedCase(null);
@@ -184,7 +298,7 @@ export const App: React.FC = () => {
     } catch (reason) {
       setLoadError(reason instanceof Error ? reason.message : 'Không thể đăng xuất.');
     } finally {
-      setLoading(false);
+      setBootstrapping(false);
     }
   };
 
@@ -198,31 +312,49 @@ export const App: React.FC = () => {
     } catch (error) { setPasswordMessage(error instanceof Error ? error.message : 'Không thể đổi mật khẩu.'); }
   };
 
-  const activeChannel = channels.find(channel => channel.id === channelId);
+  // Kênh đang xem đọc từ điều kiện đã áp dụng, không phải từ một state riêng: một nguồn sự thật thì
+  // tiêu đề, thanh bên và tập dữ liệu không thể nói ba điều khác nhau.
+  const activeChannel = channels.find(channel => channel.id === criteria.channelId);
   const gridMode = activeChannel?.schemaConfig?.formTemplate?.presentationMode === 'EXCEL_GRID';
-  /** Overdue across everything this user can see, regardless of the kênh/chuyên đề filters. */
-  const overdueAllScopes = dashboard ? dashboard.overdueCount : 0;
 
-  /** Status chip + free-text search + the funnel panel, applied as one predicate everywhere. */
-  const passesQueue = (finding: Finding) => {
-    if (!matchesFilter(finding, filter)) return false;
-    if (!matchesQueueFilters(finding, queueFilters)) return false;
-    const query = search.trim().toLowerCase();
-    if (!query) return true;
-    return [finding.cif, finding.customerName, finding.branchName, finding.branchCode, finding.department, finding.errorCode, finding.errorTitle, finding.officerName]
-      .some(value => value?.toLowerCase().includes(query));
+  /** Chạy tìm kiếm với điều kiện vừa sửa trong panel. */
+  const submitSearch = () => { void runSearch(draftCriteria, { focusCampaignTab: true }); };
+  const resetSearch = () => {
+    searchToken.current += 1;
+    const cleared = emptySearchCriteria();
+    setDraftCriteria(cleared);
+    setCriteria(cleared);
+    setFindings([]);
+    setFindingsTotal(0);
+    setCampaignDashboard(null);
+    setHasSearched(false);
+    setSummaryScope('SCOPE');
+    setQueueLoading(false);
+    setSummaryLoading(false);
+    setLoadingMore(false);
+  };
+  /** Chọn kênh ở thanh bên là một thao tác có chủ đích, nên nó chạy lại tìm kiếm ngay. */
+  const selectChannel = (channelId: string) => {
+    const next = { ...draftCriteria, channelId };
+    setDraftCriteria(next);
+    setSidebarOpen(false);
+    if (hasSearched) void runSearch(next, { focusCampaignTab: true });
   };
 
-  /** Same filter/search the case list applies, but kept flat for the tabular capture screen. */
+  /**
+   * Điều kiện lọc nay chỉ còn một tầng duy nhất là khung tìm kiếm phía trên, chạy dưới máy chủ.
+   * Dải chip trạng thái bên dưới là thứ duy nhất còn lọc trên trình duyệt, và nó chỉ đọc
+   * `workflowStatus` — một phép chọn nhanh trên đúng tập vừa tải về, không phải một bộ lọc thứ hai.
+   */
   const visibleFindings = useMemo(
-    () => findings.filter(passesQueue),
-    [findings, filter, search, queueFilters],
+    () => findings.filter(finding => matchesFilter(finding, filter)),
+    [findings, filter],
   );
 
   const customerCases = useMemo(() => {
     const map = new Map<string, Finding[]>();
     for (const finding of findings) {
-      if (!passesQueue(finding)) continue;
+      if (!matchesFilter(finding, filter)) continue;
       const key = `${finding.branchCode}:${finding.cif}`;
       map.set(key, [...(map.get(key) || []), finding]);
     }
@@ -232,53 +364,32 @@ export const App: React.FC = () => {
       Number(b.some(isOverdue)) - Number(a.some(isOverdue))
       || b.length - a.length
       || a[0].customerName.localeCompare(b[0].customerName, 'vi'));
-  }, [findings, filter, search, queueFilters]);
+  }, [findings, filter]);
 
-  const activeQueueFilters = countActiveFilters(queueFilters);
-  const filtersDirty = JSON.stringify(draftFilters) !== JSON.stringify(queueFilters);
-  /** Opening the funnel resumes from what is actually applied, not from a stale draft. */
-  const toggleFilterPanel = () => {
-    setFilterPanelOpen(open => {
-      if (!open) setDraftFilters(queueFilters);
-      return !open;
-    });
-  };
-  const applyFilters = () => {
-    setQueueFilters(draftFilters);
-    setFilterPanelOpen(false);
-  };
-  const clearFilters = () => {
-    setDraftFilters(emptyQueueFilters());
-    setQueueFilters(emptyQueueFilters());
-  };
-
-  /**
-   * Every filter chip carries its own count, so the tab strip doubles as the breakdown. The
-   * counts are taken after the funnel and the search box but before the chip's own status, so
-   * the strip describes the set it can actually select from instead of contradicting the list.
-   */
+  /** Mỗi chip mang theo số của chính nó, nên dải chip vừa là bộ chọn vừa là bảng phân rã. */
   const filterCounts = useMemo(() => {
     const counts: Record<Filter, number> = {
       ALL: 0, OVERDUE: 0, PENDING: 0, SUBMITTED_BRANCH: 0,
       SUBMITTED_BRANCH_LEADER: 0, SUBMITTED_INTERNAL: 0, REJECTED: 0, WAIVED_RESOLVED: 0,
     };
-    const query = search.trim().toLowerCase();
     for (const finding of findings) {
-      if (!matchesQueueFilters(finding, queueFilters)) continue;
-      if (query && ![finding.cif, finding.customerName, finding.branchName, finding.branchCode, finding.department, finding.errorCode, finding.errorTitle, finding.officerName]
-        .some(value => value?.toLowerCase().includes(query))) continue;
       counts.ALL += 1;
       counts[finding.workflowStatus] += 1;
       if (isOverdue(finding)) counts.OVERDUE += 1;
     }
     return counts;
-  }, [findings, search, queueFilters]);
+  }, [findings]);
 
   const updateFinding = (updated: Finding) => {
     setFindings(previous => previous.map(item => item.id === updated.id ? updated : item));
     setSelectedCase(previous => previous?.map(item => item.id === updated.id ? updated : item) || null);
     api.getDashboardSummary().then(setDashboard).catch(() => undefined);
     api.getMyWork().then(setWorkQueue).catch(() => undefined);
+    // Duyệt một hồ sơ làm đổi cả hai thẻ số. Thiếu dòng này thì tab "Chuyên đề đang tìm" đứng im ở
+    // con số trước khi duyệt cho tới lần tìm kiếm kế tiếp — và nó nằm ngay cạnh danh sách vừa đổi.
+    if (hasSearched) {
+      api.getDashboardSummary(criteriaToQuery(criteria)).then(setCampaignDashboard).catch(() => undefined);
+    }
   };
 
   const openCase = (items: Finding[], findingId?: string) => {
@@ -290,19 +401,26 @@ export const App: React.FC = () => {
   const openWorkspaceTarget = async (target: WorkspaceTarget) => {
     if (target.targetType === 'CUSTOMER' && target.cif && target.branchCode) {
       try {
-        setLoading(true);
+        // Mở một khách hàng cụ thể không cần cả danh sách: một request lấy đúng hồ sơ của khách đó.
+        setQueueLoading(true);
         const customerCase = await api.getCustomerCase(target.cif, target.branchCode);
-        if (target.channelId && target.channelId !== channelId) setChannelId(target.channelId);
         openCase(customerCase.findings, target.representativeFindingId);
       } catch (reason) {
         setLoadError(reason instanceof Error ? reason.message : 'Không thể mở hồ sơ công việc.');
       } finally {
-        setLoading(false);
+        setQueueLoading(false);
       }
     } else {
       setSelectedCase(null);
       setFilter('ALL');
-      setSearch(target.targetType === 'CLUSTER' ? target.clusterName : target.branchName || target.branchCode || '');
+      // Cả hai loại mục tiêu đều đi xuống máy chủ: chi nhánh khớp bằng mã, cụm khớp qua từ khoá
+      // (máy chủ đối chiếu cả `clusterName`). Điều kiện hiện lên ngay trong khung tìm kiếm phía
+      // trên, nên người dùng thấy được vì sao danh sách đang bị thu hẹp và sửa lại được.
+      const next: QueueSearchCriteria = target.targetType === 'BRANCH' && target.branchCode
+        ? { ...draftCriteria, branchCode: target.branchCode, search: '' }
+        : { ...draftCriteria, search: target.clusterName ?? '' };
+      setDraftCriteria(next);
+      await runSearch(next, { focusCampaignTab: true });
       window.scrollTo({ top: 0, behavior: 'auto' });
     }
     setSidebarOpen(false);
@@ -361,7 +479,9 @@ export const App: React.FC = () => {
       <main className={surface === 'CASES' ? 'w-full' : 'mx-auto max-w-[1480px] space-y-5 px-3 py-4 sm:px-6 sm:py-6'}>
         {/* The case surface renders edge-to-edge, so these two banners carry their own gutter
             instead of sitting flush against the viewport. */}
-        {loading && <div role="status" aria-live="polite" className={`flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-xs font-bold text-brand-600 ${surface === 'CASES' ? 'mx-3 mt-3 sm:mx-6' : ''}`}>
+        {/* Chỉ lần khởi động mới được chiếm chỗ bằng một băng thông báo. Những lần tải sau diễn ra
+            ngay tại chỗ dữ liệu sắp thay đổi, nên màn hình không còn nhấp nháy sau mỗi thao tác. */}
+        {bootstrapping && <div role="status" aria-live="polite" className={`flex items-center gap-2 rounded-xl border border-brand-200 bg-brand-50 px-4 py-2.5 text-xs font-bold text-brand-600 ${surface === 'CASES' ? 'mx-3 mt-3 sm:mx-6' : ''}`}>
           <span aria-hidden className="h-3.5 w-3.5 shrink-0 animate-spin rounded-full border-2 border-brand-200 border-t-brand-500" />
           Đang tải dữ liệu...
         </div>}
@@ -382,7 +502,7 @@ export const App: React.FC = () => {
           <div className={`grid min-h-[calc(100dvh-116px)] items-start transition-[grid-template-columns] duration-200 lg:min-h-[calc(100dvh-64px)] ${sidebarCollapsed ? 'lg:grid-cols-[76px_minmax(0,1fr)]' : 'lg:grid-cols-[300px_minmax(0,1fr)]'}`}>
             {sidebarOpen && <button type="button" aria-label="Đóng thanh bên" onClick={() => setSidebarOpen(false)} className="fixed inset-x-0 bottom-0 top-[116px] z-20 bg-slate-950/35 lg:hidden" />}
             <div className={`fixed bottom-0 left-0 top-[116px] z-30 w-[min(300px,calc(100vw-32px))] overflow-y-auto transition-transform duration-200 lg:sticky lg:top-[64px] lg:z-10 lg:w-auto lg:translate-x-0 lg:overflow-visible ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
-              <WorkspaceSidebar channels={channels.filter(channel => channel.isActive)} selectedChannelId={channelId} workQueue={workQueue} collapsed={sidebarCollapsed} onToggle={() => { if (window.innerWidth < 1024) setSidebarOpen(false); else setSidebarCollapsed(value => !value); }} onSelectChannel={channel => { setChannelId(channel); setSidebarOpen(false); }} onOpenTarget={openWorkspaceTarget} onTogglePriority={async target => { await api.setWatchPriority(target.id, !target.isPriority); setWorkQueue(await api.getMyWork()); }} />
+              <WorkspaceSidebar channels={channels.filter(channel => channel.isActive)} selectedChannelId={criteria.channelId} workQueue={workQueue} collapsed={sidebarCollapsed} onToggle={() => { if (window.innerWidth < 1024) setSidebarOpen(false); else setSidebarCollapsed(value => !value); }} onSelectChannel={selectChannel} onOpenTarget={openWorkspaceTarget} onTogglePriority={async target => { await api.setWatchPriority(target.id, !target.isPriority); setWorkQueue(await api.getMyWork()); }} />
             </div>
             <div className="min-w-0 space-y-5 px-3 py-4 sm:px-6 sm:py-6">
               {/* The queue had no heading: which kênh dữ liệu you were reading lived only in the
@@ -394,100 +514,58 @@ export const App: React.FC = () => {
                   <button type="button" onClick={() => { setSidebarCollapsed(false); setSidebarOpen(true); }} aria-label="Mở thanh bên" title="Mở thanh bên" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-rule bg-white text-brand-600 shadow-panel lg:hidden"><Menu className="h-4 w-4" /></button>
                   <div className="min-w-0">
                     <h1 className="truncate text-base font-black tracking-tight text-slate-900">{activeChannel?.name || 'Hồ sơ khách hàng'}</h1>
-                    <p data-numeric className="mt-0.5 truncate text-[11px] text-slate-500">{customerCases.length} khách hàng · {visibleFindings.length} mã lỗi đang hiển thị{findings.length < findingsTotal ? ` · đã tải ${findings.length}/${findingsTotal}` : ''}</p>
+                    <p data-numeric className="mt-0.5 truncate text-[11px] text-slate-500">
+                      {hasSearched
+                        ? `${customerCases.length} khách hàng · ${visibleFindings.length} mã lỗi đang hiển thị${findings.length < findingsTotal ? ` · đã tải ${findings.length}/${findingsTotal}` : ''}`
+                        : 'Chọn chuyên đề và điều kiện để bắt đầu'}
+                    </p>
                   </div>
                 </div>
-                <select aria-label="Lọc theo chuyên đề" value={campaignId} onChange={event => setCampaignId(event.target.value)} className="min-h-11 min-w-0 flex-1 rounded-xl border border-rule bg-white px-3 text-xs font-bold text-slate-700 shadow-panel lg:max-w-[280px] lg:flex-none"><option value="">Tất cả chuyên đề</option>{campaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.code} · {campaign.name}</option>)}</select>
                 {canImport && <button onClick={() => setCreateOpen(true)} className="inline-flex min-h-11 shrink-0 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-2.5 text-xs font-bold text-white shadow-raised transition-colors hover:bg-brand-600"><Plus className="h-4 w-4" />Tạo hồ sơ</button>}
               </div>
 
-          {/* One ledger strip rather than five floating cards: hairline separators carry the
-              grouping, the overdue cell is the only one allowed to raise its voice, and each
-              metric filters the queue below so the numbers are controls, not decoration.
-              The counts come from the loaded hồ sơ, not from the dashboard summary: the summary
-              is scoped by permission only, so its figures cover kênh and chuyên đề that this
-              list is filtered out of — clicking one would have filtered to an empty table. The
-              wider figure is kept as context on the overdue cell, where it earns its place. */}
-          <section aria-label="Tổng quan hồ sơ đang hiển thị" className="overflow-hidden rounded-2xl border border-rule bg-rule shadow-panel">
-            <div className="grid grid-cols-2 gap-px sm:grid-cols-3 lg:grid-cols-5">
-              <OverdueKpi
-                overdueCount={filterCounts.OVERDUE}
-                scopeNote={overdueAllScopes > filterCounts.OVERDUE ? `${overdueAllScopes} trên toàn phạm vi bạn phụ trách` : undefined}
-                active={filter === 'OVERDUE'}
-                onSelect={() => setFilter(filter === 'OVERDUE' ? 'ALL' : 'OVERDUE')}
-              />
-              <Kpi icon={Users} label="Khách hàng hiển thị" value={customerCases.length} hint="theo bộ lọc đang chọn" />
-              <Kpi icon={ClipboardList} label="Tổng mã lỗi" value={Math.max(findingsTotal, filterCounts.ALL)} hint={findings.length < findingsTotal ? `mới tải ${findings.length}` : activeChannel ? 'trong kênh đang xem' : undefined} active={filter === 'ALL'} onSelect={() => setFilter('ALL')} />
-              <Kpi icon={UserCheck} label="Chờ kiểm soát" value={filterCounts.SUBMITTED_BRANCH} active={filter === 'SUBMITTED_BRANCH'} onSelect={() => setFilter(filter === 'SUBMITTED_BRANCH' ? 'ALL' : 'SUBMITTED_BRANCH')} />
-              <Kpi icon={CircleCheck} tone="ok" className="col-span-2 lg:col-span-1" label="Đã đóng lỗi" value={filterCounts.WAIVED_RESOLVED} active={filter === 'WAIVED_RESOLVED'} onSelect={() => setFilter(filter === 'WAIVED_RESOLVED' ? 'ALL' : 'WAIVED_RESOLVED')} />
-            </div>
-          </section>
+          {/* Hai phạm vi số liệu thay cho một dãy thẻ: "của tôi" và "của chuyên đề vừa tìm" là hai
+              câu hỏi khác nhau, trước đây bị trộn vào cùng một hàng nên hàng đó có hai hệ quy chiếu. */}
+          <ScopeSummaryTabs
+            scope={summaryScope}
+            onScopeChange={setSummaryScope}
+            currentUser={currentUser}
+            scopeSummary={dashboard}
+            campaignSummary={campaignDashboard}
+            loading={summaryLoading || bootstrapping}
+          />
 
-          <section className="overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
-            <div className="space-y-3 border-b border-rule bg-white p-3 lg:flex lg:items-center lg:justify-between lg:gap-4 lg:space-y-0 lg:p-4">
-              {/* Each chip carries its own count, so the strip is both the filter and the breakdown. */}
-              <div className="-mx-1 flex gap-1 overflow-x-auto px-1 pb-1 lg:pb-0" role="group" aria-label="Lọc theo tình trạng">
-                {([['ALL', 'Tất cả'], ['OVERDUE', 'Quá hạn'], ['PENDING', 'Chờ chi nhánh'], ['SUBMITTED_BRANCH', 'Chờ kiểm soát'], ['SUBMITTED_BRANCH_LEADER', 'Chờ lãnh đạo CN'], ['SUBMITTED_INTERNAL', 'Chờ phê duyệt HT'], ['REJECTED', 'Cần bổ sung'], ['WAIVED_RESOLVED', 'Đã đóng']] as const).map(([key, label]) => {
-                  const active = filter === key;
-                  const risky = key === 'OVERDUE' && filterCounts.OVERDUE > 0;
-                  return <button key={key} type="button" onClick={() => setFilter(key)} aria-pressed={active} className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 py-1.5 text-[11px] font-bold transition-colors ${active ? 'border-brand-500 bg-brand-500 text-white' : risky ? 'border-risk-border bg-risk-surface text-risk hover:border-risk' : 'border-transparent text-slate-600 hover:border-rule hover:bg-slate-50'}`}>
-                    {label}
-                    <span data-numeric className={`rounded px-1 text-[10px] font-black tabular-nums ${active ? 'bg-white/20 text-white' : risky ? 'bg-white text-risk' : 'bg-slate-100 text-slate-500'}`}>{filterCounts[key]}</span>
-                  </button>;
-                })}
-              </div>
-              <div className="flex shrink-0 items-center gap-2">
-                {/* Collapsed to an icon until wanted. A term already typed keeps the field open so
-                    an active search can never hide behind a button. */}
-                {searchOpen || search.trim() ? (
-                  <label className="relative block flex-1 lg:flex-none">
-                    <span className="sr-only">Tìm hồ sơ</span>
-                    <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" aria-hidden />
-                    <input
-                      autoFocus={searchOpen}
-                      value={search}
-                      onChange={event => setSearch(event.target.value)}
-                      onKeyDown={event => { if (event.key === 'Escape') { setSearch(''); setSearchOpen(false); } }}
-                      placeholder="Tìm CIF, khách hàng, chi nhánh, mã lỗi..."
-                      className="min-h-10 w-full rounded-xl border border-slate-300 bg-white py-2 pl-9 pr-9 text-xs outline-none transition-colors focus:border-brand-500 lg:w-72"
-                    />
-                    <button type="button" aria-label="Đóng ô tìm kiếm" onClick={() => { setSearch(''); setSearchOpen(false); }} className="absolute right-2 top-1/2 grid h-6 w-6 -translate-y-1/2 place-items-center rounded-md text-slate-400 hover:bg-slate-100 hover:text-slate-700">
-                      <X className="h-3.5 w-3.5" />
-                    </button>
-                  </label>
-                ) : (
-                  <button type="button" onClick={() => setSearchOpen(true)} aria-label="Mở ô tìm kiếm" title="Tìm hồ sơ" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-slate-300 bg-white text-slate-600 transition-colors hover:border-brand-300 hover:text-brand-600">
-                    <Search className="h-4 w-4" />
-                  </button>
-                )}
-                {/* The funnel keeps twelve controls out of the way until they are wanted, and
-                    carries the applied count so a narrowed queue is never mistaken for an empty one. */}
-                <button
-                  type="button"
-                  onClick={toggleFilterPanel}
-                  aria-expanded={filterPanelOpen}
-                  aria-controls="queue-filter-panel"
-                  title={filterPanelOpen ? 'Thu gọn bộ lọc' : 'Mở bộ lọc'}
-                  className={`inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl border px-3 text-xs font-bold transition-colors ${activeQueueFilters > 0 ? 'border-brand-500 bg-brand-50 text-brand-700' : filterPanelOpen ? 'border-brand-300 bg-white text-brand-600' : 'border-slate-300 bg-white text-slate-600 hover:border-brand-300 hover:text-brand-600'}`}
-                >
-                  <Funnel className="h-4 w-4" />
-                  <span className="hidden sm:inline">Bộ lọc</span>
-                  {activeQueueFilters > 0 && <span data-numeric className="rounded bg-brand-500 px-1.5 text-[10px] font-black text-white">{activeQueueFilters}</span>}
-                </button>
-              </div>
-            </div>
+          <QueueSearchPanel
+            criteria={draftCriteria}
+            campaigns={campaigns}
+            channels={channels.filter(channel => channel.isActive)}
+            orgUnits={orgUnits}
+            facetValues={facetValues}
+            busy={queueLoading}
+            onChange={setDraftCriteria}
+            onSearch={submitSearch}
+            onReset={resetSearch}
+          />
 
-            <div id="queue-filter-panel">
-              <QueueFilterPanel
-                open={filterPanelOpen}
-                filters={draftFilters}
-                dirty={filtersDirty}
-                findings={findings}
-                onChange={setDraftFilters}
-                onApply={applyFilters}
-                onClear={clearFilters}
-                onClose={() => setFilterPanelOpen(false)}
-              />
+          {/* Danh sách chỉ tồn tại sau lần tìm kiếm đầu tiên. Trước khi đó không có bảng rỗng, không
+              có spinner, và quan trọng nhất là không có request nào được gửi đi. */}
+          {!hasSearched ? <EmptyHint
+            icon={Search}
+            title="Chưa tải danh sách khách hàng"
+            hint="Chọn chuyên đề rồi bấm “Tìm kiếm”."
+          /> : <section className={`overflow-hidden rounded-2xl border border-rule bg-white shadow-panel transition-opacity ${queueLoading ? 'opacity-60' : ''}`}>
+            {/* Chỉ còn dải chip trạng thái. Ô tìm và phễu lọc từng nằm ở đây đã bị gỡ: điều kiện lọc
+                nay do khung tìm kiếm phía trên đảm nhiệm, và hai lớp lọc chồng nhau chỉ khiến người
+                dùng phải nhớ mình đã thu hẹp danh sách ở chỗ nào. */}
+            <div className="-mx-1 flex gap-0.5 overflow-x-auto border-b border-rule bg-white px-3 py-2" role="group" aria-label="Lọc theo tình trạng">
+              {([['ALL', 'Tất cả'], ['OVERDUE', 'Quá hạn'], ['PENDING', 'Chờ chi nhánh'], ['SUBMITTED_BRANCH', 'Chờ kiểm soát'], ['SUBMITTED_BRANCH_LEADER', 'Chờ lãnh đạo CN'], ['SUBMITTED_INTERNAL', 'Chờ phê duyệt HT'], ['REJECTED', 'Cần bổ sung'], ['WAIVED_RESOLVED', 'Đã đóng']] as const).map(([key, label]) => {
+                const active = filter === key;
+                const risky = key === 'OVERDUE' && filterCounts.OVERDUE > 0;
+                return <button key={key} type="button" onClick={() => setFilter(key)} aria-pressed={active} className={`inline-flex min-h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-[10px] font-bold transition-colors ${active ? 'bg-brand-500 text-white' : risky ? 'bg-risk-surface text-risk hover:bg-risk-surface/70' : 'text-slate-600 hover:bg-slate-100'}`}>
+                  {label}
+                  <span data-numeric className={`text-[10px] font-black tabular-nums ${active ? 'text-white/80' : risky ? 'text-risk' : 'text-slate-400'}`}>{filterCounts[key]}</span>
+                </button>;
+              })}
             </div>
 
             {/* A report type configured as "Dạng bảng Excel" is captured row by row instead of one
@@ -537,89 +615,43 @@ export const App: React.FC = () => {
                 </button>;
               })}
             </div>
-            {/* An empty queue caused by a filter is a different problem from an empty queue, so
-                the message names the filter that is hiding the rows. */}
+            {/* Danh sách rỗng vì chip trạng thái là chuyện khác với danh sách rỗng vì điều kiện tìm
+                kiếm, nên lời nhắn chỉ đúng chỗ đang giấu hàng đi. */}
             {!customerCases.length && <EmptyHint
-              icon={activeQueueFilters > 0 ? Funnel : Search}
-              title={activeQueueFilters > 0
-                ? `Không có hồ sơ nào khớp ${activeQueueFilters} điều kiện lọc`
-                : search.trim() ? 'Không tìm thấy hồ sơ nào khớp' : 'Không có hồ sơ ở tình trạng này'}
-              hint={activeQueueFilters > 0
-                ? 'Mở bộ lọc và bỏ bớt điều kiện, hoặc bấm “Xóa bộ lọc” để xem lại toàn bộ hồ sơ.'
-                : search.trim() ? `Không có kết quả cho “${search.trim()}”. Thử bỏ bớt từ khoá hoặc chuyển sang tình trạng “Tất cả”.` : 'Chuyển sang một tình trạng khác, hoặc bỏ lọc chuyên đề để xem toàn bộ hồ sơ trong kênh này.'}
+              icon={Search}
+              title={findings.length ? 'Không có hồ sơ ở tình trạng này' : 'Không có hồ sơ nào khớp điều kiện tìm kiếm'}
+              hint={findings.length
+                ? 'Chọn chip “Tất cả” để xem lại toàn bộ hồ sơ vừa tải.'
+                : 'Mở khung tìm kiếm phía trên và bỏ bớt điều kiện.'}
             />}
             </>}
 
             {/* Says plainly that more exist rather than stopping at one page in silence. */}
             {findings.length < findingsTotal && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-rule bg-slate-50/60 px-4 py-3">
-              {/* Filters run over what is loaded, so with a filter on, a partial load means a
-                  partial answer. Say that instead of letting it look like a complete result. */}
+              {/* Chip trạng thái chỉ chạy trên phần đã tải, nên khi mới tải một phần thì con số trên
+                  chip là câu trả lời một phần. Nói thẳng ra thay vì để nó trông như kết quả đầy đủ. */}
               <span data-numeric className="text-[11px] font-semibold text-slate-600">
-                Đã tải {findings.length} / {findingsTotal} mã lỗi trong phạm vi của bạn
-                {(activeQueueFilters > 0 || search.trim()) && <span className="text-warn"> · bộ lọc chỉ áp dụng trên phần đã tải</span>}
+                Đã tải {findings.length} / {findingsTotal} mã lỗi
+                {filter !== 'ALL' && <span className="text-warn"> · chip trạng thái chỉ áp dụng trên phần đã tải</span>}
               </span>
               <button type="button" onClick={() => void loadMoreFindings()} disabled={loadingMore} className="inline-flex min-h-9 items-center gap-2 rounded-xl border border-brand-200 bg-white px-3.5 text-xs font-bold text-brand-600 shadow-panel transition-colors hover:border-brand-500 disabled:opacity-50">
                 {loadingMore && <span aria-hidden className="h-3.5 w-3.5 animate-spin rounded-full border-2 border-brand-200 border-t-brand-500" />}
                 {loadingMore ? 'Đang tải...' : `Tải thêm ${Math.min(FINDINGS_PAGE_SIZE, findingsTotal - findings.length)} mã lỗi`}
               </button>
             </div>}
-          </section>
+          </section>}
             </div>
           </div>
         </>}
       </main>
 
-      <WebFormFindingModal isOpen={createOpen} currentUser={currentUser ?? undefined} channels={channels.filter(channel => channel.isActive)} campaigns={campaigns} initialCampaignId={campaignId} orgUnits={orgUnits} onClose={() => setCreateOpen(false)} onSubmit={async (dto: WebFormFindingDTO | WebFormFindingDTO[]) => { const rows = Array.isArray(dto) ? dto : [dto]; for (const row of rows) await api.createFinding(row); await refreshScopedData(); setCreateOpen(false); }} />
+      <WebFormFindingModal isOpen={createOpen} currentUser={currentUser ?? undefined} channels={channels.filter(channel => channel.isActive)} campaigns={campaigns} initialCampaignId={criteria.campaignId} orgUnits={orgUnits} onClose={() => setCreateOpen(false)} onSubmit={async (dto: WebFormFindingDTO | WebFormFindingDTO[]) => { const rows = Array.isArray(dto) ? dto : [dto]; for (const row of rows) await api.createFinding(row); await refreshScopedData(); setCreateOpen(false); }} />
     </div>
   );
 };
 
 const NavButton: React.FC<{ active: boolean; onClick: () => void; icon: React.ReactElement; label: string }> = ({ active, onClick, icon, label }) => <button onClick={onClick} className={`inline-flex shrink-0 items-center gap-2 rounded-lg px-3 py-2 text-xs font-bold focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 ${active ? 'bg-white text-brand-600' : 'text-teal-50 hover:bg-white/10'}`}>{React.cloneElement(icon, { className: 'h-4 w-4' } as React.HTMLAttributes<HTMLElement>)}{label}</button>;
 const WorkspaceLoading: React.FC = () => <div role="status" className="rounded-xl border border-brand-200 bg-brand-50 px-4 py-3 text-xs font-bold text-brand-600">Đang mở chức năng...</div>;
-type KpiTone = 'brand' | 'risk' | 'ok';
-const kpiSurface: Record<KpiTone, { on: string; off: string }> = {
-  brand: { on: 'bg-brand-50', off: 'bg-white hover:bg-brand-50/70' },
-  risk: { on: 'bg-risk-surface', off: 'bg-risk-surface hover:bg-risk-border/40' },
-  ok: { on: 'bg-ok-surface', off: 'bg-white hover:bg-ok-surface/70' },
-};
-const kpiIconClass: Record<KpiTone, string> = { brand: 'text-brand-500', risk: 'text-risk', ok: 'text-ok' };
-const kpiValueClass: Record<KpiTone, string> = { brand: 'text-slate-900', risk: 'text-risk', ok: 'text-slate-900' };
-const kpiRuleClass: Record<KpiTone, string> = { brand: 'bg-brand-500', risk: 'bg-risk-solid', ok: 'bg-ok' };
-
-/**
- * Compact by design: this strip is a glance, not the content. It stays two-up on a phone and
- * five-up on a desktop, and never takes more vertical space than one row of the table below it.
- */
-const Kpi: React.FC<{ icon: LucideIcon; label: string; value: number; hint?: string; tone?: KpiTone; active?: boolean; onSelect?: () => void; className?: string }> = ({ icon: Icon, label, value, hint, tone = 'brand', active = false, onSelect, className = '' }) => {
-  const body = <>
-    <span className="flex items-center gap-1.5">
-      <Icon className={`h-3.5 w-3.5 shrink-0 ${kpiIconClass[tone]}`} aria-hidden />
-      <span className="min-w-0 flex-1 truncate text-[11px] font-semibold leading-4 text-slate-600">{label}</span>
-    </span>
-    <span className="mt-1 flex min-w-0 items-baseline gap-1.5">
-      <span data-numeric className={`shrink-0 text-xl font-black leading-none tracking-tight ${kpiValueClass[tone]}`}>{value}</span>
-      {hint && <span className="hidden min-w-0 truncate text-[10px] leading-4 text-slate-500 sm:block">{hint}</span>}
-    </span>
-    <span aria-hidden className={`absolute inset-x-0 bottom-0 h-[2px] transition-colors ${active ? kpiRuleClass[tone] : 'bg-transparent'}`} />
-  </>;
-  const shell = `relative flex flex-col justify-center px-3 py-2.5 text-left transition-colors ${kpiSurface[tone][active ? 'on' : 'off']} ${className}`;
-  if (!onSelect) return <div className={shell}>{body}</div>;
-  return <button type="button" onClick={onSelect} aria-pressed={active} className={`${shell} w-full`}>{body}</button>;
-};
-
-/** Turns red only when something is actually late; a permanently alarmed dashboard stops alarming. */
-export const OverdueKpi: React.FC<{ overdueCount: number; scopeNote?: string; active?: boolean; onSelect?: () => void }> = ({ overdueCount, scopeNote, active, onSelect }) => (
-  <Kpi
-    icon={TriangleAlert}
-    label="Quá hạn"
-    value={overdueCount}
-    tone={overdueCount > 0 ? 'risk' : 'brand'}
-    hint={scopeNote || (overdueCount > 0 ? 'Ưu tiên xử lý trước' : 'Không có hồ sơ trễ hạn')}
-    active={active}
-    onSelect={onSelect}
-  />
-);
-
 const slaPriority: Record<Finding['slaStatus'], number> = { CLOSED: 0, ON_TRACK: 1, DUE_SOON: 2, OVERDUE: 3 };
 const workflowPriority: Record<Finding['workflowStatus'], number> = {
   WAIVED_RESOLVED: 0, PENDING: 1, SUBMITTED_BRANCH: 2, SUBMITTED_INTERNAL: 3, SUBMITTED_BRANCH_LEADER: 4, REJECTED: 5,

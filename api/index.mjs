@@ -925,10 +925,37 @@ var ReportRunRequestSchema = z11.object({
     context.addIssue({ code: z11.ZodIssueCode.custom, path: ["metrics"], message: "Key ch\u1EC9 s\u1ED1 kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
   }
 });
+var REPORT_HIGHLIGHT_TONES = ["risk", "warn", "ok"];
+var ReportMetricFormatSchema = z11.object({
+  /** Tên cột do người dùng đặt; bỏ trống thì dùng tên trong danh mục. */
+  label: z11.string().trim().max(60).optional(),
+  decimals: z11.number().int().min(0).max(4).optional(),
+  /** Hậu tố dán sau con số, ví dụ "hồ sơ" hoặc "%". */
+  suffix: z11.string().trim().max(16).optional(),
+  highlight: z11.object({
+    operator: z11.enum(["gt", "gte", "lt", "lte"]),
+    value: z11.number(),
+    tone: z11.enum(REPORT_HIGHLIGHT_TONES)
+  }).optional()
+});
+var ReportPresentationOptionsSchema = z11.object({
+  title: z11.string().trim().max(150).optional(),
+  /** Đổi tên cột đầu tiên (trường ở vùng Hàng). */
+  rowLabel: z11.string().trim().max(60).optional(),
+  metrics: z11.record(ReportMetricKeySchema, ReportMetricFormatSchema).default({})
+});
+function formatReportMetricValue(value, format) {
+  const decimals = format?.decimals ?? 0;
+  const text = value.toLocaleString("vi-VN", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
+  return format?.suffix ? `${text} ${format.suffix}` : text;
+}
+var ReportExportSectionSchema = z11.enum(["design", "detail"]);
 var ReportExportRequestSchema = z11.object({
   query: ReportRunRequestSchema,
   columns: z11.array(ReportFieldKeySchema).min(1).max(REPORT_FIELD_KEYS.length),
-  format: z11.enum(["csv", "html", "xlsx"]).default("csv")
+  format: z11.enum(["csv", "html", "xlsx"]).default("csv"),
+  section: ReportExportSectionSchema.default("design"),
+  presentation: ReportPresentationOptionsSchema.optional()
 }).superRefine((request, context) => {
   request.columns.forEach((key, index) => {
     if (!REPORT_FIELD_CATALOG.find((item) => item.key === key)?.exportable) {
@@ -958,6 +985,7 @@ var CreateReportDefinitionSchema = z11.object({
   columns: z11.array(ReportColumnSchema).max(15).default([]),
   query: ReportRunRequestSchema.optional(),
   exportColumns: z11.array(ReportFieldKeySchema).max(REPORT_FIELD_KEYS.length).default([]),
+  presentation: ReportPresentationOptionsSchema.optional(),
   visibility: ReportDefinitionVisibilitySchema.default("PRIVATE"),
   sharedWithRoles: z11.array(ReportShareRoleSchema).max(8).default([]),
   sourceReportDefinitionId: z11.string().min(1).max(200).optional()
@@ -1570,6 +1598,9 @@ function parseServiceAccount(raw) {
 function escapeDriveQuery(value) {
   return value.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
 }
+function sanitizeDriveFolderSegment(value) {
+  return value.normalize("NFC").replace(/[^a-zA-Z0-9_\u00C0-\u1EF9-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
+}
 var GoogleDriveAdapter = class {
   localFallbackDir;
   storageMode;
@@ -1705,15 +1736,17 @@ var GoogleDriveAdapter = class {
     }
   }
   generateFolderPath(params) {
-    const sanitize = (value) => value.normalize("NFC").replace(/[^a-zA-Z0-9_\u00C0-\u1EF9-]/g, "_").replace(/_+/g, "_").replace(/^_|_$/g, "");
-    const campaign = sanitize(params.campaignCode ?? "KHONG_CHUYEN_DE");
-    return `/${campaign}/${sanitize(params.channelCode)}/${params.year}/${sanitize(params.clusterName)}/CN_${sanitize(params.branchCode)}/KHACH_HANG/${sanitize(params.cif)}_${sanitize(params.customerName ?? "KHACH_HANG")}/LOI_${sanitize(params.errorCode)}`;
+    const campaign = sanitizeDriveFolderSegment(params.campaignCode ?? "KHONG_CHUYEN_DE");
+    return `/${campaign}/${sanitizeDriveFolderSegment(params.channelCode)}/${params.year}/${sanitizeDriveFolderSegment(params.clusterName)}/CN_${sanitizeDriveFolderSegment(params.branchCode)}/KHACH_HANG/${sanitizeDriveFolderSegment(params.cif)}_${sanitizeDriveFolderSegment(params.customerName ?? "KHACH_HANG")}/LOI_${sanitizeDriveFolderSegment(params.errorCode)}`;
+  }
+  generateCampaignEvidenceFolderPath(params) {
+    return `/KHACH_HANG/${sanitizeDriveFolderSegment(params.cif)}_${sanitizeDriveFolderSegment(params.customerName ?? "KHACH_HANG")}/LOI_${sanitizeDriveFolderSegment(params.errorCode)}`;
   }
   async createResumableUploadSession(params) {
     this.requireGoogleMode();
     const fileName = this.validateUploadMetadata(params.fileName, params.mimeType, params.fileSize);
     this.requireChecksum(params.sha256Checksum);
-    const parentId = await this.ensureGoogleFolderPath(params.folderPath);
+    const parentId = await this.ensureGoogleFolderPath(params.folderPath, params.rootFolderId);
     const driveFileId = await this.generateDriveFileId();
     const response = await this.driveFetch(`${DRIVE_UPLOAD_API}/files?uploadType=resumable&supportsAllDrives=true`, { method: "POST", headers: { "Content-Type": "application/json; charset=UTF-8", "X-Upload-Content-Type": params.mimeType, "X-Upload-Content-Length": String(params.fileSize) }, body: JSON.stringify({ id: driveFileId, name: fileName, mimeType: params.mimeType, parents: [parentId], appProperties: { auditBgsFindingId: params.findingId, auditBgsSha256: params.sha256Checksum } }) });
     const uploadUrl = response.headers.get("location");
@@ -1724,7 +1757,7 @@ var GoogleDriveAdapter = class {
     this.requireGoogleMode();
     const fileName = this.validateUploadMetadata(params.fileName, params.mimeType, params.fileSize);
     this.requireChecksum(params.sha256Checksum);
-    const expectedParentId = await this.ensureGoogleFolderPath(params.folderPath);
+    const expectedParentId = await this.ensureGoogleFolderPath(params.folderPath, params.rootFolderId);
     const metadata = await this.driveFetchJson(`${DRIVE_API}/files/${encodeURIComponent(params.driveFileId)}?fields=id,name,mimeType,size,parents,trashed,appProperties&supportsAllDrives=true`);
     if (metadata.id !== params.driveFileId || metadata.name !== fileName || metadata.mimeType !== params.mimeType || Number(metadata.size) !== params.fileSize || metadata.trashed || !metadata.parents?.includes(expectedParentId) || metadata.appProperties?.auditBgsFindingId !== params.findingId || metadata.appProperties?.auditBgsSha256 !== params.sha256Checksum) throw new HttpProblem(409, "GOOGLE_DRIVE_UPLOAD_VERIFICATION_FAILED", "Kh\xF4ng x\xE1c minh \u0111\u01B0\u1EE3c t\u1EC7p Google Drive", "Metadata t\u1EC7p t\u1EA3i l\xEAn kh\xF4ng kh\u1EDBp v\u1EDBi phi\xEAn minh ch\u1EE9ng \u0111\xE3 y\xEAu c\u1EA7u.");
     return { driveFileId: metadata.id, driveUrl: `/api/v1/evidence/${metadata.id}/content`, sha256Checksum: params.sha256Checksum, fileSize: params.fileSize, mimeType: params.mimeType, folderPath: params.folderPath };
@@ -1826,19 +1859,19 @@ var GoogleDriveAdapter = class {
   async driveFetchJson(url, init) {
     return (await this.driveFetch(url, init)).json();
   }
-  async requireGoogleRootFolder() {
+  async requireGoogleRootFolder(rootFolderId = this.googleDriveRootFolderId) {
     this.requireGoogleMode();
-    await this.requireGoogleRootFolderAccess();
+    await this.requireGoogleRootFolderAccess(rootFolderId);
   }
-  async requireGoogleRootFolderAccess() {
-    if (!this.googleDriveRootFolderId || !this.hasCredential()) throw new HttpProblem(503, "GOOGLE_DRIVE_ADAPTER_NOT_READY", "Google Drive ch\u01B0a s\u1EB5n s\xE0ng", `${this.credentialWarning()} GOOGLE_DRIVE_ROOT_FOLDER_ID l\xE0 b\u1EAFt bu\u1ED9c.`);
-    const folder = await this.driveFetchJson(`${DRIVE_API}/files/${encodeURIComponent(this.googleDriveRootFolderId)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`);
-    if (folder.id !== this.googleDriveRootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, "GOOGLE_DRIVE_ROOT_UNAVAILABLE", "Th\u01B0 m\u1EE5c Google Drive ch\u01B0a s\u1EB5n s\xE0ng", "Credential hi\u1EC7n t\u1EA1i kh\xF4ng c\xF3 quy\u1EC1n th\xEAm t\u1EC7p v\xE0o th\u01B0 m\u1EE5c g\u1ED1c \u0111\xE3 c\u1EA5u h\xECnh.");
+  async requireGoogleRootFolderAccess(rootFolderId = this.googleDriveRootFolderId) {
+    if (!rootFolderId || !this.hasCredential()) throw new HttpProblem(503, "GOOGLE_DRIVE_ADAPTER_NOT_READY", "Google Drive ch\u01B0a s\u1EB5n s\xE0ng", `${this.credentialWarning()} GOOGLE_DRIVE_ROOT_FOLDER_ID l\xE0 b\u1EAFt bu\u1ED9c.`);
+    const folder = await this.driveFetchJson(`${DRIVE_API}/files/${encodeURIComponent(rootFolderId)}?fields=id,driveId,mimeType,trashed,capabilities(canAddChildren)&supportsAllDrives=true`);
+    if (folder.id !== rootFolderId || folder.mimeType !== FOLDER_MIME_TYPE || folder.trashed || folder.capabilities?.canAddChildren === false) throw new HttpProblem(503, "GOOGLE_DRIVE_ROOT_UNAVAILABLE", "Th\u01B0 m\u1EE5c Google Drive ch\u01B0a s\u1EB5n s\xE0ng", "Credential hi\u1EC7n t\u1EA1i kh\xF4ng c\xF3 quy\u1EC1n th\xEAm t\u1EC7p v\xE0o th\u01B0 m\u1EE5c g\u1ED1c \u0111\xE3 c\u1EA5u h\xECnh.");
     if (this.googleDriveAuthMode === "service-account" && !folder.driveId) throw new HttpProblem(503, "GOOGLE_DRIVE_SHARED_DRIVE_REQUIRED", "C\u1EA7n d\xF9ng Shared Drive cho Google Drive", "Service account kh\xF4ng c\xF3 storage quota trong My Drive; h\xE3y \u0111\u1EB7t th\u01B0 m\u1EE5c g\u1ED1c trong Shared Drive v\xE0 c\u1EA5p quy\u1EC1n Contributor ho\u1EB7c Content manager.");
   }
-  async ensureGoogleFolderPath(folderPath) {
-    await this.requireGoogleRootFolder();
-    let parentId = this.googleDriveRootFolderId;
+  async ensureGoogleFolderPath(folderPath, rootFolderId = this.googleDriveRootFolderId) {
+    await this.requireGoogleRootFolder(rootFolderId);
+    let parentId = rootFolderId;
     for (const folderName of folderPath.split("/").filter(Boolean)) {
       const query = `name = '${escapeDriveQuery(folderName)}' and '${escapeDriveQuery(parentId)}' in parents and mimeType = '${FOLDER_MIME_TYPE}' and trashed = false`;
       const search = await this.driveFetchJson(`${DRIVE_API}/files?${new URLSearchParams({ q: query, fields: "files(id)", supportsAllDrives: "true", includeItemsFromAllDrives: "true" })}`);
@@ -1973,9 +2006,14 @@ function assertDatabaseConfigured() {
 }
 var pool = new Pool({
   connectionString: databaseUrl,
-  max: 20,
-  idleTimeoutMillis: 3e4,
-  connectionTimeoutMillis: 5e3
+  max: 4,
+  idleTimeoutMillis: 1e4,
+  connectionTimeoutMillis: 1e4,
+  keepAlive: true,
+  allowExitOnIdle: true
+});
+pool.on("error", (error) => {
+  console.error("[pg] Client r\u1EA3nh b\u1ECB l\u1ED7i; pool s\u1EBD t\u1EF1 m\u1EDF l\u1EA1i k\u1EBFt n\u1ED1i.", error);
 });
 
 // server/src/repositories/local-state.ts
@@ -2285,10 +2323,113 @@ function createLocalStateRepository(options) {
   });
 }
 
+// server/src/repositories/postgres-transaction.ts
+async function withBackendTransaction(pool2, operation) {
+  const client = await pool2.connect();
+  try {
+    await client.query("BEGIN; SET LOCAL app.runtime_role = 'backend'");
+    const result = await operation(client);
+    await client.query("COMMIT");
+    return result;
+  } catch (error) {
+    try {
+      await client.query("ROLLBACK");
+    } catch {
+    }
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+
+// server/src/repositories/workflow-event-ledger.ts
+async function insertWorkflowEvents(client, events) {
+  if (events.length === 0) return;
+  const params = [];
+  const values = events.map((event, index) => {
+    const offset = index * 13;
+    params.push(
+      event.id,
+      event.findingId,
+      event.command,
+      event.fromStatus,
+      event.toStatus,
+      event.actorUserId,
+      event.actorName,
+      event.actorRole,
+      event.notes ?? null,
+      event.rejectionReason ?? null,
+      event.rejectedFromStage ?? null,
+      JSON.stringify(event.evidenceSnapshot ?? []),
+      event.createdAt
+    );
+    return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}::jsonb, $${offset + 13}::timestamptz)`;
+  });
+  await client.query(
+    `INSERT INTO workflow_event_ledger(
+       event_id, finding_id, command, from_status, to_status, actor_user_id,
+       actor_name, actor_role, notes, rejection_reason, rejected_from_stage,
+       evidence_snapshot, created_at
+     ) VALUES ${values.join(", ")}
+     ON CONFLICT (event_id) DO NOTHING`,
+    params
+  );
+}
+var PostgresWorkflowEventLedger = class {
+  pool;
+  constructor(options) {
+    this.pool = options.pool;
+  }
+  async loadAll() {
+    return withBackendTransaction(this.pool, async (client) => {
+      const result = await client.query(
+        `SELECT event_id, finding_id, command, from_status, to_status, actor_user_id,
+                actor_name, actor_role, notes, rejection_reason, rejected_from_stage,
+                evidence_snapshot, created_at
+           FROM workflow_event_ledger
+          ORDER BY created_at ASC, event_id ASC`
+      );
+      return result.rows.map(mapWorkflowEvent);
+    });
+  }
+  async append(events) {
+    if (events.length === 0) return;
+    await withBackendTransaction(this.pool, (client) => insertWorkflowEvents(client, events));
+  }
+};
+function mapWorkflowEvent(row) {
+  const evidenceSnapshot = Array.isArray(row.evidence_snapshot) ? row.evidence_snapshot : [];
+  return {
+    id: String(row.event_id),
+    findingId: String(row.finding_id),
+    command: String(row.command),
+    fromStatus: String(row.from_status),
+    toStatus: String(row.to_status),
+    actorUserId: String(row.actor_user_id),
+    actorName: String(row.actor_name),
+    actorRole: String(row.actor_role),
+    ...row.notes === null || row.notes === void 0 ? {} : { notes: String(row.notes) },
+    ...row.rejection_reason === null || row.rejection_reason === void 0 ? {} : { rejectionReason: String(row.rejection_reason) },
+    ...row.rejected_from_stage === null || row.rejected_from_stage === void 0 ? {} : { rejectedFromStage: String(row.rejected_from_stage) },
+    ...evidenceSnapshot.length > 0 ? { evidenceSnapshot } : {},
+    createdAt: toIsoString(row.created_at)
+  };
+}
+function toIsoString(value) {
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isFinite(date.getTime()) ? date.toISOString() : (/* @__PURE__ */ new Date(0)).toISOString();
+}
+
 // server/src/repositories/postgres-state.ts
 var PostgresStateRepository = class {
   pool;
   snapshotId;
+  /**
+   * Version của snapshot mà tiến trình này đang giữ trong bộ nhớ; `undefined` khi chưa đọc lần nào.
+   * Giữ nguyên dạng chuỗi vì cột là `BIGINT` và `pg` trả bigint về dưới dạng chuỗi để không mất
+   * độ chính xác — so sánh chuỗi với chuỗi thì không có chỗ nào để sai lệch len vào.
+   */
+  observedVersion;
   constructor(options) {
     this.pool = options.pool;
     this.snapshotId = options.snapshotId ?? "primary";
@@ -2313,19 +2454,62 @@ var PostgresStateRepository = class {
   async load(fallback) {
     return this.withTransaction(async (client) => {
       const row = await this.loadRow(client);
+      this.observedVersion = readVersion(row);
       return structuredClone(row?.payload ?? fallback);
+    });
+  }
+  /**
+   * Đọc snapshot chỉ khi nó đã đổi kể từ lần đọc gần nhất của tiến trình này; trả `undefined` khi
+   * không đổi, để phía gọi bỏ qua luôn việc dựng lại state trong bộ nhớ.
+   *
+   * Phép so `version` nằm ngay trong database, nên khi state không đổi thì cột `payload` không hề
+   * được trả về: không tốn băng thông, không `JSON.parse`, không `structuredClone`, và phía gọi
+   * cũng không phải chiếu lại toàn bộ mảng. Đó là gần như toàn bộ chi phí của một request GET.
+   *
+   * Vẫn phải nằm trong transaction vì RLS của `app_state_snapshots` đòi
+   * `current_setting('app.runtime_role') = 'backend'`, mà `set_config(..., true)` chỉ có hiệu lực
+   * trong transaction hiện tại. Chạy ngoài transaction thì policy lọc sạch dòng và câu lệnh trả về
+   * rỗng — không phải lỗi, mà là "chưa có snapshot", đúng kiểu hỏng dữ liệu âm thầm.
+   *
+   * Vẫn đúng tuyệt đối: `version` chỉ tăng khi `saveRow` ghi, nên "không đổi" nghĩa là state trong
+   * bộ nhớ bằng đúng state dưới database, chứ không phải chấp nhận đọc dữ liệu cũ.
+   */
+  async loadIfChanged() {
+    return this.withTransaction(async (client) => {
+      const result = await client.query(
+        `SELECT version, CASE WHEN version = $2::bigint THEN NULL ELSE payload END AS payload
+         FROM app_state_snapshots WHERE id = $1`,
+        [this.snapshotId, this.observedVersion ?? "-1"]
+      );
+      const row = result.rows[0];
+      if (!row) return void 0;
+      const version = readVersion(row);
+      if (version !== void 0 && version === this.observedVersion) return void 0;
+      this.observedVersion = version;
+      return structuredClone(row.payload);
     });
   }
   async hasSnapshot() {
     return this.withTransaction(async (client) => await this.loadRow(client) !== void 0);
   }
   async save(data) {
+    await this.saveWithWorkflowEvents(data, []);
+  }
+  async update(fallback, transform) {
+    return this.updateWithWorkflowEvents(fallback, transform, []);
+  }
+  /**
+   * Ghi snapshot và các sự kiện workflow mới trong cùng một transaction.
+   * Snapshot không chứa mảng lịch sử nữa; ledger append-only là nguồn đọc lịch sử.
+   */
+  async saveWithWorkflowEvents(data, events) {
     await this.withTransaction(async (client) => {
       await this.acquireWriteLock(client);
       await this.saveRow(client, data);
+      await insertWorkflowEvents(client, events);
     });
   }
-  async update(fallback, transform) {
+  async updateWithWorkflowEvents(fallback, transform, events) {
     return this.withTransaction(async (client) => {
       await this.acquireWriteLock(client);
       const row = await this.loadRow(client);
@@ -2333,25 +2517,17 @@ var PostgresStateRepository = class {
       const transformed = await transform(latest);
       const next = transformed ?? latest;
       await this.saveRow(client, next);
+      await insertWorkflowEvents(client, events);
       return structuredClone(next);
     });
   }
   async withTransaction(operation) {
-    const client = await this.pool.connect();
+    const previousObservedVersion = this.observedVersion;
     try {
-      await client.query("BEGIN");
-      await client.query("SELECT set_config('app.runtime_role', 'backend', true)");
-      const result = await operation(client);
-      await client.query("COMMIT");
-      return result;
+      return await withBackendTransaction(this.pool, operation);
     } catch (error) {
-      try {
-        await client.query("ROLLBACK");
-      } catch {
-      }
+      this.observedVersion = previousObservedVersion;
       throw error;
-    } finally {
-      client.release();
     }
   }
   async acquireWriteLock(client) {
@@ -2365,7 +2541,7 @@ var PostgresStateRepository = class {
     return result.rows[0];
   }
   async saveRow(client, data) {
-    await client.query(
+    const result = await client.query(
       `INSERT INTO app_state_snapshots(id, payload, version, updated_at)
        VALUES ($1, $2::jsonb, 1, NOW())
        ON CONFLICT (id) DO UPDATE SET
@@ -2375,8 +2551,13 @@ var PostgresStateRepository = class {
        RETURNING version`,
       [this.snapshotId, data]
     );
+    this.observedVersion = readVersion(result.rows[0]);
   }
 };
+function readVersion(row) {
+  const version = row?.version;
+  return version === void 0 || version === null ? void 0 : String(version);
+}
 
 // server/src/repositories/state-repository.ts
 function createStateRepository(options) {
@@ -2637,7 +2818,7 @@ function renderReportHtml(report) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>B\xE1o c\xE1o Audit BGS</title>
+  <title>${xmlEscape(report.title || "B\xE1o c\xE1o Audit BGS")}</title>
   <style>
     :root{color-scheme:light;--brand:#006b68;--brand-dark:#00504e;--ink:#172033;--muted:#64748b;--line:#dbe3ea;--soft:#f3f8f7}
     *{box-sizing:border-box}body{margin:0;background:#eef3f3;color:var(--ink);font:14px/1.5 Arial,"Helvetica Neue",sans-serif}
@@ -2655,10 +2836,16 @@ function renderReportHtml(report) {
   </style>
 </head>
 <body><main>
-  <header><h1>B\xE1o c\xE1o Audit BGS</h1><p>B\xE1o c\xE1o t\u1ED5ng h\u1EE3p v\xE0 d\u1EEF li\u1EC7u chi ti\u1EBFt theo ph\u1EA1m vi \u0111\u01B0\u1EE3c c\u1EA5p.</p><div class="meta"><span class="tag">Th\u1EDDi \u0111i\u1EC3m xu\u1EA5t: ${xmlEscape(new Date(report.generatedAt).toLocaleString("vi-VN"))}</span><span class="tag">${report.detailRows.length} d\xF2ng chi ti\u1EBFt</span></div></header>
+  <header><h1>${xmlEscape(report.title || "B\xE1o c\xE1o Audit BGS")}</h1><p>B\xE1o c\xE1o t\u1ED5ng h\u1EE3p v\xE0 d\u1EEF li\u1EC7u chi ti\u1EBFt theo ph\u1EA1m vi \u0111\u01B0\u1EE3c c\u1EA5p.</p><div class="meta"><span class="tag">Th\u1EDDi \u0111i\u1EC3m xu\u1EA5t: ${xmlEscape(new Date(report.generatedAt).toLocaleString("vi-VN"))}</span><span class="tag">${report.detailRows.length} d\xF2ng chi ti\u1EBFt</span></div></header>
   <section><h2>T\u1ED5ng quan</h2><div class="metrics">${report.summary.map((item) => `<div class="metric"><span>${xmlEscape(item.label)}</span><strong>${xmlEscape(htmlValue(item.value))}</strong></div>`).join("")}</div>
     <h3>\u0110i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng</h3><ul class="filters">${(report.filters.length ? report.filters : ["Kh\xF4ng c\xF3 \u0111i\u1EC1u ki\u1EC7n l\u1ECDc"]).map((item) => `<li>${xmlEscape(item)}</li>`).join("")}</ul></section>
   <section><h2>Ph\xE2n t\xEDch theo ${xmlEscape(report.groupLabel)}</h2>${renderTable(report.groupColumns, report.groupRows)}</section>
+  ${report.pivot ? `<section><h2>B\u1EA3ng ch\xE9o: ${xmlEscape(report.pivot.rowLabel)} \xD7 ${xmlEscape(report.pivot.columnLabel)}</h2>
+    <p style="margin:0 0 12px;color:var(--muted);font-size:12px">Ch\u1EC9 s\u1ED1: ${xmlEscape(report.pivot.metricLabel)}</p>
+    ${renderTable(
+    [{ label: report.pivot.rowLabel }, ...report.pivot.columns.map((label) => ({ label, kind: "number" })), { label: "T\u1ED5ng", kind: "number" }],
+    report.pivot.rows.map((row) => [row.label, ...row.values, row.total])
+  )}</section>` : ""}
   <section class="details"><h2>D\u1EEF li\u1EC7u chi ti\u1EBFt</h2>${renderTable(report.detailColumns, report.detailRows)}</section>
   <footer>Audit BGS | T\u1EC7p \u0111\u1ED9c l\u1EADp, c\xF3 th\u1EC3 l\u01B0u tr\u1EEF ho\u1EB7c in tr\u1EF1c ti\u1EBFp.</footer>
 </main></body></html>`;
@@ -2699,7 +2886,7 @@ var tableSheet = (columns, sourceRows, tableRelId) => {
 };
 var overviewSheet = (report) => {
   const data = [
-    { values: ["B\xC1O C\xC1O AUDIT BGS", "", "", ""], style: 1, height: 30 },
+    { values: [(report.title || "B\xC1O C\xC1O AUDIT BGS").toLocaleUpperCase("vi-VN"), "", "", ""], style: 1, height: 30 },
     { values: ["Th\u1EDDi \u0111i\u1EC3m xu\u1EA5t", new Date(report.generatedAt).toLocaleString("vi-VN"), "S\u1ED1 d\xF2ng chi ti\u1EBFt", report.detailRows.length], style: 4 },
     { values: ["", "", "", ""], style: 0 },
     { values: ["T\u1ED4NG QUAN", "", "", ""], style: 2, height: 24 },
@@ -2729,23 +2916,54 @@ var tableXml = (id, name, columns, rowCount) => {
   return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="${name}" displayName="${name}" ref="A1:${end}" totalsRowShown="0"><autoFilter ref="A1:${end}"/><tableColumns count="${columns.length}">${names.map((columnLabel, index) => `<tableColumn id="${index + 1}" name="${xmlEscape(columnLabel)}"/>`).join("")}</tableColumns><tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>`;
 };
+function pivotSheetData(pivot) {
+  return {
+    columns: [
+      { label: pivot.rowLabel },
+      ...pivot.columns.map((label) => ({ label, kind: "number" })),
+      { label: "T\u1ED5ng", kind: "number" }
+    ],
+    rows: pivot.rows.map((row) => [row.label, ...row.values, row.total])
+  };
+}
 async function renderReportXlsx(report) {
+  const plans = [
+    { name: "T\u1ED5ng quan", xml: overviewSheet(report) },
+    {
+      name: "Ph\xE2n t\xEDch",
+      xml: tableSheet(report.groupColumns, report.groupRows, "rId1"),
+      table: { name: "PhanTich", columns: report.groupColumns, rowCount: report.groupRows.length }
+    }
+  ];
+  if (report.pivot) {
+    const grid = pivotSheetData(report.pivot);
+    plans.push({
+      name: "B\u1EA3ng ch\xE9o",
+      xml: tableSheet(grid.columns, grid.rows, "rId1"),
+      table: { name: "BangCheo", columns: grid.columns, rowCount: grid.rows.length }
+    });
+  }
+  plans.push({
+    name: "D\u1EEF li\u1EC7u chi ti\u1EBFt",
+    xml: tableSheet(report.detailColumns, report.detailRows, "rId1"),
+    table: { name: "DuLieuChiTiet", columns: report.detailColumns, rowCount: report.detailRows.length }
+  });
+  const tablePlans = plans.map((plan, index) => ({ plan, sheetIndex: index + 1 })).filter((entry) => Boolean(entry.plan.table));
   const zip = new JSZip();
-  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/worksheets/sheet3.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/><Override PartName="/xl/tables/table1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/><Override PartName="/xl/tables/table2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/></Types>`);
+  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${plans.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}${tablePlans.map((_, index) => `<Override PartName="/xl/tables/table${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`).join("")}</Types>`);
   zip.folder("_rels").file(".rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
-  zip.folder("xl").file("workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets><sheet name="T\u1ED5ng quan" sheetId="1" r:id="rId1"/><sheet name="Ph\xE2n t\xEDch" sheetId="2" r:id="rId2"/><sheet name="D\u1EEF li\u1EC7u chi ti\u1EBFt" sheetId="3" r:id="rId3"/></sheets><calcPr calcId="191029"/></workbook>`);
-  zip.folder("xl").folder("_rels").file("workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/><Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet3.xml"/><Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
+  zip.folder("xl").file("workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>${plans.map((plan, index) => `<sheet name="${xmlEscape(plan.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("")}</sheets><calcPr calcId="191029"/></workbook>`);
+  zip.folder("xl").folder("_rels").file("workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${plans.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("")}<Relationship Id="rId${plans.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
   zip.folder("xl").file("styles.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00"/></numFmts><fonts count="3"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="16"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF006B68"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE8F4F3"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFD9E2E8"/></left><right style="thin"><color rgb="FFD9E2E8"/></right><top style="thin"><color rgb="FFD9E2E8"/></top><bottom style="thin"><color rgb="FFD9E2E8"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="1" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/></styleSheet>`);
   const sheets = zip.folder("xl").folder("worksheets");
-  sheets.file("sheet1.xml", overviewSheet(report));
-  sheets.file("sheet2.xml", tableSheet(report.groupColumns, report.groupRows, "rId1"));
-  sheets.file("sheet3.xml", tableSheet(report.detailColumns, report.detailRows, "rId1"));
+  for (const [index, plan] of plans.entries()) sheets.file(`sheet${index + 1}.xml`, plan.xml);
   const sheetRels = sheets.folder("_rels");
-  sheetRels.file("sheet2.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table1.xml"/></Relationships>`);
-  sheetRels.file("sheet3.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table2.xml"/></Relationships>`);
   const tables = zip.folder("xl").folder("tables");
-  tables.file("table1.xml", tableXml(1, "PhanTich", report.groupColumns, report.groupRows.length));
-  tables.file("table2.xml", tableXml(2, "DuLieuChiTiet", report.detailColumns, report.detailRows.length));
+  tablePlans.forEach((entry, tableIndex) => {
+    const tableId = tableIndex + 1;
+    sheetRels.file(`sheet${entry.sheetIndex}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${tableId}.xml"/></Relationships>`);
+    tables.file(`table${tableId}.xml`, tableXml(tableId, entry.plan.table.name, entry.plan.table.columns, entry.plan.table.rowCount));
+  });
   return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
 }
 
@@ -4312,6 +4530,7 @@ var workflowEvents = [
     createdAt: "2026-08-22T14:15:00.000Z"
   }
 ];
+var pendingWorkflowEvents = [];
 var evidences = [
   {
     id: "evi-001",
@@ -4458,6 +4677,7 @@ var stateRepository = createStateRepository({
   persistenceEnabled: process.env.NODE_ENV !== "test",
   snapshotId: process.env.STATE_SNAPSHOT_ID ?? (process.env.NODE_ENV === "test" ? `test-${process.pid}-${crypto5.randomUUID().slice(0, 8)}` : void 0)
 });
+var workflowEventLedger = stateRepository instanceof PostgresStateRepository ? new PostgresWorkflowEventLedger({ pool }) : void 0;
 var hydratedState = await stateRepository.load({
   orgUnits,
   appUsers,
@@ -4484,7 +4704,17 @@ var hydratedState = await stateRepository.load({
   securityEvents,
   loginAttempts
 });
+if (!Array.isArray(hydratedState.workflowEvents)) hydratedState.workflowEvents = [];
+if (workflowEventLedger) {
+  const snapshotEvents = hydratedState.workflowEvents;
+  const ledgerEvents = await workflowEventLedger.loadAll();
+  hydratedState.workflowEvents = ledgerEvents.length > 0 || snapshotEvents.length === 0 ? ledgerEvents : snapshotEvents;
+  if (ledgerEvents.length === 0 && snapshotEvents.length > 0) {
+    pendingWorkflowEvents = structuredClone(snapshotEvents);
+  }
+}
 var repositoryHydrationBaseline = structuredClone(hydratedState);
+if (workflowEventLedger) repositoryHydrationBaseline = withoutWorkflowEvents(repositoryHydrationBaseline);
 if (!DEMO_SEED_ENABLED) {
   const demoUserIds = new Set(DEMO_SEED_IDS.users);
   const demoOrgUnitIds = new Set(DEMO_SEED_IDS.orgUnits.filter((id) => id !== "org-ho"));
@@ -4529,6 +4759,10 @@ var channelSlaBackfilled = (() => {
 findings = hydratedState.findings;
 findings = findings.map(ensureFindingSubItems);
 workflowEvents = hydratedState.workflowEvents;
+function recordWorkflowEvent(event) {
+  workflowEvents.push(event);
+  if (workflowEventLedger) pendingWorkflowEvents.push(structuredClone(event));
+}
 evidences = hydratedState.evidences;
 importBatches = hydratedState.importBatches;
 slaExtensions = hydratedState.slaExtensions;
@@ -4751,14 +4985,23 @@ function currentLocalState() {
     loginAttempts
   };
 }
-var durableState = new DurableStateCoordinator(currentLocalState());
-function restoreDurableLocalState(restored) {
+function withoutWorkflowEvents(state) {
+  const persisted = structuredClone(state);
+  delete persisted.workflowEvents;
+  return persisted;
+}
+function persistedLocalState() {
+  const state = currentLocalState();
+  return workflowEventLedger ? withoutWorkflowEvents(state) : state;
+}
+var durableState = new DurableStateCoordinator(persistedLocalState());
+function restoreDurableLocalState(restored, workflowEventsOverride) {
   orgUnits = restored.orgUnits;
   appUsers = restored.appUsers;
   reportChannels = restored.reportChannels;
   reportChannelVersions = restored.reportChannelVersions ?? [];
   findings = restored.findings.map((finding) => ensureFindingSubItems(normalizeFindingSpecialCase(finding)));
-  workflowEvents = restored.workflowEvents;
+  workflowEvents = workflowEventsOverride ?? restored.workflowEvents ?? [];
   evidences = restored.evidences;
   importBatches = restored.importBatches;
   slaExtensions = restored.slaExtensions;
@@ -4793,9 +5036,12 @@ app.addHook("onRequest", async (request) => {
   const release = await runtimeRequestLock.acquire();
   runtimeRequestReleases.set(request, release);
   try {
-    const latest = await stateRepository.load(currentLocalState());
-    restoreDurableLocalState(latest);
-    durableState.hydrate(latest);
+    const latest = stateRepository instanceof PostgresStateRepository ? await stateRepository.loadIfChanged() : await stateRepository.load(currentLocalState());
+    if (latest) {
+      restoreDurableLocalState(latest);
+      if (workflowEventLedger) workflowEvents = await workflowEventLedger.loadAll();
+      durableState.hydrate(persistedLocalState());
+    }
   } catch (error) {
     releaseRuntimeRequest(request);
     throw error;
@@ -4809,24 +5055,41 @@ app.addHook("onError", async (request) => {
 });
 async function persistLocalState() {
   const base = durableState.snapshot();
-  const snapshot = currentLocalState();
+  const snapshot = persistedLocalState();
   const mergeBase = repositoryHydrationBaseline ?? base;
-  const saved = await durableState.persistAsync(
-    async () => stateRepository.update(snapshot, (latest) => threeWayMergeState(mergeBase, snapshot, latest)),
-    restoreDurableLocalState
-  );
+  const events = workflowEventLedger ? structuredClone(pendingWorkflowEvents) : [];
+  const eventIds = new Set(events.map((event) => event.id));
+  let saved;
+  try {
+    saved = await durableState.persistAsync(
+      async () => stateRepository instanceof PostgresStateRepository ? stateRepository.updateWithWorkflowEvents(
+        snapshot,
+        (latest) => threeWayMergeState(mergeBase, snapshot, withoutWorkflowEvents(latest)),
+        events
+      ) : stateRepository.update(snapshot, (latest) => threeWayMergeState(mergeBase, snapshot, latest)),
+      (restored) => restoreDurableLocalState(
+        restored,
+        workflowEventLedger ? workflowEvents.filter((event) => !eventIds.has(event.id)) : void 0
+      )
+    );
+  } catch (error) {
+    if (eventIds.size > 0) pendingWorkflowEvents = pendingWorkflowEvents.filter((event) => !eventIds.has(event.id));
+    throw error;
+  }
   repositoryHydrationBaseline = void 0;
-  restoreDurableLocalState(saved);
+  if (eventIds.size > 0) pendingWorkflowEvents = pendingWorkflowEvents.filter((event) => !eventIds.has(event.id));
+  restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : void 0);
 }
 async function evaluateCurrentSlaState() {
   let result = { updatedCount: 0, overdueCount: 0, dueSoonCount: 0 };
+  const runtimeWorkflowEvents = workflowEventLedger ? workflowEvents : void 0;
   const saved = await durableState.persistAsync(
-    async () => stateRepository.update(currentLocalState(), (latest) => {
+    async () => stateRepository.update(persistedLocalState(), (latest) => {
       result = runSlaEvaluation(latest.findings);
     }),
-    restoreDurableLocalState
+    (restored) => restoreDurableLocalState(restored, runtimeWorkflowEvents)
   );
-  restoreDurableLocalState(saved);
+  restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : void 0);
   return { evaluatedCount: saved.findings.length, ...result };
 }
 function synchronizeUserDirectoryModel() {
@@ -6172,11 +6435,18 @@ app.get("/api/v1/org-units/branches", async (req) => {
 });
 app.get("/api/v1/admin/org-units", async (req) => {
   requireCatalogManager(getCurrentUser(req));
-  return orgUnits.map(projectOrgUnit);
+  const index = buildOrgUnitLookup();
+  return orgUnits.map((unit) => projectOrgUnit(unit, index));
 });
-function projectOrgUnit(unit) {
-  const parent = orgUnits.find((candidate) => candidate.id === unit.parentId);
-  const leader = appUsers.find((candidate) => candidate.id === unit.leaderUserId);
+function buildOrgUnitLookup() {
+  return {
+    unitById: new Map(orgUnits.map((unit) => [unit.id, unit])),
+    userById: new Map(appUsers.map((user) => [user.id, user]))
+  };
+}
+function projectOrgUnit(unit, lookup) {
+  const parent = unit.parentId ? lookup?.unitById.get(unit.parentId) ?? orgUnits.find((candidate) => candidate.id === unit.parentId) : void 0;
+  const leader = unit.leaderUserId ? lookup?.userById.get(unit.leaderUserId) ?? appUsers.find((candidate) => candidate.id === unit.leaderUserId) : void 0;
   return { ...unit, parentName: parent?.name, leaderName: leader?.fullName ?? unit.leaderName };
 }
 function assertOrgUnitParent(type, parentId, ownId) {
@@ -6314,13 +6584,19 @@ app.delete("/api/v1/admin/org-units/:id", async (req, reply) => {
 });
 app.get("/api/v1/admin/users", async (req) => {
   requireCatalogManager(getCurrentUser(req));
+  const unitById = new Map(orgUnits.map((unit) => [unit.id, unit]));
+  const branchByCode = new Map(
+    orgUnits.filter((unit) => unit.type === "BRANCH").map((unit) => [unit.code, unit])
+  );
   return appUsers.map((user) => {
-    const team = user.internalTeamId ? orgUnits.find((unit) => unit.id === user.internalTeamId && unit.type === "INTERNAL_TEAM") : void 0;
-    const branch = user.branchCode ? orgUnits.find((unit) => unit.code === user.branchCode && unit.type === "BRANCH") : void 0;
-    const cluster = branch ? orgUnits.find((unit) => unit.id === branch.parentId && unit.type === "CLUSTER") : void 0;
+    const team = user.internalTeamId ? unitById.get(user.internalTeamId) : void 0;
+    const branch = user.branchCode ? branchByCode.get(user.branchCode) : void 0;
+    const parent = branch?.parentId ? unitById.get(branch.parentId) : void 0;
+    const cluster = parent?.type === "CLUSTER" ? parent : void 0;
     return {
       ...user,
-      internalTeamName: team?.name ?? user.internalTeamName,
+      // `team` tra theo id nên phải kiểm lại kiểu; bản cũ lọc kiểu ngay trong `find`.
+      internalTeamName: team?.type === "INTERNAL_TEAM" ? team.name : user.internalTeamName,
       branchName: branch?.name ?? user.branchName,
       clusterName: cluster?.name ?? user.clusterName
     };
@@ -6768,8 +7044,9 @@ app.delete("/api/v1/admin/channels/:id", async (req, reply) => {
   return reply.code(204).send();
 });
 function getAuditLogEntries() {
+  const findingById = new Map(findings.map((finding) => [finding.id, finding]));
   return workflowEvents.map((event) => {
-    const finding = findings.find((item) => item.id === event.findingId);
+    const finding = findingById.get(event.findingId);
     return {
       id: event.id,
       timestamp: event.createdAt,
@@ -6811,6 +7088,18 @@ function filterAuditLogEntries(entries, query) {
     entry.branchCode
   ].some((value) => value.toLocaleLowerCase("vi").includes(keyword)));
 }
+function paginateAuditLogEntries(page, limit, query) {
+  const filtered = filterAuditLogEntries(getAuditLogEntries(), query);
+  const offset = (page - 1) * limit;
+  const items = filtered.slice(offset, offset + limit);
+  return {
+    items,
+    total: filtered.length,
+    page,
+    limit,
+    hasMore: offset + items.length < filtered.length
+  };
+}
 function auditCsvCell(value) {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -6819,7 +7108,8 @@ function canClearTestAuditEvents() {
 }
 app.get("/api/v1/admin/audit-events", async (req) => {
   requireAdmin(getCurrentUser(req));
-  return getAuditLogEntries();
+  const { page, limit } = PaginationQuerySchema.parse(req.query);
+  return paginateAuditLogEntries(page, limit, req.query.query);
 });
 app.get("/api/v1/admin/audit-events/export", async (req, reply) => {
   requireAdmin(getCurrentUser(req));
@@ -6923,20 +7213,64 @@ app.delete("/api/v1/findings/:id/follow", async (req) => {
   await persistLocalState();
   return { findingId: finding.id, isFollowing: false };
 });
-app.get("/api/v1/findings", async (req) => {
-  const user = getCurrentUser(req);
-  let result = filterFindingsByScope(findings, user);
-  const { page, limit } = PaginationQuerySchema.parse(req.query);
-  const query = req.query ?? {};
-  const { channelId, campaignId, workflowStatus, slaStatus, search } = query;
+function applyFindingQueryFilters(items, query) {
+  const {
+    channelId,
+    campaignId,
+    workflowStatus,
+    slaStatus,
+    branchCode,
+    department,
+    clusterName,
+    errorCode,
+    errorGroup,
+    officerName,
+    riskLevel,
+    businessLine,
+    unresolvedOnly,
+    specialOnly,
+    hasEvidence,
+    dateFrom,
+    dateTo,
+    search
+  } = query;
+  let result = items;
   if (channelId) result = result.filter((f) => f.channelId === channelId || f.channelCode === channelId);
   if (campaignId) result = result.filter((f) => f.campaignId === campaignId);
   if (workflowStatus) result = result.filter((f) => f.workflowStatus === workflowStatus);
-  if (slaStatus) result = result.filter((f) => f.slaStatus === slaStatus);
+  if (slaStatus) {
+    result = slaStatus === "OVERDUE" ? result.filter((f) => f.isOverdue || f.slaStatus === "OVERDUE") : result.filter((f) => !f.isOverdue && f.slaStatus === slaStatus);
+  }
+  if (branchCode) result = result.filter((f) => f.branchCode === branchCode);
+  if (department) result = result.filter((f) => (f.department || "") === department);
+  if (clusterName) result = result.filter((f) => f.clusterName === clusterName);
+  if (errorCode) result = result.filter((f) => f.errorCode === errorCode);
+  if (errorGroup) result = result.filter((f) => (f.errorGroup || "") === errorGroup);
+  if (officerName) result = result.filter((f) => (f.officerName || "") === officerName);
+  if (riskLevel) result = result.filter((f) => f.riskLevel === riskLevel);
+  if (businessLine) result = result.filter((f) => f.businessLine === businessLine);
+  if (unresolvedOnly === "true") result = result.filter((f) => f.workflowStatus !== "WAIVED_RESOLVED");
+  if (specialOnly === "true") result = result.filter((f) => Boolean(f.isSpecialCase));
+  if (hasEvidence === "YES" || hasEvidence === "NO") {
+    const withEvidence = new Set(
+      evidences.filter((evidence) => evidence.status === "AVAILABLE").map((evidence) => evidence.findingId)
+    );
+    const wanted = hasEvidence === "YES";
+    result = result.filter((f) => withEvidence.has(f.id) === wanted);
+  }
+  if (dateFrom) result = result.filter((f) => (f.auditDate || f.createdAt.slice(0, 10)) >= dateFrom);
+  if (dateTo) result = result.filter((f) => (f.auditDate || f.createdAt.slice(0, 10)) <= dateTo);
   if (search) {
     const s = search.toLowerCase();
-    result = result.filter((f) => f.cif.includes(s) || f.customerName.toLowerCase().includes(s) || f.errorCode.toLowerCase().includes(s) || f.branchName.toLowerCase().includes(s));
+    result = result.filter((f) => f.cif.includes(s) || f.customerName.toLowerCase().includes(s) || f.errorCode.toLowerCase().includes(s) || f.branchName.toLowerCase().includes(s) || (f.clusterName ?? "").toLowerCase().includes(s));
   }
+  return result;
+}
+app.get("/api/v1/findings", async (req) => {
+  const user = getCurrentUser(req);
+  const { page, limit } = PaginationQuerySchema.parse(req.query);
+  const query = req.query ?? {};
+  const result = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
   const total = result.length;
   const offset = (page - 1) * limit;
   const items = result.slice(offset, offset + limit).map(withEvidenceProjection);
@@ -7021,7 +7355,7 @@ app.post("/api/v1/findings/:id/sub-items/review", async (req) => {
   }));
   finding.version += 1;
   finding.updatedAt = now;
-  workflowEvents.push({
+  recordWorkflowEvent({
     id: `evt-${crypto5.randomUUID()}`,
     findingId: finding.id,
     command: "REVIEW_SUB_ITEMS",
@@ -7208,7 +7542,7 @@ app.put("/api/v1/findings/:id/special-case", async (req) => {
     customerFinding.isSpecialCase = dto.isSpecialCase;
     customerFinding.version += 1;
     customerFinding.updatedAt = now;
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto5.randomUUID()}`,
       findingId: customerFinding.id,
       command: "SET_SPECIAL_CASE",
@@ -7308,7 +7642,7 @@ app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
     }
     const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "SUBMIT_BRANCH",
@@ -7338,7 +7672,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-approve", async (req, repl
     const updated = workflowService.executeBranchControlApprove(finding, dto, user);
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_CONTROL_APPROVE",
@@ -7367,7 +7701,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-reject", async (req, reply
   try {
     const updated = workflowService.executeBranchControlReject(finding, dto, user);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_CONTROL_REJECT",
@@ -7398,7 +7732,7 @@ app.post("/api/v1/findings/:id/actions/branch-leader-approve", async (req) => {
     const updated = workflowService.executeBranchLeaderApprove(finding, dto, user);
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_LEADER_APPROVE",
@@ -7427,7 +7761,7 @@ app.post("/api/v1/findings/:id/actions/branch-leader-reject", async (req) => {
   try {
     const updated = workflowService.executeBranchLeaderReject(finding, dto, user);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_LEADER_REJECT",
@@ -7458,7 +7792,7 @@ app.post("/api/v1/findings/:id/actions/internal-waive", async (req, reply) => {
     const updated = workflowService.executeInternalWaive(finding, dto, user);
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "INTERNAL_WAIVE",
@@ -7487,7 +7821,7 @@ app.post("/api/v1/findings/:id/actions/internal-reject", async (req, reply) => {
   try {
     const updated = workflowService.executeInternalReject(finding, dto, user);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto5.randomUUID()}`,
       findingId: finding.id,
       command: "INTERNAL_REJECT",
@@ -7508,8 +7842,16 @@ app.post("/api/v1/findings/:id/actions/internal-reject", async (req, reply) => {
   }
 });
 function evidenceFolderPath(finding) {
+  const campaign = auditCampaigns.find((item) => item.id === finding.campaignId);
+  if (campaign?.driveProvisionStatus === "READY" && campaign.driveRootFolderId) {
+    return googleDriveService.generateCampaignEvidenceFolderPath({
+      cif: finding.cif,
+      customerName: finding.customerName,
+      errorCode: finding.errorCode
+    });
+  }
   return googleDriveService.generateFolderPath({
-    campaignCode: auditCampaigns.find((campaign) => campaign.id === finding.campaignId)?.code,
+    campaignCode: campaign?.code,
     channelCode: finding.channelCode,
     year: Number((finding.auditDate || finding.createdAt).slice(0, 4)) || (/* @__PURE__ */ new Date()).getFullYear(),
     clusterName: finding.clusterName,
@@ -7518,6 +7860,13 @@ function evidenceFolderPath(finding) {
     customerName: finding.customerName,
     errorCode: finding.errorCode
   });
+}
+function requireProvisionedCampaignDriveRootFolderId(finding) {
+  const campaign = auditCampaigns.find((item) => item.id === finding.campaignId);
+  if (!campaign || campaign.driveProvisionStatus !== "READY" || !campaign.driveRootFolderId) {
+    throw new HttpProblem(409, "CAMPAIGN_DRIVE_NOT_READY", "Kho chuy\xEAn \u0111\u1EC1 ch\u01B0a s\u1EB5n s\xE0ng", "Qu\u1EA3n tr\u1ECB vi\xEAn ph\u1EA3i t\u1EA1o kho d\u1EEF li\u1EC7u Drive cho chuy\xEAn \u0111\u1EC1 tr\u01B0\u1EDBc khi t\u1EA3i minh ch\u1EE9ng.");
+  }
+  return campaign.driveRootFolderId;
 }
 function requireEvidenceUploadAccess(req, findingId) {
   const user = getCurrentUser(req);
@@ -7555,14 +7904,15 @@ app.post("/api/v1/findings/:id/evidence/upload-session", async (req) => {
   const { finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CreateEvidenceUploadSessionSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
-  if ((await googleDriveService.getStorageStatus()).mode !== "google-drive") return { uploadMode: "local" };
-  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const storageStatus = await googleDriveService.getStorageStatus();
+  if (storageStatus.mode !== "google-drive") return { uploadMode: "local" };
+  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
 });
 app.post("/api/v1/findings/:id/evidence/complete", async (req) => {
   const { user, finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CompleteEvidenceDirectUploadSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
-  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
   const evidence = registerEvidence(finding, user, uploadResult, fileName);
   await persistLocalState();
   return evidence;
@@ -7637,7 +7987,8 @@ app.get("/api/v1/evidence/:driveFileId/content", async (req, reply) => {
 });
 app.get("/api/v1/dashboards/summary", async (req) => {
   const user = getCurrentUser(req);
-  const scoped = filterFindingsByScope(findings, user);
+  const query = req.query ?? {};
+  const scoped = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
   const active = scoped.filter((f) => f.workflowStatus !== "WAIVED_RESOLVED");
   const resolved = scoped.filter((f) => f.workflowStatus === "WAIVED_RESOLVED");
   const totalExposure = scoped.reduce((acc, f) => acc + (f.exposureAmount || 0), 0);
@@ -7652,7 +8003,9 @@ app.get("/api/v1/dashboards/summary", async (req) => {
     waivedResolved: resolved.length,
     onTrackCount: scoped.filter((f) => f.slaStatus === "ON_TRACK").length,
     dueSoonCount: scoped.filter((f) => f.slaStatus === "DUE_SOON").length,
-    overdueCount: scoped.filter((f) => f.slaStatus === "OVERDUE").length,
+    // `isOverdue` là cờ suy ra lúc chạy và có thể bật trước khi `slaStatus` được ghi lại; giao diện
+    // đọc cả hai, nên thẻ số cũng phải đọc cả hai, nếu không con số sẽ chỏi với danh sách bên dưới.
+    overdueCount: scoped.filter((f) => f.isOverdue || f.slaStatus === "OVERDUE").length,
     totalExposureAmount: totalExposure,
     resolvedExposureAmount: resolvedExposure,
     remediationRatePercent: scoped.length ? Math.round(resolved.length / scoped.length * 100) : 0
@@ -7676,6 +8029,7 @@ app.post("/api/v1/reports/definitions", async (req, reply) => {
     columns: body.columns,
     query: body.query,
     exportColumns: body.exportColumns,
+    presentation: body.presentation,
     visibility: body.visibility,
     sharedWithRoles: body.sharedWithRoles,
     sourceReportDefinitionId: body.sourceReportDefinitionId,
@@ -7790,20 +8144,19 @@ app.post("/api/v1/reports/exports", async (req, reply) => {
     const value = reportFieldAccessors[key](finding);
     return field.valueType === "ENUM" || field.valueType === "BOOLEAN" ? reportValueLabel(key, value, finding) : value;
   };
-  if (request.format === "csv") {
-    const header = columns.map((column) => csvCell(column.label)).join(",");
-    const csvRows = rows.map((finding) => request.columns.map((key) => csvCell(exportValue(key, finding))).join(","));
-    const csv = `\uFEFF${[header, ...csvRows].join("\r\n")}`;
-    return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="audit-bgs-report-${dateStamp}.csv"`).send(csv);
-  }
   const run = executeReportRun(scoped, request.query);
   const catalogForLabels = buildReportCatalog(scoped);
+  const presentation = request.presentation;
+  const metricFormat = (key) => presentation?.metrics?.[key];
   const metricLabel = (key) => {
+    const custom = metricFormat(key)?.label;
+    if (custom) return custom;
     const metric = configuredMetrics.find((item) => item.key === key);
     if (metric.unit === "MILLION_VND") return `${metric.label} (tri\u1EC7u \u0111\u1ED3ng)`;
     if (metric.unit === "PERCENT") return `${metric.label} (%)`;
     return metric.label;
   };
+  const groupFieldLabel = presentation?.rowLabel || configuredFields.find((item) => item.key === request.query.groupBy).label;
   const ruleValue = (rule) => {
     if (rule.operator === "op.is_true" || rule.operator === "op.is_false") return "";
     if (rule.operator === "op.between") return `${String(rule.from ?? "")} \u0111\u1EBFn ${String(rule.to ?? "")}`;
@@ -7823,18 +8176,52 @@ app.post("/api/v1/reports/exports", async (req, reply) => {
       { label: "D\xF2ng d\u1EEF li\u1EC7u ph\xF9 h\u1EE3p", value: run.matchedFindingCount },
       ...request.query.metrics.map((key) => ({ label: metricLabel(key), value: run.metricValues[key] || 0 }))
     ],
-    groupLabel: configuredFields.find((item) => item.key === request.query.groupBy).label,
+    title: presentation?.title,
+    groupLabel: groupFieldLabel,
     groupColumns: [
-      { label: configuredFields.find((item) => item.key === request.query.groupBy).label, kind: "text" },
+      { label: groupFieldLabel, kind: "text" },
       ...request.query.metrics.map((key) => ({ label: metricLabel(key), kind: "number" }))
     ],
-    groupRows: run.groups.map((row) => [row.label, ...request.query.metrics.map((key) => row.metricValues[key] || 0)]),
+    // Số đi ra dưới dạng chuỗi đã định dạng khi người dùng có đặt số lẻ hoặc hậu tố; nếu không thì
+    // giữ nguyên kiểu số để Excel còn tính toán được trên đó.
+    groupRows: run.groups.map((row) => [row.label, ...request.query.metrics.map((key) => {
+      const value = row.metricValues[key] || 0;
+      const format = metricFormat(key);
+      return format?.decimals !== void 0 || format?.suffix ? formatReportMetricValue(value, format) : value;
+    })]),
+    // Trường ở vùng "Cột" đi vào tệp thay vì bị bỏ rơi. Không có phần này thì mọi thiết kế bảng chéo
+    // đều xuất ra đúng một bảng một chiều, và người dùng không có dấu hiệu nào để nhận ra.
+    pivot: run.pivot && {
+      rowLabel: groupFieldLabel,
+      columnLabel: configuredFields.find((item) => item.key === run.pivot.columnField).label,
+      metricLabel: metricLabel(run.pivot.metric),
+      columns: run.pivot.columns.map((column) => column.label),
+      rows: run.pivot.rows.map((row) => ({
+        label: row.label,
+        values: run.pivot.columns.map((column) => row.values[column.key] || 0),
+        total: row.total
+      }))
+    },
     detailColumns: columns.map((column) => ({
       label: column.label,
       kind: column.valueType === "NUMBER" ? "number" : column.valueType === "DATE" ? "date" : column.valueType === "BOOLEAN" ? "boolean" : "text"
     })),
     detailRows: rows.map((finding) => request.columns.map((key) => exportValue(key, finding)))
   };
+  if (request.format === "csv") {
+    const grid = request.section === "detail" ? { columns: report.detailColumns, rows: report.detailRows } : report.pivot ? {
+      columns: [
+        { label: report.pivot.rowLabel },
+        ...report.pivot.columns.map((label) => ({ label })),
+        { label: "T\u1ED5ng" }
+      ],
+      rows: report.pivot.rows.map((row) => [row.label, ...row.values, row.total])
+    } : { columns: report.groupColumns, rows: report.groupRows };
+    const header = grid.columns.map((column) => csvCell(column.label)).join(",");
+    const csvRows = grid.rows.map((row) => row.map(csvCell).join(","));
+    const csv = `\uFEFF${[header, ...csvRows].join("\r\n")}`;
+    return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="audit-bgs-report-${dateStamp}.csv"`).send(csv);
+  }
   if (request.format === "html") {
     return reply.header("content-type", "text/html; charset=utf-8").header("content-disposition", `attachment; filename="audit-bgs-report-${dateStamp}.html"`).send(renderReportHtml(report));
   }

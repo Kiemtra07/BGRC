@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { WorkflowEvent } from '../../shared/contracts';
 import { PostgresStateRepository } from '../../server/src/repositories/postgres-state';
 import { createStateRepository } from '../../server/src/repositories/state-repository';
 
@@ -26,7 +27,7 @@ class FakePostgresClient {
   public async query(sql: string, params: unknown[] = []): Promise<QueryResult> {
     const normalized = sql.replace(/\s+/g, ' ').trim();
     this.queries.push(normalized);
-    if (normalized === 'BEGIN') {
+    if (normalized === 'BEGIN' || normalized === "BEGIN; SET LOCAL app.runtime_role = 'backend'") {
       this.transactionState = structuredClone(this.state);
       this.transactionVersion = this.version;
     } else if (normalized === 'ROLLBACK') {
@@ -76,6 +77,7 @@ describe('PostgresStateRepository', () => {
     loaded.values.push(2);
 
     expect(fallback.values).toEqual([1]);
+    expect(client.queries).toContain("BEGIN; SET LOCAL app.runtime_role = 'backend'");
     expect(client.queries).toContain('COMMIT');
   });
 
@@ -99,6 +101,31 @@ describe('PostgresStateRepository', () => {
     expect(saved).toEqual({ label: 'Bản mới nhất', values: [1, 2, 3] });
     expect(client.state).toEqual(saved);
     expect(client.queries.some(sql => /pg_advisory_xact_lock/i.test(sql))).toBe(true);
+    expect(client.queries.at(-1)).toBe('COMMIT');
+  });
+
+  it('writes workflow history in the same transaction as the snapshot', async () => {
+    const client = new FakePostgresClient({ label: 'Bản mới nhất', values: [1] }, 4);
+    const repository = new PostgresStateRepository<TestState>({ pool: new FakePostgresPool(client) });
+    const event: WorkflowEvent = {
+      id: 'evt-test-001',
+      findingId: 'find-test-001',
+      command: 'SUBMIT_BRANCH',
+      fromStatus: 'PENDING',
+      toStatus: 'SUBMITTED_BRANCH',
+      actorUserId: 'user-test-001',
+      actorName: 'Người kiểm thử',
+      actorRole: 'BRANCH_INPUT',
+      createdAt: '2026-09-02T00:00:00.000Z',
+    };
+
+    await repository.updateWithWorkflowEvents({ label: 'Bản cũ', values: [] }, latest => {
+      latest.values.push(2);
+    }, [event]);
+
+    const ledgerWrite = client.queries.findIndex(sql => /INSERT INTO workflow_event_ledger/i.test(sql));
+    const snapshotWrite = client.queries.findIndex(sql => /INSERT INTO app_state_snapshots/i.test(sql));
+    expect(ledgerWrite).toBeGreaterThan(snapshotWrite);
     expect(client.queries.at(-1)).toBe('COMMIT');
   });
 

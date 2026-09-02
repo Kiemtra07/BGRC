@@ -151,6 +151,43 @@ describe('UI and business terminology architecture', () => {
     expect(apiSource).toContain('downloadReportXlsx');
   });
 
+  it('keeps report field placement visible and supports Cognos-style click or drag/drop', () => {
+    const reports = read('src/components/reports/ReportsWorkspace.tsx');
+    const fieldChips = read('src/components/reports/ReportFieldChips.tsx');
+
+    // The palette itself must not host a popup inside its scrolling viewport: that was the reason
+    // the long field label in the report builder was visibly cut off in the browser.
+    expect(fieldChips).toContain("defaultZone = 'columns'");
+    expect(fieldChips).toContain('onClick={() => onAssign(defaultZone)}');
+    expect(fieldChips).toContain('draggable');
+    expect(fieldChips).toContain('onDragStart');
+    expect(fieldChips).toContain('overflow-y-auto');
+    expect(fieldChips).not.toContain('role="menu"');
+    expect(reports).toContain('clickZone={clickZone}');
+    expect(fieldChips).toContain('Bấm để thêm vào');
+  });
+
+  it('exposes separate report and dashboard design/preview states', () => {
+    const reports = read('src/components/reports/ReportsWorkspace.tsx');
+
+    expect(reports).toContain("const [dashboardMode, setDashboardMode] = useState<'design' | 'preview'>('design')");
+    expect(reports).toContain('Thiết kế bảng điều khiển');
+    expect(reports).toContain('Xem trước bảng điều khiển');
+    expect(reports).toContain('data-testid="dashboard-design-view"');
+    expect(reports).toContain('data-testid="dashboard-preview-view"');
+    expect(reports).toContain('presentation,');
+    expect(reports).toContain('setPresentation(definition.presentation');
+  });
+
+  it('turns a report network failure into an actionable retry state', () => {
+    const reports = read('src/components/reports/ReportsWorkspace.tsx');
+    const apiSource = read('src/services/api.ts');
+
+    expect(apiSource).toContain('Không thể kết nối tới máy chủ báo cáo');
+    expect(apiSource).toContain("endpoint: ${endpoint}");
+    expect(reports).toContain('Thử lại báo cáo');
+  });
+
   it('keeps operational screens concise while making report filters configurable', () => {
     const detail = read('src/components/portal/FindingDetailPage.tsx');
     const reports = read('src/components/reports/ReportsWorkspace.tsx');
@@ -365,6 +402,31 @@ describe('UI and business terminology architecture', () => {
     expect(apiSource).toContain('clearTestAuditEvents');
   });
 
+  it('guards asynchronous admin effects against unmount and stale responses', () => {
+    const reportTypeEditor = read('src/components/admin/report-types/ReportTypeEditor.tsx');
+    const reportCatalog = read('src/components/admin/ReportCatalogManager.tsx');
+    const securitySettings = read('src/components/admin/SecuritySettingsPanel.tsx');
+    const auditTrail = read('src/components/admin/AuditTrailViewer.tsx');
+    const reportsWorkspace = read('src/components/reports/ReportsWorkspace.tsx');
+
+    expect(reportTypeEditor).toContain('let active = true;');
+    expect(reportTypeEditor).toContain('return () => { active = false; };');
+    expect(reportTypeEditor).toContain('if (active) setReadiness');
+    expect(auditTrail).toContain('requestToken.current += 1');
+    for (const source of [reportCatalog, securitySettings, reportsWorkspace]) {
+      expect(source).toContain('mountedRef');
+      expect(source).toContain('mountedRef.current = false');
+      expect(source).toContain('if (!mountedRef.current) return;');
+    }
+  });
+
+  it('invalidates paged finding requests when a new search or reset starts', () => {
+    const appSource = read('src/App.tsx');
+    expect(appSource).toContain('const token = searchToken.current;');
+    expect(appSource).toContain('if (token !== searchToken.current) return;');
+    expect(appSource).toContain('searchToken.current += 1;');
+  });
+
   it('keeps the consolidated app and customer headers keyboard accessible', () => {
     const appSource = read('src/App.tsx');
     const detailSource = read('src/components/portal/FindingDetailPage.tsx');
@@ -378,11 +440,15 @@ describe('UI and business terminology architecture', () => {
     const copy = read('src/content/ui-copy.ts');
     const appSource = read('src/App.tsx');
     const detailSource = read('src/components/portal/FindingDetailPage.tsx');
+    // Thẻ số quá hạn nay nằm trong `ScopeSummaryTabs`, vì nó phải hiển thị được cho cả hai phạm vi
+    // (toàn bộ dữ liệu của người dùng và riêng chuyên đề vừa tìm) chứ không chỉ một.
+    const summarySource = read('src/components/portal/ScopeSummaryTabs.tsx');
     expect(copy).toContain('slaStatusLabels');
     expect(detailSource).toContain('slaStatusLabels');
     expect(detailSource).toContain('daysRemaining');
-    expect(appSource).toContain('dashboard.overdueCount');
-    expect(appSource).toContain('Quá hạn');
+    expect(summarySource).toContain('summary.overdueCount');
+    expect(summarySource).toContain('Quá hạn');
+    expect(appSource).toContain('ScopeSummaryTabs');
   });
 
   it('keeps deployment and operational documents aligned with the active workflow', () => {

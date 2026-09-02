@@ -54,6 +54,7 @@ import {
   riskLevelLabels,
   REPORT_FIELD_CATALOG,
   REPORT_METRIC_CATALOG,
+  formatReportMetricValue,
   REPORT_OPERATOR_CATALOG,
   ReportCatalog,
   ReportCatalogConfiguration,
@@ -72,6 +73,7 @@ import {
   ReportExportRequestSchema,
   UpdateReportCatalogConfigurationSchema,
   AuditLogEntry,
+  AuditLogPage,
   CreateFindingSubItemSchema,
   ReviewFindingSubItemsSchema,
   WorkspaceTarget,
@@ -101,10 +103,14 @@ import {
 import { workflowService } from './modules/workflow/workflow-service';
 import { EvidenceStorageStatus, googleDriveService } from './adapters/google-drive';
 import { appsScriptDriveGateway } from './adapters/apps-script-drive';
+import { pool } from './adapters/postgres';
 import {
   createStateRepository,
   StateRepositoryStatus,
 } from './repositories/state-repository';
+import { PostgresStateRepository } from './repositories/postgres-state';
+import type { PostgresPoolLike } from './repositories/postgres-state';
+import { PostgresWorkflowEventLedger } from './repositories/workflow-event-ledger';
 import { DurableStateCoordinator } from './state/durable-state-coordinator';
 import { threeWayMergeState } from './state/three-way-state-merge';
 import { RuntimeRequestLock, shouldHydrateRuntimeStatePerRequest } from './state/runtime-request-lock';
@@ -881,6 +887,7 @@ let workflowEvents: WorkflowEvent[] = [
     createdAt: '2026-08-22T14:15:00.000Z',
   }
 ];
+let pendingWorkflowEvents: WorkflowEvent[] = [];
 
 let evidences: EvidenceObject[] = [
   {
@@ -1208,6 +1215,10 @@ const stateRepository = createStateRepository<LocalAppState>({
     ?? (process.env.NODE_ENV === 'test' ? `test-${process.pid}-${crypto.randomUUID().slice(0, 8)}` : undefined),
 });
 
+const workflowEventLedger = stateRepository instanceof PostgresStateRepository
+  ? new PostgresWorkflowEventLedger({ pool: pool as unknown as PostgresPoolLike })
+  : undefined;
+
 const hydratedState = await stateRepository.load({
   orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
   importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows,
@@ -1216,11 +1227,25 @@ const hydratedState = await stateRepository.load({
   authenticatorCredentials,
   googleDriveOAuthCredential, securityEvents, loginAttempts,
 });
+if (!Array.isArray(hydratedState.workflowEvents)) hydratedState.workflowEvents = [];
+if (workflowEventLedger) {
+  const snapshotEvents = hydratedState.workflowEvents;
+  const ledgerEvents = await workflowEventLedger.loadAll();
+  // A completely new database has no ledger yet and may still be booting from the in-code demo
+  // seed. Preserve that seed until the first successful write can append it transactionally.
+  hydratedState.workflowEvents = ledgerEvents.length > 0 || snapshotEvents.length === 0
+    ? ledgerEvents
+    : snapshotEvents;
+  if (ledgerEvents.length === 0 && snapshotEvents.length > 0) {
+    pendingWorkflowEvents = structuredClone(snapshotEvents);
+  }
+}
 // Keep the exact repository snapshot as the merge base. Startup compatibility projections below
 // may remove demo records or restore structural fields before DurableStateCoordinator is created;
 // using that already-projected state as the merge base would make the first startup backfill look
 // like a concurrent edit and crash a serverless module during initialization.
 let repositoryHydrationBaseline: LocalAppState | undefined = structuredClone(hydratedState);
+if (workflowEventLedger) repositoryHydrationBaseline = withoutWorkflowEvents(repositoryHydrationBaseline);
 // A production process can be started against an older local snapshot that still contains
 // records from the opt-in demo seed. Never rehydrate those fabricated identities or business
 // records when demo seeding is disabled; the structural head-office root is kept separately.
@@ -1273,6 +1298,12 @@ const channelSlaBackfilled = (() => {
 findings = hydratedState.findings;
 findings = findings.map(ensureFindingSubItems);
 workflowEvents = hydratedState.workflowEvents;
+
+function recordWorkflowEvent(event: WorkflowEvent): void {
+  workflowEvents.push(event);
+  if (workflowEventLedger) pendingWorkflowEvents.push(structuredClone(event));
+}
+
 evidences = hydratedState.evidences;
 importBatches = hydratedState.importBatches;
 slaExtensions = hydratedState.slaExtensions;
@@ -1546,15 +1577,26 @@ function currentLocalState(): LocalAppState {
   };
 }
 
-const durableState = new DurableStateCoordinator<LocalAppState>(currentLocalState());
+function withoutWorkflowEvents(state: LocalAppState): LocalAppState {
+  const persisted = structuredClone(state) as Partial<LocalAppState>;
+  delete persisted.workflowEvents;
+  return persisted as LocalAppState;
+}
 
-function restoreDurableLocalState(restored: LocalAppState): void {
+function persistedLocalState(): LocalAppState {
+  const state = currentLocalState();
+  return workflowEventLedger ? withoutWorkflowEvents(state) : state;
+}
+
+const durableState = new DurableStateCoordinator<LocalAppState>(persistedLocalState());
+
+function restoreDurableLocalState(restored: LocalAppState, workflowEventsOverride?: WorkflowEvent[]): void {
   orgUnits = restored.orgUnits;
   appUsers = restored.appUsers;
   reportChannels = restored.reportChannels;
   reportChannelVersions = restored.reportChannelVersions ?? [];
   findings = restored.findings.map(finding => ensureFindingSubItems(normalizeFindingSpecialCase(finding)));
-  workflowEvents = restored.workflowEvents;
+  workflowEvents = workflowEventsOverride ?? restored.workflowEvents ?? [];
   evidences = restored.evidences;
   importBatches = restored.importBatches;
   slaExtensions = restored.slaExtensions;
@@ -1592,9 +1634,17 @@ app.addHook('onRequest', async (request) => {
   const release = await runtimeRequestLock.acquire();
   runtimeRequestReleases.set(request, release);
   try {
-    const latest = await stateRepository.load(currentLocalState());
-    restoreDurableLocalState(latest);
-    durableState.hydrate(latest);
+    // Chỉ dựng lại state khi snapshot thực sự đổi. Phần lớn request GET đến ngay sau một request
+    // GET khác mà không có lần ghi nào xen giữa: khi đó `loadIfChanged` trả `undefined` và cả
+    // việc tải payload lẫn việc chiếu lại toàn bộ mảng trong bộ nhớ đều được bỏ qua.
+    const latest = stateRepository instanceof PostgresStateRepository
+      ? await stateRepository.loadIfChanged()
+      : await stateRepository.load(currentLocalState());
+    if (latest) {
+      restoreDurableLocalState(latest);
+      if (workflowEventLedger) workflowEvents = await workflowEventLedger.loadAll();
+      durableState.hydrate(persistedLocalState());
+    }
   } catch (error) {
     releaseRuntimeRequest(request);
     throw error;
@@ -1611,14 +1661,34 @@ app.addHook('onError', async (request) => {
 
 async function persistLocalState(): Promise<void> {
   const base = durableState.snapshot();
-  const snapshot = currentLocalState();
+  const snapshot = persistedLocalState();
   const mergeBase = repositoryHydrationBaseline ?? base;
-  const saved = await durableState.persistAsync(
-    async () => stateRepository.update(snapshot, latest => threeWayMergeState(mergeBase, snapshot, latest)),
-    restoreDurableLocalState,
-  );
+  const events = workflowEventLedger ? structuredClone(pendingWorkflowEvents) : [];
+  const eventIds = new Set(events.map(event => event.id));
+  let saved: LocalAppState;
+  try {
+    saved = await durableState.persistAsync(
+      async () => stateRepository instanceof PostgresStateRepository
+        ? stateRepository.updateWithWorkflowEvents(
+          snapshot,
+          latest => threeWayMergeState(mergeBase, snapshot, withoutWorkflowEvents(latest)),
+          events,
+        )
+        : stateRepository.update(snapshot, latest => threeWayMergeState(mergeBase, snapshot, latest)),
+      restored => restoreDurableLocalState(
+        restored,
+        workflowEventLedger
+          ? workflowEvents.filter(event => !eventIds.has(event.id))
+          : undefined,
+      ),
+    );
+  } catch (error) {
+    if (eventIds.size > 0) pendingWorkflowEvents = pendingWorkflowEvents.filter(event => !eventIds.has(event.id));
+    throw error;
+  }
   repositoryHydrationBaseline = undefined;
-  restoreDurableLocalState(saved);
+  if (eventIds.size > 0) pendingWorkflowEvents = pendingWorkflowEvents.filter(event => !eventIds.has(event.id));
+  restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : undefined);
 }
 
 interface SlaRunResult {
@@ -1630,13 +1700,14 @@ interface SlaRunResult {
 
 async function evaluateCurrentSlaState(): Promise<SlaRunResult> {
   let result = { updatedCount: 0, overdueCount: 0, dueSoonCount: 0 };
+  const runtimeWorkflowEvents = workflowEventLedger ? workflowEvents : undefined;
   const saved = await durableState.persistAsync(
-    async () => stateRepository.update(currentLocalState(), latest => {
+    async () => stateRepository.update(persistedLocalState(), latest => {
       result = runSlaEvaluation(latest.findings);
     }),
-    restoreDurableLocalState,
+    restored => restoreDurableLocalState(restored, runtimeWorkflowEvents),
   );
-  restoreDurableLocalState(saved);
+  restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : undefined);
   return { evaluatedCount: saved.findings.length, ...result };
 }
 
@@ -3195,12 +3266,32 @@ app.get('/api/v1/org-units/branches', async (req) => {
 // Admin: Org Units
 app.get('/api/v1/admin/org-units', async (req) => {
   requireCatalogManager(getCurrentUser(req));
-  return orgUnits.map(projectOrgUnit);
+  // Chiếu cả cây một lượt thì dựng chỉ mục trước; để `projectOrgUnit` tự tra sẽ thành hai vòng lồng
+  // nhau trên toàn bộ đơn vị và toàn bộ tài khoản.
+  const index = buildOrgUnitLookup();
+  return orgUnits.map(unit => projectOrgUnit(unit, index));
 });
 
-function projectOrgUnit(unit: OrgUnit): OrgUnit {
-  const parent = orgUnits.find(candidate => candidate.id === unit.parentId);
-  const leader = appUsers.find(candidate => candidate.id === unit.leaderUserId);
+interface OrgUnitLookup {
+  unitById: Map<string, OrgUnit>;
+  userById: Map<string, UserProfile>;
+}
+
+function buildOrgUnitLookup(): OrgUnitLookup {
+  return {
+    unitById: new Map(orgUnits.map(unit => [unit.id, unit])),
+    userById: new Map(appUsers.map(user => [user.id, user])),
+  };
+}
+
+/** `lookup` chỉ đáng dựng khi chiếu nhiều đơn vị; một đơn vị lẻ thì tra thẳng vẫn rẻ hơn. */
+function projectOrgUnit(unit: OrgUnit, lookup?: OrgUnitLookup): OrgUnit {
+  const parent = unit.parentId
+    ? lookup?.unitById.get(unit.parentId) ?? orgUnits.find(candidate => candidate.id === unit.parentId)
+    : undefined;
+  const leader = unit.leaderUserId
+    ? lookup?.userById.get(unit.leaderUserId) ?? appUsers.find(candidate => candidate.id === unit.leaderUserId)
+    : undefined;
   return { ...unit, parentName: parent?.name, leaderName: leader?.fullName ?? unit.leaderName };
 }
 
@@ -3349,19 +3440,21 @@ app.delete('/api/v1/admin/org-units/:id', async (req: FastifyRequest<{ Params: {
 // Admin: Users
 app.get('/api/v1/admin/users', async (req) => {
   requireCatalogManager(getCurrentUser(req));
+  // Ba lượt tra cứu cho mỗi người dùng, nhân với toàn bộ cây tổ chức. Với vài trăm tài khoản và
+  // vài trăm đơn vị thì đây là hàng trăm nghìn lượt duyệt mảng cho một màn hình danh sách.
+  const unitById = new Map(orgUnits.map(unit => [unit.id, unit]));
+  const branchByCode = new Map(
+    orgUnits.filter(unit => unit.type === 'BRANCH').map(unit => [unit.code, unit]),
+  );
   return appUsers.map(user => {
-    const team = user.internalTeamId
-      ? orgUnits.find(unit => unit.id === user.internalTeamId && unit.type === 'INTERNAL_TEAM')
-      : undefined;
-    const branch = user.branchCode
-      ? orgUnits.find(unit => unit.code === user.branchCode && unit.type === 'BRANCH')
-      : undefined;
-    const cluster = branch
-      ? orgUnits.find(unit => unit.id === branch.parentId && unit.type === 'CLUSTER')
-      : undefined;
+    const team = user.internalTeamId ? unitById.get(user.internalTeamId) : undefined;
+    const branch = user.branchCode ? branchByCode.get(user.branchCode) : undefined;
+    const parent = branch?.parentId ? unitById.get(branch.parentId) : undefined;
+    const cluster = parent?.type === 'CLUSTER' ? parent : undefined;
     return {
       ...user,
-      internalTeamName: team?.name ?? user.internalTeamName,
+      // `team` tra theo id nên phải kiểm lại kiểu; bản cũ lọc kiểu ngay trong `find`.
+      internalTeamName: team?.type === 'INTERNAL_TEAM' ? team.name : user.internalTeamName,
       branchName: branch?.name ?? user.branchName,
       clusterName: cluster?.name ?? user.clusterName,
     };
@@ -3876,12 +3969,17 @@ app.delete('/api/v1/admin/channels/:id', async (req: FastifyRequest<{ Params: { 
   return reply.code(204).send();
 });
 
-// Admin: authoritative workflow audit trail from durable local state.
-// Production still needs an append-only database sink before this can be called immutable.
+// Admin: authoritative workflow audit trail from the in-memory projection. In Postgres mode the
+// projection is loaded from and appended to workflow_event_ledger, which is immutable at the DB layer;
+// local-json/memory remain development-only fallbacks.
 function getAuditLogEntries(): AuditLogEntry[] {
+  // Tra cứu qua Map dựng một lượt. Bản cũ gọi `findings.find()` cho từng workflow event, tức tích
+  // của hai bảng cùng tăng theo thời gian sử dụng: 2.000 sự kiện trên 1.000 hồ sơ là hai triệu lượt
+  // duyệt mảng cho mỗi lần mở màn hình Nhật ký, và nó chạy trên đúng lambda đang phục vụ request.
+  const findingById = new Map(findings.map(finding => [finding.id, finding]));
   return workflowEvents
     .map<AuditLogEntry>((event) => {
-      const finding = findings.find(item => item.id === event.findingId);
+      const finding = findingById.get(event.findingId);
       return {
         id: event.id,
         timestamp: event.createdAt,
@@ -3930,6 +4028,19 @@ function filterAuditLogEntries(entries: AuditLogEntry[], query?: string): AuditL
   ].some(value => value.toLocaleLowerCase('vi').includes(keyword)));
 }
 
+function paginateAuditLogEntries(page: number, limit: number, query?: string): AuditLogPage {
+  const filtered = filterAuditLogEntries(getAuditLogEntries(), query);
+  const offset = (page - 1) * limit;
+  const items = filtered.slice(offset, offset + limit);
+  return {
+    items,
+    total: filtered.length,
+    page,
+    limit,
+    hasMore: offset + items.length < filtered.length,
+  };
+}
+
 function auditCsvCell(value: string): string {
   return `"${value.replaceAll('"', '""')}"`;
 }
@@ -3938,9 +4049,10 @@ function canClearTestAuditEvents(): boolean {
   return DEMO_SEED_ENABLED && process.env.NODE_ENV !== 'production' && process.env.DATA_STORE_MODE !== 'postgres';
 }
 
-app.get('/api/v1/admin/audit-events', async (req) => {
+app.get('/api/v1/admin/audit-events', async (req: FastifyRequest<{ Querystring: { page?: string; limit?: string; query?: string } }>) => {
   requireAdmin(getCurrentUser(req));
-  return getAuditLogEntries();
+  const { page, limit } = PaginationQuerySchema.parse(req.query);
+  return paginateAuditLogEntries(page, limit, req.query.query);
 });
 
 app.get('/api/v1/admin/audit-events/export', async (
@@ -4074,23 +4186,72 @@ app.delete('/api/v1/findings/:id/follow', async (req: FastifyRequest<{ Params: {
   return { findingId: finding.id, isFollowing: false };
 });
 
-// Findings: List with scope filter & search
-app.get('/api/v1/findings', async (req: FastifyRequest<{ Querystring: any }>) => {
-  const user = getCurrentUser(req);
-  let result = filterFindingsByScope(findings, user);
-
-  const { page, limit } = PaginationQuerySchema.parse(req.query);
-  // Query strings are always strings or absent; read them as such instead of trusting `any`.
-  const query = (req.query ?? {}) as Record<string, string | undefined>;
-  const { channelId, campaignId, workflowStatus, slaStatus, search } = query;
+/**
+ * Bộ lọc phía máy chủ dùng chung cho danh sách hồ sơ và cho thẻ số theo chuyên đề.
+ *
+ * Hai đầu ra bắt buộc phải đọc cùng một bộ lọc, nếu không thẻ số sẽ nói một đằng còn danh sách bên
+ * dưới hiển thị một nẻo. Lọc ngay ở đây cũng có nghĩa là chỉ những hồ sơ thực sự được yêu cầu mới
+ * đi qua đường truyền, thay vì tải cả phạm vi về rồi mới lọc trên trình duyệt.
+ */
+function applyFindingQueryFilters(items: Finding[], query: Record<string, string | undefined>): Finding[] {
+  const {
+    channelId, campaignId, workflowStatus, slaStatus, branchCode, department, clusterName,
+    errorCode, errorGroup, officerName, riskLevel, businessLine,
+    unresolvedOnly, specialOnly, hasEvidence, dateFrom, dateTo, search,
+  } = query;
+  let result = items;
   if (channelId) result = result.filter(f => f.channelId === channelId || f.channelCode === channelId);
   if (campaignId) result = result.filter(f => f.campaignId === campaignId);
   if (workflowStatus) result = result.filter(f => f.workflowStatus === workflowStatus);
-  if (slaStatus) result = result.filter(f => f.slaStatus === slaStatus);
+  if (slaStatus) {
+    // Quá hạn cắt ngang mọi trạng thái SLA đã lưu, nên phải suy lại giống hệt phía giao diện.
+    result = slaStatus === 'OVERDUE'
+      ? result.filter(f => f.isOverdue || f.slaStatus === 'OVERDUE')
+      : result.filter(f => !f.isOverdue && f.slaStatus === slaStatus);
+  }
+  if (branchCode) result = result.filter(f => f.branchCode === branchCode);
+  if (department) result = result.filter(f => (f.department || '') === department);
+  if (clusterName) result = result.filter(f => f.clusterName === clusterName);
+  if (errorCode) result = result.filter(f => f.errorCode === errorCode);
+  if (errorGroup) result = result.filter(f => (f.errorGroup || '') === errorGroup);
+  if (officerName) result = result.filter(f => (f.officerName || '') === officerName);
+  if (riskLevel) result = result.filter(f => f.riskLevel === riskLevel);
+  if (businessLine) result = result.filter(f => f.businessLine === businessLine);
+  // Một hồ sơ còn là "chưa xử lý" cho tới khi Hội sở đóng nó.
+  if (unresolvedOnly === 'true') result = result.filter(f => f.workflowStatus !== 'WAIVED_RESOLVED');
+  if (specialOnly === 'true') result = result.filter(f => Boolean(f.isSpecialCase));
+  if (hasEvidence === 'YES' || hasEvidence === 'NO') {
+    // Minh chứng nằm ở kho riêng chứ không gắn trên hồ sơ, nên phải hỏi đúng nguồn. Bộ lọc cũ chạy
+    // trên trình duyệt đọc `finding.evidences` — trường mà endpoint danh sách không hề trả về, nên
+    // nó luôn coi như mọi hồ sơ đều chưa có minh chứng.
+    //
+    // Dựng một tập id trong một lượt duy nhất. Gọi `availableEvidencesForFinding` cho từng hồ sơ sẽ
+    // quét lại cả kho minh chứng mỗi lần — tích của hai số chỉ tăng, và cả hai đều nằm chung một
+    // blob state được nạp lại theo request.
+    const withEvidence = new Set(
+      evidences.filter(evidence => evidence.status === 'AVAILABLE').map(evidence => evidence.findingId),
+    );
+    const wanted = hasEvidence === 'YES';
+    result = result.filter(f => withEvidence.has(f.id) === wanted);
+  }
+  if (dateFrom) result = result.filter(f => (f.auditDate || f.createdAt.slice(0, 10)) >= dateFrom);
+  if (dateTo) result = result.filter(f => (f.auditDate || f.createdAt.slice(0, 10)) <= dateTo);
   if (search) {
     const s = search.toLowerCase();
-    result = result.filter(f => f.cif.includes(s) || f.customerName.toLowerCase().includes(s) || f.errorCode.toLowerCase().includes(s) || f.branchName.toLowerCase().includes(s));
+    // `clusterName` nằm trong danh sách đối chiếu vì mục tiêu công việc dạng cụm ở thanh bên tìm
+    // bằng chính từ khoá này; thiếu nó thì bấm vào một cụm sẽ ra danh sách rỗng.
+    result = result.filter(f => f.cif.includes(s) || f.customerName.toLowerCase().includes(s) || f.errorCode.toLowerCase().includes(s) || f.branchName.toLowerCase().includes(s) || (f.clusterName ?? '').toLowerCase().includes(s));
   }
+  return result;
+}
+
+// Findings: List with scope filter & search
+app.get('/api/v1/findings', async (req: FastifyRequest<{ Querystring: any }>) => {
+  const user = getCurrentUser(req);
+  const { page, limit } = PaginationQuerySchema.parse(req.query);
+  // Query strings are always strings or absent; read them as such instead of trusting `any`.
+  const query = (req.query ?? {}) as Record<string, string | undefined>;
+  const result = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
 
   const total = result.length;
   const offset = (page - 1) * limit;
@@ -4182,7 +4343,7 @@ app.post('/api/v1/findings/:id/sub-items/review', async (req: FastifyRequest<{ P
   }));
   finding.version += 1;
   finding.updatedAt = now;
-  workflowEvents.push({
+  recordWorkflowEvent({
     id: `evt-${crypto.randomUUID()}`,
     findingId: finding.id,
     command: 'REVIEW_SUB_ITEMS',
@@ -4400,7 +4561,7 @@ app.put('/api/v1/findings/:id/special-case', async (req: FastifyRequest<{ Params
     customerFinding.isSpecialCase = dto.isSpecialCase;
     customerFinding.version += 1;
     customerFinding.updatedAt = now;
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
       findingId: customerFinding.id,
       command: 'SET_SPECIAL_CASE',
@@ -4543,7 +4704,7 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
     const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     Object.assign(finding, updated);
 
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
       findingId: finding.id,
       command: 'SUBMIT_BRANCH',
@@ -4578,7 +4739,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-approve', async (req: Fast
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
 
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
       findingId: finding.id,
       command: 'BRANCH_CONTROL_APPROVE',
@@ -4612,7 +4773,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-reject', async (req: Fasti
     const updated = workflowService.executeBranchControlReject(finding, dto, user);
     Object.assign(finding, updated);
 
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
       findingId: finding.id,
       command: 'BRANCH_CONTROL_REJECT',
@@ -4646,7 +4807,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-approve', async (req: Fasti
     const updated = workflowService.executeBranchLeaderApprove(finding, dto, user);
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
       findingId: finding.id,
       command: 'BRANCH_LEADER_APPROVE',
@@ -4676,7 +4837,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-reject', async (req: Fastif
   try {
     const updated = workflowService.executeBranchLeaderReject(finding, dto, user);
     Object.assign(finding, updated);
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
       findingId: finding.id,
       command: 'BRANCH_LEADER_REJECT',
@@ -4711,7 +4872,7 @@ app.post('/api/v1/findings/:id/actions/internal-waive', async (req: FastifyReque
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
 
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
       findingId: finding.id,
       command: 'INTERNAL_WAIVE',
@@ -4745,7 +4906,7 @@ app.post('/api/v1/findings/:id/actions/internal-reject', async (req: FastifyRequ
     const updated = workflowService.executeInternalReject(finding, dto, user);
     Object.assign(finding, updated);
 
-    workflowEvents.push({
+    recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
       findingId: finding.id,
       command: 'INTERNAL_REJECT',
@@ -4772,8 +4933,16 @@ app.post('/api/v1/findings/:id/actions/internal-reject', async (req: FastifyRequ
 // ----------------------------------------------------
 
 function evidenceFolderPath(finding: Finding): string {
+  const campaign = auditCampaigns.find(item => item.id === finding.campaignId);
+  if (campaign?.driveProvisionStatus === 'READY' && campaign.driveRootFolderId) {
+    return googleDriveService.generateCampaignEvidenceFolderPath({
+      cif: finding.cif,
+      customerName: finding.customerName,
+      errorCode: finding.errorCode,
+    });
+  }
   return googleDriveService.generateFolderPath({
-    campaignCode: auditCampaigns.find(campaign => campaign.id === finding.campaignId)?.code,
+    campaignCode: campaign?.code,
     channelCode: finding.channelCode,
     year: Number((finding.auditDate || finding.createdAt).slice(0, 4)) || new Date().getFullYear(),
     clusterName: finding.clusterName,
@@ -4782,6 +4951,14 @@ function evidenceFolderPath(finding: Finding): string {
     customerName: finding.customerName,
     errorCode: finding.errorCode,
   });
+}
+
+function requireProvisionedCampaignDriveRootFolderId(finding: Finding): string {
+  const campaign = auditCampaigns.find(item => item.id === finding.campaignId);
+  if (!campaign || campaign.driveProvisionStatus !== 'READY' || !campaign.driveRootFolderId) {
+    throw new HttpProblem(409, 'CAMPAIGN_DRIVE_NOT_READY', 'Kho chuyên đề chưa sẵn sàng', 'Quản trị viên phải tạo kho dữ liệu Drive cho chuyên đề trước khi tải minh chứng.');
+  }
+  return campaign.driveRootFolderId;
 }
 
 function requireEvidenceUploadAccess(req: FastifyRequest, findingId: string): { user: UserProfile; finding: Finding } {
@@ -4810,15 +4987,16 @@ app.post('/api/v1/findings/:id/evidence/upload-session', async (req: FastifyRequ
   const { finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CreateEvidenceUploadSessionSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
-  if ((await googleDriveService.getStorageStatus()).mode !== 'google-drive') return { uploadMode: 'local' as const };
-  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const storageStatus = await googleDriveService.getStorageStatus();
+  if (storageStatus.mode !== 'google-drive') return { uploadMode: 'local' as const };
+  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
 });
 
 app.post('/api/v1/findings/:id/evidence/complete', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const { user, finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CompleteEvidenceDirectUploadSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
-  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), findingId: finding.id });
+  const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
   const evidence = registerEvidence(finding, user, uploadResult, fileName);
   await persistLocalState();
   return evidence;
@@ -4927,9 +5105,21 @@ app.get('/api/v1/evidence/:driveFileId/content', async (req: FastifyRequest<{ Pa
 // DASHBOARDS API
 // ----------------------------------------------------
 
-app.get('/api/v1/dashboards/summary', async (req) => {
+/**
+ * Thẻ số tổng quan, ở hai chế độ.
+ *
+ * Không kèm tham số: toàn bộ phạm vi dữ liệu của người đang đăng nhập — cán bộ nội bộ thấy phần
+ * mình phụ trách, đầu mối chi nhánh thấy chi nhánh mình, cán bộ QLKH thấy khách hàng mình quản lý.
+ * Đây là con số "của tôi", không phụ thuộc màn hình đang mở.
+ *
+ * Có kèm tham số (chuyên đề, kênh, chi nhánh, khoảng ngày...): đúng tập hồ sơ mà lần tìm kiếm vừa
+ * rồi trả về. Đây là con số "của chuyên đề này", và nó khớp với danh sách bên dưới vì cả hai chạy
+ * qua cùng `applyFindingQueryFilters`.
+ */
+app.get('/api/v1/dashboards/summary', async (req: FastifyRequest<{ Querystring: any }>) => {
   const user = getCurrentUser(req);
-  const scoped = filterFindingsByScope(findings, user);
+  const query = (req.query ?? {}) as Record<string, string | undefined>;
+  const scoped = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
 
   const active = scoped.filter(f => f.workflowStatus !== 'WAIVED_RESOLVED');
   const resolved = scoped.filter(f => f.workflowStatus === 'WAIVED_RESOLVED');
@@ -4947,7 +5137,9 @@ app.get('/api/v1/dashboards/summary', async (req) => {
     waivedResolved: resolved.length,
     onTrackCount: scoped.filter(f => f.slaStatus === 'ON_TRACK').length,
     dueSoonCount: scoped.filter(f => f.slaStatus === 'DUE_SOON').length,
-    overdueCount: scoped.filter(f => f.slaStatus === 'OVERDUE').length,
+    // `isOverdue` là cờ suy ra lúc chạy và có thể bật trước khi `slaStatus` được ghi lại; giao diện
+    // đọc cả hai, nên thẻ số cũng phải đọc cả hai, nếu không con số sẽ chỏi với danh sách bên dưới.
+    overdueCount: scoped.filter(f => f.isOverdue || f.slaStatus === 'OVERDUE').length,
     totalExposureAmount: totalExposure,
     resolvedExposureAmount: resolvedExposure,
     remediationRatePercent: scoped.length ? Math.round((resolved.length / scoped.length) * 100) : 0,
@@ -4974,6 +5166,7 @@ app.post('/api/v1/reports/definitions', async (req: FastifyRequest<{ Body: any }
     columns: body.columns,
     query: body.query,
     exportColumns: body.exportColumns,
+    presentation: body.presentation,
     visibility: body.visibility,
     sharedWithRoles: body.sharedWithRoles,
     sourceReportDefinitionId: body.sourceReportDefinitionId,
@@ -5107,24 +5300,24 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
     return field.valueType === 'ENUM' || field.valueType === 'BOOLEAN' ? reportValueLabel(key, value, finding) : value;
   };
 
-  if (request.format === 'csv') {
-    const header = columns.map(column => csvCell(column.label)).join(',');
-    const csvRows = rows.map(finding => request.columns.map(key => csvCell(exportValue(key, finding))).join(','));
-    const csv = `\uFEFF${[header, ...csvRows].join('\r\n')}`;
-    return reply
-      .header('content-type', 'text/csv; charset=utf-8')
-      .header('content-disposition', `attachment; filename="audit-bgs-report-${dateStamp}.csv"`)
-      .send(csv);
-  }
-
   const run = executeReportRun(scoped, request.query);
   const catalogForLabels = buildReportCatalog(scoped);
+  /**
+   * Thuộc tính trình bày người dùng đặt trên màn hình đi thẳng vào tệp: đổi tên một cột rồi tải về
+   * mà tệp vẫn mang tên cũ thì đúng lại cái lỗi "tệp không giống màn hình" vừa sửa ở phần thiết kế.
+   */
+  const presentation = request.presentation;
+  const metricFormat = (key: ReportMetricKey) => presentation?.metrics?.[key];
   const metricLabel = (key: ReportMetricKey): string => {
+    const custom = metricFormat(key)?.label;
+    if (custom) return custom;
     const metric = configuredMetrics.find(item => item.key === key)!;
     if (metric.unit === 'MILLION_VND') return `${metric.label} (triệu đồng)`;
     if (metric.unit === 'PERCENT') return `${metric.label} (%)`;
     return metric.label;
   };
+  const groupFieldLabel = presentation?.rowLabel
+    || configuredFields.find(item => item.key === request.query.groupBy)!.label;
   const ruleValue = (rule: ReportFilterRule): string => {
     if (rule.operator === 'op.is_true' || rule.operator === 'op.is_false') return '';
     if (rule.operator === 'op.between') return `${String(rule.from ?? '')} đến ${String(rule.to ?? '')}`;
@@ -5144,18 +5337,70 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
       { label: 'Dòng dữ liệu phù hợp', value: run.matchedFindingCount },
       ...request.query.metrics.map(key => ({ label: metricLabel(key), value: run.metricValues[key] || 0 })),
     ],
-    groupLabel: configuredFields.find(item => item.key === request.query.groupBy)!.label,
+    title: presentation?.title,
+    groupLabel: groupFieldLabel,
     groupColumns: [
-      { label: configuredFields.find(item => item.key === request.query.groupBy)!.label, kind: 'text' },
+      { label: groupFieldLabel, kind: 'text' },
       ...request.query.metrics.map(key => ({ label: metricLabel(key), kind: 'number' as const })),
     ],
-    groupRows: run.groups.map(row => [row.label, ...request.query.metrics.map(key => row.metricValues[key] || 0)]),
+    // Số đi ra dưới dạng chuỗi đã định dạng khi người dùng có đặt số lẻ hoặc hậu tố; nếu không thì
+    // giữ nguyên kiểu số để Excel còn tính toán được trên đó.
+    groupRows: run.groups.map(row => [row.label, ...request.query.metrics.map(key => {
+      const value = row.metricValues[key] || 0;
+      const format = metricFormat(key);
+      return format?.decimals !== undefined || format?.suffix
+        ? formatReportMetricValue(value, format)
+        : value;
+    })]),
+    // Trường ở vùng "Cột" đi vào tệp thay vì bị bỏ rơi. Không có phần này thì mọi thiết kế bảng chéo
+    // đều xuất ra đúng một bảng một chiều, và người dùng không có dấu hiệu nào để nhận ra.
+    pivot: run.pivot && {
+      rowLabel: groupFieldLabel,
+      columnLabel: configuredFields.find(item => item.key === run.pivot!.columnField)!.label,
+      metricLabel: metricLabel(run.pivot.metric),
+      columns: run.pivot.columns.map(column => column.label),
+      rows: run.pivot.rows.map(row => ({
+        label: row.label,
+        values: run.pivot!.columns.map(column => row.values[column.key] || 0),
+        total: row.total,
+      })),
+    },
     detailColumns: columns.map(column => ({
       label: column.label,
       kind: column.valueType === 'NUMBER' ? 'number' : column.valueType === 'DATE' ? 'date' : column.valueType === 'BOOLEAN' ? 'boolean' : 'text',
     })),
     detailRows: rows.map(finding => request.columns.map(key => exportValue(key, finding))),
   };
+
+  if (request.format === 'csv') {
+    /**
+     * CSV chỉ chứa được một bảng, nên nó phải chứa đúng bảng người dùng đang nhìn.
+     *
+     * Bản cũ luôn đổ dòng thô theo danh sách `columns` cấu hình sẵn: kéo thả thiết kế thế nào thì
+     * tệp CSV vẫn y hệt nhau. Nay `section=design` (mặc định) xuất bảng chéo nếu có trường Cột, nếu
+     * không thì xuất bảng phân nhóm kèm đúng những chỉ số đã chọn; `section=detail` giữ lại đường
+     * xuất dòng chi tiết cho việc đối chiếu hồ sơ.
+     */
+    const grid = request.section === 'detail'
+      ? { columns: report.detailColumns, rows: report.detailRows }
+      : report.pivot
+        ? {
+          columns: [
+            { label: report.pivot.rowLabel },
+            ...report.pivot.columns.map(label => ({ label })),
+            { label: 'Tổng' },
+          ],
+          rows: report.pivot.rows.map(row => [row.label, ...row.values, row.total]),
+        }
+        : { columns: report.groupColumns, rows: report.groupRows };
+    const header = grid.columns.map(column => csvCell(column.label)).join(',');
+    const csvRows = grid.rows.map(row => row.map(csvCell).join(','));
+    const csv = `﻿${[header, ...csvRows].join('\r\n')}`;
+    return reply
+      .header('content-type', 'text/csv; charset=utf-8')
+      .header('content-disposition', `attachment; filename="audit-bgs-report-${dateStamp}.csv"`)
+      .send(csv);
+  }
 
   if (request.format === 'html') {
     return reply

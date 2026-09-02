@@ -49,11 +49,27 @@ describe('API security boundaries', () => {
     ]);
 
     expect(adminResponse.statusCode).toBe(200);
-    expect(adminResponse.json()).toEqual(expect.arrayContaining([
+    expect(adminResponse.json().items).toEqual(expect.arrayContaining([
       expect.objectContaining({ eventType: 'SUBMIT_BRANCH', findingId: 'find-002', cif: '10849201', errorCode: 'TD02.05' }),
     ]));
     expect(branchResponse.statusCode).toBe(403);
     expect(branchResponse.json()).toMatchObject({ code: 'ADMIN_REQUIRED' });
+  });
+
+  it('returns a bounded, server-filtered audit-event page', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/audit-events?page=1&limit=1&query=10849201',
+      headers: adminHeaders,
+    });
+    const body = response.json();
+
+    expect(response.statusCode).toBe(200);
+    expect(body).toMatchObject({ page: 1, limit: 1 });
+    expect(body.items).toHaveLength(1);
+    expect(body.total).toBeGreaterThanOrEqual(1);
+    expect(body.items[0]).toMatchObject({ cif: '10849201' });
+    expect(body.hasMore).toBe(body.total > 1);
   });
 
   it('exports the audit trail as UTF-8 CSV only to administrators', async () => {
@@ -285,13 +301,13 @@ describe('API security boundaries', () => {
 
   it('allows an administrator to clear only the local test audit trail', async () => {
     const before = await app.inject({ method: 'GET', url: '/api/v1/admin/audit-events', headers: adminHeaders });
-    expect(before.json().length).toBeGreaterThan(0);
+    expect(before.json().total).toBeGreaterThan(0);
 
     const cleared = await app.inject({ method: 'DELETE', url: '/api/v1/admin/audit-events', headers: adminHeaders });
     const after = await app.inject({ method: 'GET', url: '/api/v1/admin/audit-events', headers: adminHeaders });
 
     expect(cleared.statusCode).toBe(200);
-    expect(cleared.json()).toMatchObject({ cleared: before.json().length });
-    expect(after.json()).toEqual([]);
+    expect(cleared.json()).toMatchObject({ cleared: before.json().total });
+    expect(after.json()).toMatchObject({ items: [], total: 0, hasMore: false });
   });
 });

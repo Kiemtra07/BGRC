@@ -4,7 +4,7 @@ import {
   BranchLeaderApproveCommandDTO, BranchLeaderRejectCommandDTO, SetFindingSpecialCaseDTO,
   InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO,
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, CreateDashboardDefinitionDTO, DashboardDefinition, ReportFilterQuery,
-  AuditLogEntry, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
+  AuditLogPage, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
   FindingApprovalRouteView,
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest, ReportDrillRequest, ReportDrillResult,
@@ -62,11 +62,19 @@ class ApiService {
     const headers = options.body === undefined || options.body === null
       ? providedHeaders
       : { 'Content-Type': 'application/json', ...providedHeaders };
-    const res = await fetch(`${API_BASE}${endpoint}`, {
-      ...options,
-      credentials: 'same-origin',
-      headers,
-    });
+    let res: Response;
+    try {
+      // `include` keeps the session when VITE_API_BASE_URL points to a separate API origin; it is
+      // equivalent to same-origin on the Vercel deployment and the API already opts into credentials.
+      res = await fetch(`${API_BASE}${endpoint}`, {
+        ...options,
+        credentials: 'include',
+        headers,
+      });
+    } catch (reason) {
+      const detail = reason instanceof Error ? reason.message : 'kết nối bị gián đoạn';
+      throw new ApiError(`Không thể kết nối tới máy chủ báo cáo (endpoint: ${endpoint}). Kiểm tra API/deployment rồi thử lại. ${detail}`, 0, 'API_NETWORK_ERROR');
+    }
     if (!res.ok) {
       const problem = await res.json().catch(() => ({ detail: res.statusText }));
       throw new ApiError(problem.detail || problem.title || problem.error || `HTTP ${res.status}`, res.status, problem.code);
@@ -101,7 +109,13 @@ class ApiService {
   public getUsers = (): Promise<UserProfile[]> => this.request('/admin/users');
   public getChannels = (): Promise<ReportChannel[]> => this.request('/admin/channels');
   public getActiveChannels = (): Promise<ReportChannel[]> => this.request('/channels/active');
-  public getAuditEvents = (): Promise<AuditLogEntry[]> => this.request('/admin/audit-events');
+  public getAuditEvents = (params: { page?: number; limit?: number; query?: string } = {}): Promise<AuditLogPage> => {
+    const search = new URLSearchParams();
+    if (params.page !== undefined) search.set('page', String(params.page));
+    if (params.limit !== undefined) search.set('limit', String(params.limit));
+    if (params.query?.trim()) search.set('query', params.query.trim());
+    return this.request(`/admin/audit-events${search.size ? `?${search}` : ''}`);
+  };
   public async downloadAuditEventsCsv(query = ''): Promise<void> {
     const params = new URLSearchParams();
     if (query.trim()) params.set('query', query.trim());
@@ -115,7 +129,14 @@ class ApiService {
     saveBlob(await response.blob(), `nhat-ky-xu-ly-${new Date().toISOString().slice(0, 10)}.csv`);
   }
   public clearTestAuditEvents = (): Promise<{ cleared: number }> => this.request('/admin/audit-events', { method: 'DELETE' });
-  public getDashboardSummary = (): Promise<DashboardSummary> => this.request('/dashboards/summary');
+  /**
+   * Không truyền tham số: thẻ số cho toàn bộ phạm vi dữ liệu của người đăng nhập.
+   * Truyền tham số: thẻ số cho đúng tập hồ sơ mà cùng bộ lọc đó trả về ở `getFindings`.
+   */
+  public getDashboardSummary = (params: Record<string, string> = {}): Promise<DashboardSummary> => {
+    const query = new URLSearchParams(params).toString();
+    return this.request(`/dashboards/summary${query ? `?${query}` : ''}`);
+  };
   private reportQuery(filters: ReportFilterQuery = {}): string {
     return new URLSearchParams(
       Object.entries(filters).filter((entry): entry is [string, string] => Boolean(entry[1])),
