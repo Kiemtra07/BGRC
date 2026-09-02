@@ -217,7 +217,7 @@ export const App: React.FC = () => {
    * Danh sách hồ sơ cố tình **không** nằm ở đây. Nó chờ người dùng chọn chuyên đề và bấm Tìm kiếm —
    * mở màn hình lên không còn kéo về cả phạm vi dữ liệu chỉ để rồi bị lọc bớt ngay sau đó.
    */
-  const load = async () => {
+  const load = async (): Promise<string | undefined> => {
     try {
       setBootstrapping(true);
       setLoadError(null);
@@ -240,9 +240,15 @@ export const App: React.FC = () => {
       // render. Trước đây nó nằm trước `await`, nên màn hình render một lần với chuyên đề rỗng rồi
       // render lại khi chuyên đề được chọn — hai vòng effect và ba request bị lặp vô ích.
       setCurrentUser(me.user);
+      return undefined;
     } catch (reason) {
       if (reason instanceof ApiError && reason.status === 401) setCurrentUser(null);
-      setLoadError(reason instanceof Error ? reason.message : 'Không thể tải dữ liệu.');
+      const message = reason instanceof Error ? reason.message : 'Không thể tải dữ liệu.';
+      setLoadError(message);
+      // Trả lỗi về cho nơi gọi thay vì chỉ nuốt vào `loadError`. Băng `loadError` chỉ hiện trong
+      // khung màn hình đã đăng nhập; khi lần khởi động ngay sau đăng nhập hỏng thì người dùng vẫn
+      // đang đứng ở trang đăng nhập và không nhìn thấy nó ở đâu cả.
+      return message;
     } finally {
       setAuthChecked(true);
       setBootstrapping(false);
@@ -273,7 +279,11 @@ export const App: React.FC = () => {
   const login = async (credentials: LoginDTO) => {
     setLoadError(null);
     await api.login(credentials);
-    await load();
+    // Đăng nhập đúng mà lần tải dữ liệu đầu tiên hỏng thì vẫn là một lần đăng nhập hỏng dưới mắt
+    // người dùng: màn hình không đổi. Ném lỗi lên để `LoginPage` nói ra ngay tại chỗ họ vừa bấm,
+    // thay vì lặng lẽ trả cái nút về "Đăng nhập" như thể chưa có chuyện gì xảy ra.
+    const failure = await load();
+    if (failure) throw new Error(failure);
   };
 
   const logout = async () => {

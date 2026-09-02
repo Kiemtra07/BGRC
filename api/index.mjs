@@ -2619,27 +2619,109 @@ var DurableStateCoordinator = class {
 var livenessPaths = /* @__PURE__ */ new Set(["/api/v1/health", "/api/v1/ready"]);
 var nonHydratedPaths = /* @__PURE__ */ new Set([...livenessPaths, "/api/v1/internal/sla/run"]);
 var readMethods = /* @__PURE__ */ new Set(["GET", "HEAD"]);
-function shouldHydrateRuntimeStatePerRequest(env, requestPath, method = "GET") {
+function shouldHydrateRuntimeStatePerRequest(env, requestPath, method = "GET", context = {}) {
   if (env.DATA_STORE_MODE !== "postgres") return false;
   if (!readMethods.has(method.toUpperCase())) return false;
-  return !nonHydratedPaths.has(requestPath.split("?")[0]);
+  if (nonHydratedPaths.has(requestPath.split("?")[0])) return false;
+  if (context.requiresAuth !== false && context.carriesCredentials === false) return false;
+  return true;
 }
-var RuntimeRequestLock = class {
-  tail = Promise.resolve();
-  async acquire() {
-    let releaseTicket;
-    const ticket = new Promise((resolve) => {
-      releaseTicket = resolve;
+var SESSION_COOKIE = "audit_bgs_session";
+var SUPABASE_ACCESS_COOKIE = "audit_bgs_supabase_access";
+var headerText = (value) => typeof value === "string" ? value : Array.isArray(value) ? value[0] ?? "" : "";
+var hasCookie = (cookieHeader, name) => {
+  for (const part of cookieHeader.split(";")) {
+    const separator = part.indexOf("=");
+    if (separator < 0) continue;
+    if (part.slice(0, separator).trim() !== name) continue;
+    if (part.slice(separator + 1).trim().length > 0) return true;
+  }
+  return false;
+};
+function requestCarriesCredentials(env, headers) {
+  if (env.NODE_ENV === "test" && env.ALLOW_TEST_USER_HEADER !== "false" && headerText(headers["x-user-id"])) {
+    return true;
+  }
+  const cookie = headerText(headers.cookie);
+  if (env.AUTH_MODE === "supabase") {
+    return hasCookie(cookie, SUPABASE_ACCESS_COOKIE) || headerText(headers.authorization).startsWith("Bearer ");
+  }
+  return hasCookie(cookie, SESSION_COOKIE);
+}
+var DEFAULT_GATE_TIMEOUT_MS = 3e4;
+var HYDRATION_TIMEOUT_MESSAGE = "RUNTIME_STATE_HYDRATION_TIMEOUT: kh\xF4ng \u0111\u1ECDc \u0111\u01B0\u1EE3c snapshot trong th\u1EDDi gian cho ph\xE9p.";
+var unrefTimer = (timer) => {
+  timer.unref?.();
+};
+function withTimeout(task, timeoutMs, message) {
+  let timer;
+  const expiry = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+    unrefTimer(timer);
+  });
+  task.catch(() => void 0);
+  return Promise.race([task, expiry]).finally(() => clearTimeout(timer));
+}
+var RuntimeStateGate = class {
+  hydrate;
+  timeoutMs;
+  inFlight = 0;
+  drained;
+  resolveDrained;
+  hydration;
+  constructor(options) {
+    this.hydrate = options.hydrate;
+    this.timeoutMs = options.timeoutMs ?? DEFAULT_GATE_TIMEOUT_MS;
+  }
+  /** Số request đang chạy sau cổng. Dùng để khẳng định trong test rằng cổng không rò suất nào. */
+  get activeRequests() {
+    return this.inFlight;
+  }
+  /**
+   * Chờ state được dựng lại (nối vào lần đang chạy nếu có), rồi ghi danh là một request đang chạy.
+   * Trả về hàm nhả suất; gọi bao nhiêu lần cũng chỉ tính một.
+   */
+  async enter() {
+    await (this.hydration ?? this.beginHydration());
+    return this.beginRequest();
+  }
+  beginHydration() {
+    const run = (async () => {
+      await this.drain();
+      await withTimeout(this.hydrate(), this.timeoutMs, HYDRATION_TIMEOUT_MESSAGE);
+    })();
+    this.hydration = run;
+    void run.catch(() => void 0).then(() => {
+      if (this.hydration === run) this.hydration = void 0;
     });
-    const turn = this.tail;
-    this.tail = turn.then(() => ticket);
-    await turn;
+    return run;
+  }
+  drain() {
+    if (this.inFlight === 0) return Promise.resolve();
+    if (!this.drained) {
+      this.drained = new Promise((resolve) => {
+        this.resolveDrained = resolve;
+      });
+    }
+    return this.drained;
+  }
+  beginRequest() {
+    this.inFlight += 1;
     let released = false;
-    return () => {
+    const finish = () => {
       if (released) return;
       released = true;
-      releaseTicket();
+      clearTimeout(watchdog);
+      this.inFlight -= 1;
+      if (this.inFlight > 0) return;
+      const resolve = this.resolveDrained;
+      this.drained = void 0;
+      this.resolveDrained = void 0;
+      resolve?.();
     };
+    const watchdog = setTimeout(finish, this.timeoutMs);
+    unrefTimer(watchdog);
+    return finish;
   }
 };
 
@@ -5024,7 +5106,15 @@ function restoreDurableLocalState(restored, workflowEventsOverride) {
   applyBranchScopeProjection();
   hydrateGoogleDriveOAuthCredential(restored.googleDriveOAuthCredential);
 }
-var runtimeRequestLock = new RuntimeRequestLock();
+var runtimeStateGate = new RuntimeStateGate({
+  hydrate: async () => {
+    const latest = stateRepository instanceof PostgresStateRepository ? await stateRepository.loadIfChanged() : await stateRepository.load(currentLocalState());
+    if (!latest) return;
+    restoreDurableLocalState(latest);
+    if (workflowEventLedger) workflowEvents = await workflowEventLedger.loadAll();
+    durableState.hydrate(persistedLocalState());
+  }
+});
 var runtimeRequestReleases = /* @__PURE__ */ new WeakMap();
 function releaseRuntimeRequest(request) {
   const release = runtimeRequestReleases.get(request);
@@ -5032,20 +5122,15 @@ function releaseRuntimeRequest(request) {
   release?.();
 }
 app.addHook("onRequest", async (request) => {
-  if (!shouldHydrateRuntimeStatePerRequest(process.env, request.url, request.method)) return;
-  const release = await runtimeRequestLock.acquire();
+  const hydrationNeeded = shouldHydrateRuntimeStatePerRequest(process.env, request.url, request.method, {
+    requiresAuth: !publicPaths.has(request.url.split("?")[0]),
+    carriesCredentials: requestCarriesCredentials(process.env, request.headers)
+  });
+  if (!hydrationNeeded) return;
+  const release = await runtimeStateGate.enter();
   runtimeRequestReleases.set(request, release);
-  try {
-    const latest = stateRepository instanceof PostgresStateRepository ? await stateRepository.loadIfChanged() : await stateRepository.load(currentLocalState());
-    if (latest) {
-      restoreDurableLocalState(latest);
-      if (workflowEventLedger) workflowEvents = await workflowEventLedger.loadAll();
-      durableState.hydrate(persistedLocalState());
-    }
-  } catch (error) {
-    releaseRuntimeRequest(request);
-    throw error;
-  }
+  request.raw.on("close", () => releaseRuntimeRequest(request));
+  if (request.raw.destroyed) releaseRuntimeRequest(request);
 });
 app.addHook("onResponse", async (request) => {
   releaseRuntimeRequest(request);

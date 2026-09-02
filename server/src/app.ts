@@ -113,7 +113,7 @@ import type { PostgresPoolLike } from './repositories/postgres-state';
 import { PostgresWorkflowEventLedger } from './repositories/workflow-event-ledger';
 import { DurableStateCoordinator } from './state/durable-state-coordinator';
 import { threeWayMergeState } from './state/three-way-state-merge';
-import { RuntimeRequestLock, shouldHydrateRuntimeStatePerRequest } from './state/runtime-request-lock';
+import { RuntimeStateGate, requestCarriesCredentials, shouldHydrateRuntimeStatePerRequest } from './state/runtime-request-lock';
 import { addCalendarDays, runSlaEvaluation, slaWorker, toCalendarDateString } from './worker/sla-worker';
 import { shouldStartEmbeddedSlaRuntime, startDailySlaRuntime } from './worker/sla-scheduler';
 import { HttpProblem, normalizeProblem, sendProblem, workflowErrorToProblem } from './http/problem';
@@ -1620,7 +1620,20 @@ function restoreDurableLocalState(restored: LocalAppState, workflowEventsOverrid
   hydrateGoogleDriveOAuthCredential(restored.googleDriveOAuthCredential);
 }
 
-const runtimeRequestLock = new RuntimeRequestLock();
+const runtimeStateGate = new RuntimeStateGate({
+  hydrate: async () => {
+    // Chỉ dựng lại state khi snapshot thực sự đổi. Phần lớn request GET đến ngay sau một request
+    // GET khác mà không có lần ghi nào xen giữa: khi đó `loadIfChanged` trả `undefined` và cả
+    // việc tải payload lẫn việc chiếu lại toàn bộ mảng trong bộ nhớ đều được bỏ qua.
+    const latest = stateRepository instanceof PostgresStateRepository
+      ? await stateRepository.loadIfChanged()
+      : await stateRepository.load(currentLocalState());
+    if (!latest) return;
+    restoreDurableLocalState(latest);
+    if (workflowEventLedger) workflowEvents = await workflowEventLedger.loadAll();
+    durableState.hydrate(persistedLocalState());
+  },
+});
 const runtimeRequestReleases = new WeakMap<FastifyRequest, () => void>();
 
 function releaseRuntimeRequest(request: FastifyRequest): void {
@@ -1630,25 +1643,24 @@ function releaseRuntimeRequest(request: FastifyRequest): void {
 }
 
 app.addHook('onRequest', async (request) => {
-  if (!shouldHydrateRuntimeStatePerRequest(process.env, request.url, request.method)) return;
-  const release = await runtimeRequestLock.acquire();
+  const hydrationNeeded = shouldHydrateRuntimeStatePerRequest(process.env, request.url, request.method, {
+    requiresAuth: !publicPaths.has(request.url.split('?')[0]),
+    carriesCredentials: requestCarriesCredentials(process.env, request.headers),
+  });
+  if (!hydrationNeeded) return;
+  // `enter` dựng lại state rồi mới ghi danh request. Một lần dựng hỏng thì chưa có suất nào được
+  // cấp, nên cứ để lỗi nổi lên — không còn gì phải nhả.
+  const release = await runtimeStateGate.enter();
   runtimeRequestReleases.set(request, release);
-  try {
-    // Chỉ dựng lại state khi snapshot thực sự đổi. Phần lớn request GET đến ngay sau một request
-    // GET khác mà không có lần ghi nào xen giữa: khi đó `loadIfChanged` trả `undefined` và cả
-    // việc tải payload lẫn việc chiếu lại toàn bộ mảng trong bộ nhớ đều được bỏ qua.
-    const latest = stateRepository instanceof PostgresStateRepository
-      ? await stateRepository.loadIfChanged()
-      : await stateRepository.load(currentLocalState());
-    if (latest) {
-      restoreDurableLocalState(latest);
-      if (workflowEventLedger) workflowEvents = await workflowEventLedger.loadAll();
-      durableState.hydrate(persistedLocalState());
-    }
-  } catch (error) {
-    releaseRuntimeRequest(request);
-    throw error;
-  }
+  // Fastify không chạy `onResponse` lẫn `onError` khi client ngắt kết nối giữa chừng — chuyện xảy ra
+  // liên tục trên di động: chuyển sóng, khoá màn hình, kéo làm mới, bấm sang màn khác. Thiếu móc
+  // này thì suất không bao giờ được nhả, và vì lần dựng state kế tiếp phải chờ nhóm hiện tại rút
+  // hết nên *mọi* GET sau đó trên cùng instance chờ vô hạn: nút Tìm kiếm quay mãi không ra kết quả,
+  // còn trang đăng nhập đứng ở "Đang đăng nhập..." vì `/api/v1/me` không bao giờ trả lời.
+  request.raw.on('close', () => releaseRuntimeRequest(request));
+  // Kết nối có thể đã đóng ngay trong lúc request này còn chờ ở cổng. Khi đó sự kiện `close` đã
+  // phát xong trước khi người nghe ở trên kịp gắn, nên phải tự kiểm tra một lần.
+  if (request.raw.destroyed) releaseRuntimeRequest(request);
 });
 
 app.addHook('onResponse', async (request) => {

@@ -54,6 +54,16 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Trần thời gian cho mỗi lần gọi API.
+ *
+ * Hàm serverless bị Vercel cắt ở 60 giây, nên không có request thành công nào vượt được mốc này —
+ * chờ lâu hơn chỉ là đang chờ một câu trả lời không bao giờ tới. Trước khi có nó, một request treo
+ * để nguyên vòng xoay trên màn hình mãi mãi: người dùng không có lỗi nào để đọc, không biết nên
+ * chờ tiếp hay thử lại, và cái nút họ vừa bấm thì đã bị khoá.
+ */
+const REQUEST_TIMEOUT_MS = 60_000;
+
 class ApiService {
   private readonly pendingCommandKeys = new Map<string, string>();
 
@@ -62,6 +72,8 @@ class ApiService {
     const headers = options.body === undefined || options.body === null
       ? providedHeaders
       : { 'Content-Type': 'application/json', ...providedHeaders };
+    const timeoutController = new AbortController();
+    const timeout = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS);
     let res: Response;
     try {
       // `include` keeps the session when VITE_API_BASE_URL points to a separate API origin; it is
@@ -70,17 +82,28 @@ class ApiService {
         ...options,
         credentials: 'include',
         headers,
+        signal: timeoutController.signal,
       });
     } catch (reason) {
+      clearTimeout(timeout);
+      if (timeoutController.signal.aborted) {
+        throw new ApiError(`Máy chủ không phản hồi sau ${REQUEST_TIMEOUT_MS / 1000} giây (endpoint: ${endpoint}). Hãy thử lại.`, 0, 'API_TIMEOUT');
+      }
       const detail = reason instanceof Error ? reason.message : 'kết nối bị gián đoạn';
       throw new ApiError(`Không thể kết nối tới máy chủ báo cáo (endpoint: ${endpoint}). Kiểm tra API/deployment rồi thử lại. ${detail}`, 0, 'API_NETWORK_ERROR');
     }
-    if (!res.ok) {
-      const problem = await res.json().catch(() => ({ detail: res.statusText }));
-      throw new ApiError(problem.detail || problem.title || problem.error || `HTTP ${res.status}`, res.status, problem.code);
+    // Đồng hồ chỉ được tắt sau khi đã đọc xong thân phản hồi, không phải ngay khi có header:
+    // `fetch` trả về từ lúc header về tới nơi, phần thân vẫn còn đang chảy và vẫn treo được.
+    try {
+      if (!res.ok) {
+        const problem = await res.json().catch(() => ({ detail: res.statusText }));
+        throw new ApiError(problem.detail || problem.title || problem.error || `HTTP ${res.status}`, res.status, problem.code);
+      }
+      if (res.status === 204) return undefined as T;
+      return await res.json();
+    } finally {
+      clearTimeout(timeout);
     }
-    if (res.status === 204) return undefined as T;
-    return res.json();
   }
 
   public login = (credentials: LoginDTO): Promise<LoginResponse> => this.request('/auth/login', {
