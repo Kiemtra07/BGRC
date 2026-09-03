@@ -215,4 +215,25 @@ describe('đồng bộ bảng chiếu hồ sơ', () => {
     expect(findingContentHash(base, 0)).not.toBe(findingContentHash(base, 1));
     expect(findingContentHash(base, 0)).not.toBe(findingContentHash(finding({ workflowStatus: 'REJECTED' }), 0));
   });
+
+  it('từ chối đường đọc SQL khi bảng chiếu thiếu hoặc lệch hồ sơ', async () => {
+    const client = new FakeClient([
+      { finding_id: 'a', content_hash: findingContentHash(finding({ id: 'a' }), 0) },
+    ]);
+    const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
+
+    await expect(records.assertCoverage([finding({ id: 'a' }), finding({ id: 'b' })], noEvidence))
+      .rejects.toThrow(/FINDING_RECORDS_NOT_BACKFILLED/);
+  });
+
+  it('chấp nhận đường đọc SQL khi toàn bộ ID và vân tay đều khớp', async () => {
+    const items = [finding({ id: 'a' }), finding({ id: 'b' })];
+    const client = new FakeClient(items.map(item => ({
+      finding_id: item.id,
+      content_hash: findingContentHash(item, 0),
+    })));
+    const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
+
+    await expect(records.assertCoverage(items, noEvidence)).resolves.toBeUndefined();
+  });
 });

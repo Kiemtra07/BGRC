@@ -201,6 +201,33 @@ export class PostgresFindingRecords {
     }
   }
 
+  /**
+   * Kiểm tra bảng chiếu đã bắt kịp snapshot trước khi cho phép đường đọc SQL phục vụ người dùng.
+   * Chỉ đếm dòng là chưa đủ: một lần backfill dở dang có thể vô tình thay một hồ sơ bằng hồ sơ cũ
+   * nhưng vẫn giữ nguyên tổng số. So vân tay giúp phát hiện cả thiếu, thừa và lệch nội dung.
+   */
+  public async assertCoverage(
+    findings: readonly Finding[],
+    evidenceCountById: ReadonlyMap<string, number>,
+  ): Promise<void> {
+    const expected = new Map(
+      findings.map(item => [item.id, findingContentHash(item, evidenceCountById.get(item.id) ?? 0)]),
+    );
+    await withBackendTransaction(this.pool, async client => {
+      const actual = await this.loadHashes(client);
+      const missing = [...expected.keys()].filter(id => !actual.has(id));
+      const stale = [...actual.keys()].filter(id => !expected.has(id));
+      const changed = [...expected.keys()].filter(id => actual.get(id) !== expected.get(id) && actual.has(id));
+      if (missing.length === 0 && stale.length === 0 && changed.length === 0) return;
+
+      throw new Error(
+        'FINDING_RECORDS_NOT_BACKFILLED — bảng finding_records chưa khớp snapshot. '
+        + `missing=${missing.length}; stale=${stale.length}; changed=${changed.length}. `
+        + 'Chạy `npm run db:backfill:finding-records:dry-run`, đối chiếu số lượng, rồi mới backfill.',
+      );
+    });
+  }
+
   public async list(options: FindingListOptions): Promise<FindingListPage> {
     const { sql, params } = buildListQuery(options);
     return withBackendTransaction(this.pool, async client => {

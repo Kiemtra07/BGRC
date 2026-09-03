@@ -17,6 +17,8 @@
     "db:seed": "tsx db/seed.ts",
     "db:backfill:local-state": "tsx db/backfill-local-state.ts",
     "db:backfill:local-state:dry-run": "tsx db/backfill-local-state.ts --dry-run",
+    "db:backfill:finding-records": "tsx db/backfill-finding-records.ts",
+    "db:backfill:finding-records:dry-run": "tsx db/backfill-finding-records.ts --dry-run",
     "test": "vitest run",
     "test:unit": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",

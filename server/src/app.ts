@@ -1364,6 +1364,16 @@ function recordWorkflowEvent(event: WorkflowEvent): void {
 }
 
 evidences = hydratedState.evidences;
+if (findingsReadPath === 'sql' && findingRecords) {
+  const evidenceCountById = new Map<string, number>();
+  for (const evidence of evidences) {
+    if (evidence.status !== 'AVAILABLE') continue;
+    evidenceCountById.set(evidence.findingId, (evidenceCountById.get(evidence.findingId) ?? 0) + 1);
+  }
+  // Không phục vụ danh sách từ một bảng chiếu thiếu dữ liệu: thiếu một phần hồ sơ là sai nghiệp vụ,
+  // không phải một kết quả rỗng hợp lệ. Lệnh backfill riêng có dry-run để đối chiếu trước khi bật cờ.
+  await findingRecords.assertCoverage(findings, evidenceCountById);
+}
 importBatches = hydratedState.importBatches;
 slaExtensions = hydratedState.slaExtensions;
 reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
