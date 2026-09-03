@@ -1,5 +1,5 @@
 // server/src/app.ts
-import crypto5 from "node:crypto";
+import crypto6 from "node:crypto";
 import path4 from "node:path";
 import fastify from "fastify";
 import cors from "@fastify/cors";
@@ -2581,6 +2581,502 @@ function createStateRepository(options) {
   );
 }
 
+// server/src/repositories/security-event-ledger.ts
+async function insertSecurityEvents(client, events) {
+  if (events.length === 0) return;
+  const params = [];
+  const values = events.map((event, index) => {
+    const offset = index * 10;
+    params.push(
+      event.id,
+      event.type,
+      event.outcome,
+      event.detail,
+      event.actorUserId ?? null,
+      event.actorName ?? null,
+      event.actorRole ?? null,
+      event.subject ?? null,
+      event.ipAddress ?? null,
+      event.occurredAt
+    );
+    return `($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}::timestamptz)`;
+  });
+  await client.query(
+    `INSERT INTO security_event_ledger(
+       event_id, event_type, outcome, detail, actor_user_id,
+       actor_name, actor_role, subject, ip_address, occurred_at
+     ) VALUES ${values.join(", ")}
+     ON CONFLICT (event_id) DO NOTHING`,
+    params
+  );
+}
+var PostgresSecurityEventLedger = class {
+  pool;
+  constructor(options) {
+    this.pool = options.pool;
+  }
+  /**
+   * Nạp `limit` sự kiện gần nhất, trả về theo thứ tự thời gian tăng dần để khớp với thứ tự mà
+   * mảng trong bộ nhớ vẫn giữ. Có LIMIT ngay từ đầu: màn hình Nhật ký chỉ hiển thị phần gần đây,
+   * còn toàn bộ lịch sử thì đã nằm an toàn trong sổ và tra bằng SQL khi cần.
+   */
+  async loadRecent(limit) {
+    return withBackendTransaction(this.pool, async (client) => {
+      const result = await client.query(
+        `SELECT event_id, event_type, outcome, detail, actor_user_id,
+                actor_name, actor_role, subject, ip_address, occurred_at
+           FROM (
+             SELECT * FROM security_event_ledger
+              ORDER BY occurred_at DESC, event_id DESC
+              LIMIT $1
+           ) AS recent
+          ORDER BY occurred_at ASC, event_id ASC`,
+        [limit]
+      );
+      return result.rows.map(mapSecurityEvent);
+    });
+  }
+  /** Ghi sổ mà không đụng tới snapshot. Đây là đường mà các endpoint chỉ đọc dùng. */
+  async append(events) {
+    if (events.length === 0) return;
+    await withBackendTransaction(this.pool, (client) => insertSecurityEvents(client, events));
+  }
+};
+function mapSecurityEvent(row) {
+  const optional = (value) => value === null || value === void 0 ? void 0 : String(value);
+  return {
+    id: String(row.event_id),
+    type: String(row.event_type),
+    outcome: String(row.outcome) === "FAILURE" ? "FAILURE" : "SUCCESS",
+    detail: String(row.detail ?? ""),
+    ...optional(row.actor_user_id) ? { actorUserId: String(row.actor_user_id) } : {},
+    ...optional(row.actor_name) ? { actorName: String(row.actor_name) } : {},
+    ...optional(row.actor_role) ? { actorRole: String(row.actor_role) } : {},
+    ...optional(row.subject) ? { subject: String(row.subject) } : {},
+    ...optional(row.ip_address) ? { ipAddress: String(row.ip_address) } : {},
+    occurredAt: toIsoString2(row.occurred_at)
+  };
+}
+function toIsoString2(value) {
+  const date = value instanceof Date ? value : new Date(String(value));
+  return Number.isFinite(date.getTime()) ? date.toISOString() : (/* @__PURE__ */ new Date(0)).toISOString();
+}
+
+// server/src/repositories/finding-records.ts
+import crypto3 from "node:crypto";
+
+// server/src/security/scope-predicate.ts
+var normalizeScopeValue = (value) => value?.trim().toLocaleLowerCase("vi-VN");
+function branchMatchFor(scope, user) {
+  const code = scope.orgUnitCode ?? user.branchCode;
+  return code ? { by: "code", code } : { by: "name", name: scope.branchName ?? user.branchName };
+}
+function buildScopeClauses(user) {
+  if (!user.isActive) return [];
+  const scopes = Array.isArray(user.scopes) ? user.scopes : [];
+  if (scopes.some((scope) => scope.scopeType === "ALL")) return [{ kind: "ALL" }];
+  const clauses = [];
+  for (const scope of scopes) {
+    if (scope.scopeType === "CLUSTER") {
+      clauses.push({ kind: "CLUSTER", clusterName: scope.clusterName ?? user.clusterName });
+    } else if (scope.scopeType === "BRANCH") {
+      clauses.push({ kind: "BRANCH", branch: branchMatchFor(scope, user) });
+    } else if (scope.scopeType === "DEPARTMENT") {
+      clauses.push({
+        kind: "DEPARTMENT",
+        branch: branchMatchFor(scope, user),
+        departmentName: scope.departmentName ?? user.department
+      });
+    }
+  }
+  return clauses;
+}
+function branchMatches(branch, finding) {
+  return branch.by === "code" ? branch.code === finding.branchCode : normalizeScopeValue(branch.name) === normalizeScopeValue(finding.branchName);
+}
+function matchesScopeClauses(clauses, finding) {
+  return clauses.some((clause) => {
+    switch (clause.kind) {
+      case "ALL":
+        return true;
+      case "CLUSTER":
+        return normalizeScopeValue(clause.clusterName) === normalizeScopeValue(finding.clusterName);
+      case "BRANCH":
+        return branchMatches(clause.branch, finding);
+      case "DEPARTMENT": {
+        if (!branchMatches(clause.branch, finding)) return false;
+        if (!normalizeScopeValue(finding.department)) return true;
+        return normalizeScopeValue(clause.departmentName) === normalizeScopeValue(finding.department);
+      }
+      default:
+        return false;
+    }
+  });
+}
+function renderScopeSql(clauses, alias = "f", nextParamIndex = 1) {
+  if (clauses.length === 0) return { sql: "false", params: [] };
+  if (clauses.some((clause) => clause.kind === "ALL")) return { sql: "true", params: [] };
+  const params = [];
+  let index = nextParamIndex;
+  const placeholder = (value) => {
+    params.push(value);
+    return `$${index++}`;
+  };
+  const sameText = (column, value) => `lower(btrim(${column})) IS NOT DISTINCT FROM ${placeholder(normalizeScopeValue(value) ?? null)}`;
+  const branchSql = (branch) => branch.by === "code" ? `${alias}.branch_code = ${placeholder(branch.code)}` : sameText(`${alias}.branch_name`, branch.name);
+  const rendered = clauses.map((clause) => {
+    switch (clause.kind) {
+      case "CLUSTER":
+        return sameText(`${alias}.cluster_name`, clause.clusterName);
+      case "BRANCH":
+        return branchSql(clause.branch);
+      case "DEPARTMENT": {
+        const branch = branchSql(clause.branch);
+        const noDepartment = `btrim(coalesce(${alias}.department, '')) = ''`;
+        const sameDepartment = sameText(`${alias}.department`, clause.departmentName);
+        return `(${branch} AND (${noDepartment} OR ${sameDepartment}))`;
+      }
+      default:
+        return "false";
+    }
+  });
+  return { sql: rendered.length === 1 ? rendered[0] : `(${rendered.join(" OR ")})`, params };
+}
+function scopeSqlForUser(user, alias = "f", nextParamIndex = 1) {
+  return renderScopeSql(buildScopeClauses(user), alias, nextParamIndex);
+}
+
+// server/src/repositories/finding-records.ts
+function findingContentHash(finding, evidenceCount) {
+  return crypto3.createHash("sha256").update(JSON.stringify(finding)).update(`|evidence:${evidenceCount}`).digest("hex");
+}
+var asDate = (value) => value && value.trim() ? value.slice(0, 10) : null;
+var asText = (value) => value === void 0 || value === null || value === "" ? null : value;
+function rowValues(finding, evidenceCount, hash) {
+  return [
+    finding.id,
+    asText(finding.campaignId),
+    finding.channelId,
+    asText(finding.channelCode),
+    finding.cif,
+    finding.customerName,
+    asText(finding.clusterName),
+    asText(finding.branchCode),
+    asText(finding.branchName),
+    asText(finding.department),
+    asText(finding.officerName),
+    finding.errorCode,
+    asText(finding.errorGroup),
+    asText(finding.errorTitle),
+    asText(finding.businessLine),
+    asText(finding.riskLevel),
+    finding.workflowStatus,
+    finding.slaStatus,
+    Boolean(finding.isOverdue),
+    Boolean(finding.isSpecialCase),
+    asDate(finding.auditDate),
+    asDate(finding.deadlineDate),
+    Number(finding.exposureAmount ?? 0),
+    Number(finding.creditBalance ?? 0),
+    Number(finding.version ?? 1),
+    evidenceCount,
+    finding.createdAt,
+    finding.updatedAt,
+    JSON.stringify(finding),
+    hash
+  ];
+}
+var COLUMNS = [
+  "finding_id",
+  "campaign_id",
+  "channel_id",
+  "channel_code",
+  "cif",
+  "customer_name",
+  "cluster_name",
+  "branch_code",
+  "branch_name",
+  "department",
+  "officer_name",
+  "error_code",
+  "error_group",
+  "error_title",
+  "business_line",
+  "risk_level",
+  "workflow_status",
+  "sla_status",
+  "is_overdue",
+  "is_special_case",
+  "audit_date",
+  "deadline_date",
+  "exposure_amount",
+  "credit_balance",
+  "version",
+  "evidence_count",
+  "created_at",
+  "updated_at",
+  "payload",
+  "content_hash"
+];
+var COLUMN_CASTS = {
+  audit_date: "::date",
+  deadline_date: "::date",
+  created_at: "::timestamptz",
+  updated_at: "::timestamptz",
+  payload: "::jsonb"
+};
+var UPSERT_BATCH_SIZE = 200;
+var PostgresFindingRecords = class {
+  pool;
+  /**
+   * Vân tay của những dòng tiến trình này tin là đang nằm dưới database. Có nó thì mỗi lượt đồng bộ
+   * chỉ gửi đi những hồ sơ thật sự đổi, thay vì đẩy cả 20.000 dòng mỗi lần ai đó bấm một nút.
+   * `undefined` nghĩa là chưa đọc lần nào — lần đồng bộ đầu của mỗi instance sẽ nạp nó.
+   */
+  knownHashes;
+  constructor(options) {
+    this.pool = options.pool;
+  }
+  async sync(findings2, evidenceCountById) {
+    return withBackendTransaction(this.pool, async (client) => {
+      const known = this.knownHashes ?? await this.loadHashes(client);
+      const changed = [];
+      const nextHashes = /* @__PURE__ */ new Map();
+      for (const finding of findings2) {
+        const evidenceCount = evidenceCountById.get(finding.id) ?? 0;
+        const hash = findingContentHash(finding, evidenceCount);
+        nextHashes.set(finding.id, hash);
+        if (known.get(finding.id) !== hash) changed.push(finding);
+      }
+      const removed = [...known.keys()].filter((id) => !nextHashes.has(id));
+      for (let start = 0; start < changed.length; start += UPSERT_BATCH_SIZE) {
+        await this.upsertBatch(client, changed.slice(start, start + UPSERT_BATCH_SIZE), evidenceCountById, nextHashes);
+      }
+      if (removed.length > 0) {
+        await client.query("DELETE FROM finding_records WHERE finding_id = ANY($1::text[])", [removed]);
+      }
+      this.knownHashes = nextHashes;
+      return { upserted: changed.length, deleted: removed.length };
+    }).catch((error) => {
+      this.knownHashes = void 0;
+      throw error;
+    });
+  }
+  async loadHashes(client) {
+    const result = await client.query("SELECT finding_id, content_hash FROM finding_records");
+    return new Map(result.rows.map((row) => [String(row.finding_id), String(row.content_hash)]));
+  }
+  async upsertBatch(client, batch, evidenceCountById, hashes) {
+    if (batch.length === 0) return;
+    const params = [];
+    const tuples = batch.map((finding) => {
+      const offset = params.length;
+      params.push(...rowValues(finding, evidenceCountById.get(finding.id) ?? 0, hashes.get(finding.id)));
+      return `(${COLUMNS.map((column, index) => `$${offset + index + 1}${COLUMN_CASTS[column] ?? ""}`).join(", ")})`;
+    });
+    const updates = COLUMNS.filter((column) => column !== "finding_id").map((column) => `${column} = EXCLUDED.${column}`).join(", ");
+    await client.query(
+      `INSERT INTO finding_records(${COLUMNS.join(", ")}) VALUES ${tuples.join(", ")}
+       ON CONFLICT (finding_id) DO UPDATE SET ${updates}`,
+      params
+    );
+  }
+  /**
+   * Bảng chiếu đã sẵn sàng chưa.
+   *
+   * Bật cờ đọc bằng SQL mà chưa chạy migration thì *mọi* lần mở danh sách hồ sơ trả về 500 kèm
+   * thông báo thô của driver — người dùng chỉ thấy màn hình hỏng, còn nguyên nhân thật thì nằm ở
+   * cấu hình triển khai. Hỏi một câu lúc khởi động để hỏng ở chỗ có người đọc được.
+   */
+  async assertReady() {
+    try {
+      await withBackendTransaction(this.pool, (client) => client.query("SELECT 1 FROM finding_records LIMIT 1"));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      throw new Error(
+        "FINDINGS_READ_PATH=sql nh\u01B0ng kh\xF4ng \u0111\u1ECDc \u0111\u01B0\u1EE3c b\u1EA3ng finding_records. H\xE3y ch\u1EA1y `npm run db:migrate` tr\u01B0\u1EDBc khi b\u1EADt c\u1EDD n\xE0y. Chi ti\u1EBFt: " + reason
+      );
+    }
+  }
+  /**
+   * Kiểm tra bảng chiếu đã bắt kịp snapshot trước khi cho phép đường đọc SQL phục vụ người dùng.
+   * Chỉ đếm dòng là chưa đủ: một lần backfill dở dang có thể vô tình thay một hồ sơ bằng hồ sơ cũ
+   * nhưng vẫn giữ nguyên tổng số. So vân tay giúp phát hiện cả thiếu, thừa và lệch nội dung.
+   */
+  async assertCoverage(findings2, evidenceCountById) {
+    const expected = new Map(
+      findings2.map((item) => [item.id, findingContentHash(item, evidenceCountById.get(item.id) ?? 0)])
+    );
+    await withBackendTransaction(this.pool, async (client) => {
+      const actual = await this.loadHashes(client);
+      const missing2 = [...expected.keys()].filter((id) => !actual.has(id));
+      const stale = [...actual.keys()].filter((id) => !expected.has(id));
+      const changed = [...expected.keys()].filter((id) => actual.get(id) !== expected.get(id) && actual.has(id));
+      if (missing2.length === 0 && stale.length === 0 && changed.length === 0) return;
+      throw new Error(
+        `FINDING_RECORDS_NOT_BACKFILLED \u2014 b\u1EA3ng finding_records ch\u01B0a kh\u1EDBp snapshot. missing=${missing2.length}; stale=${stale.length}; changed=${changed.length}. Ch\u1EA1y \`npm run db:backfill:finding-records:dry-run\`, \u0111\u1ED1i chi\u1EBFu s\u1ED1 l\u01B0\u1EE3ng, r\u1ED3i m\u1EDBi backfill.`
+      );
+    });
+  }
+  async list(options) {
+    const { sql, params } = buildListQuery(options);
+    return withBackendTransaction(this.pool, async (client) => {
+      const result = await client.query(sql, params);
+      return {
+        // `payload` là bản ghi hồ sơ nguyên vẹn, nên không có bước dựng lại nào để mà sai.
+        items: result.rows.map((row) => row.payload),
+        total: result.rows.length > 0 ? Number(result.rows[0].total_count) : 0
+      };
+    });
+  }
+};
+function buildListQuery(options) {
+  const { user, query, page, limit } = options;
+  const params = [];
+  const placeholder = (value) => {
+    params.push(value);
+    return `$${params.length}`;
+  };
+  const scope = scopeSqlForUser(user, "f", 1);
+  params.push(...scope.params);
+  const conditions = [scope.sql];
+  const eq = (column, value) => {
+    if (value) conditions.push(`${column} = ${placeholder(value)}`);
+  };
+  const eqNullable = (column, value) => {
+    if (value === void 0) return;
+    conditions.push(`coalesce(${column}, '') = ${placeholder(value)}`);
+  };
+  if (query.channelId) {
+    const value = placeholder(query.channelId);
+    conditions.push(`(f.channel_id = ${value} OR f.channel_code = ${value})`);
+  }
+  eq("f.campaign_id", query.campaignId);
+  eq("f.workflow_status", query.workflowStatus);
+  if (query.slaStatus) {
+    conditions.push(query.slaStatus === "OVERDUE" ? `(f.is_overdue OR f.sla_status = ${placeholder("OVERDUE")})` : `(NOT f.is_overdue AND f.sla_status = ${placeholder(query.slaStatus)})`);
+  }
+  eq("f.branch_code", query.branchCode);
+  eqNullable("f.department", query.department);
+  eq("f.cluster_name", query.clusterName);
+  eq("f.error_code", query.errorCode);
+  eqNullable("f.error_group", query.errorGroup);
+  eqNullable("f.officer_name", query.officerName);
+  eq("f.risk_level", query.riskLevel);
+  eq("f.business_line", query.businessLine);
+  if (query.unresolvedOnly === "true") {
+    conditions.push(`f.workflow_status <> ${placeholder("WAIVED_RESOLVED")}`);
+  }
+  if (query.specialOnly === "true") conditions.push("f.is_special_case");
+  if (query.hasEvidence === "YES") conditions.push("f.evidence_count > 0");
+  if (query.hasEvidence === "NO") conditions.push("f.evidence_count = 0");
+  const findingDate = "coalesce(f.audit_date, (f.created_at AT TIME ZONE 'UTC')::date)";
+  if (query.dateFrom) conditions.push(`${findingDate} >= ${placeholder(query.dateFrom)}::date`);
+  if (query.dateTo) conditions.push(`${findingDate} <= ${placeholder(query.dateTo)}::date`);
+  if (query.search) {
+    const needle = query.search.toLowerCase();
+    const like = placeholder(`%${needle}%`);
+    const term = placeholder(needle);
+    conditions.push(`(f.search_text LIKE ${like} AND (
+      position(${term} in f.cif) > 0
+      OR position(${term} in lower(f.customer_name)) > 0
+      OR position(${term} in lower(f.error_code)) > 0
+      OR position(${term} in lower(coalesce(f.branch_name, ''))) > 0
+      OR position(${term} in lower(coalesce(f.cluster_name, ''))) > 0
+    ))`);
+  }
+  const offset = Math.max(0, (page - 1) * limit);
+  const sql = `SELECT f.payload, count(*) OVER () AS total_count
+                 FROM finding_records f
+                WHERE ${conditions.join(" AND ")}
+                ORDER BY f.created_at DESC, f.finding_id DESC
+                LIMIT ${placeholder(limit)} OFFSET ${placeholder(offset)}`;
+  return { sql, params };
+}
+
+// server/src/state/idempotency-retention.ts
+var IDEMPOTENCY_RETENTION_MS = 24 * 60 * 6e4;
+function pruneExpiredIdempotencyRecords(records, nowMs = Date.now(), retentionMs = IDEMPOTENCY_RETENTION_MS) {
+  let removed = 0;
+  for (const [key, entry] of Object.entries(records)) {
+    const storedAtMs = entry.storedAt ? Date.parse(entry.storedAt) : Number.NaN;
+    if (Number.isFinite(storedAtMs) && nowMs - storedAtMs < retentionMs) continue;
+    delete records[key];
+    removed += 1;
+  }
+  return removed;
+}
+
+// server/src/repositories/idempotency-store.ts
+var MemoryIdempotencyStore = class {
+  constructor(read) {
+    this.read = read;
+  }
+  async get(key) {
+    const records = this.read();
+    pruneExpiredIdempotencyRecords(records);
+    return records[key];
+  }
+  async put(key, record) {
+    this.read()[key] = { ...record, storedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  }
+  async prune() {
+    return pruneExpiredIdempotencyRecords(this.read());
+  }
+};
+var PostgresIdempotencyStore = class {
+  constructor(pool2) {
+    this.pool = pool2;
+  }
+  async get(key) {
+    return withBackendTransaction(this.pool, async (client) => {
+      const result = await client.query(
+        `SELECT request_hash, response_body, created_at
+           FROM idempotency_keys
+          WHERE key = $1 AND expires_at > NOW()`,
+        [key]
+      );
+      const row = result.rows[0];
+      if (!row) return void 0;
+      return {
+        requestHash: String(row.request_hash),
+        response: row.response_body,
+        storedAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
+      };
+    });
+  }
+  async put(key, record, options) {
+    await withBackendTransaction(this.pool, async (client) => {
+      await client.query(
+        `INSERT INTO idempotency_keys(
+           key, request_path, request_method, request_hash,
+           response_status, response_body, expires_at
+         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW() + ($7 || ' milliseconds')::interval)
+         ON CONFLICT (key) DO UPDATE SET
+           request_hash    = EXCLUDED.request_hash,
+           response_status = EXCLUDED.response_status,
+           response_body   = EXCLUDED.response_body,
+           expires_at      = EXCLUDED.expires_at`,
+        [
+          key,
+          options.path.slice(0, 255),
+          options.method,
+          record.requestHash,
+          options.status,
+          JSON.stringify(record.response ?? null),
+          String(IDEMPOTENCY_RETENTION_MS)
+        ]
+      );
+    });
+  }
+  async prune() {
+    return withBackendTransaction(this.pool, async (client) => {
+      const result = await client.query("DELETE FROM idempotency_keys WHERE expires_at < NOW()");
+      return result.rowCount ?? 0;
+    });
+  }
+};
+
 // server/src/state/durable-state-coordinator.ts
 var DurableStateCoordinator = class {
   lastDurableState;
@@ -3050,7 +3546,6 @@ async function renderReportXlsx(report) {
 }
 
 // server/src/security/access-control.ts
-var normalize = (value) => value?.trim().toLocaleLowerCase("vi-VN");
 function resolveLocalUser(headerValue, users) {
   const requestedId = Array.isArray(headerValue) ? headerValue[0] : headerValue;
   if (!requestedId) {
@@ -3079,27 +3574,7 @@ function branchScopeTypeForRole(primaryRole) {
   return primaryRole === "BRANCH_INPUT" ? "DEPARTMENT" : "BRANCH";
 }
 function hasFindingAccess(user, finding) {
-  if (!user.isActive) return false;
-  const scopes = Array.isArray(user.scopes) ? user.scopes : [];
-  if (scopes.some((scope) => scope.scopeType === "ALL")) return true;
-  return scopes.some((scope) => {
-    const scopedBranchCode = scope.orgUnitCode ?? user.branchCode;
-    const scopedBranchName = scope.branchName ?? user.branchName;
-    const branchMatches = scopedBranchCode ? scopedBranchCode === finding.branchCode : normalize(scopedBranchName) === normalize(finding.branchName);
-    switch (scope.scopeType) {
-      case "CLUSTER":
-        return normalize(scope.clusterName ?? user.clusterName) === normalize(finding.clusterName);
-      case "BRANCH":
-        return branchMatches;
-      case "DEPARTMENT": {
-        if (!branchMatches) return false;
-        if (!normalize(finding.department)) return true;
-        return normalize(scope.departmentName ?? user.department) === normalize(finding.department);
-      }
-      default:
-        return false;
-    }
-  });
+  return matchesScopeClauses(buildScopeClauses(user), finding);
 }
 
 // server/src/security/password.ts
@@ -3300,7 +3775,7 @@ function decryptTotpSecret(payload, key) {
 }
 
 // server/src/security/google-drive-oauth-state.ts
-import crypto3 from "node:crypto";
+import crypto4 from "node:crypto";
 var STATE_TTL_MS = 10 * 60 * 1e3;
 function base64Url(value) {
   return Buffer.from(value).toString("base64url");
@@ -3312,21 +3787,21 @@ function requireSecret(value, label) {
   if (!value || value.length < 16) throw new Error(`${label} is not configured.`);
 }
 function secureEqual(left, right) {
-  return left.length === right.length && crypto3.timingSafeEqual(left, right);
+  return left.length === right.length && crypto4.timingSafeEqual(left, right);
 }
 function createGoogleDriveOAuthState({ userId, secret, now = Date.now() }) {
   requireSecret(secret, "Google OAuth state secret");
   if (!userId) throw new Error("Google OAuth state requires a user.");
-  const payload = { version: 1, userId, expiresAt: now + STATE_TTL_MS, nonce: crypto3.randomUUID() };
+  const payload = { version: 1, userId, expiresAt: now + STATE_TTL_MS, nonce: crypto4.randomUUID() };
   const encodedPayload = base64Url(JSON.stringify(payload));
-  const signature = crypto3.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
+  const signature = crypto4.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
   return `${encodedPayload}.${base64Url(signature)}`;
 }
 function verifyGoogleDriveOAuthState({ state, secret, now = Date.now() }) {
   requireSecret(secret, "Google OAuth state secret");
   const [encodedPayload, encodedSignature, ...extra] = state.split(".");
   if (!encodedPayload || !encodedSignature || extra.length) throw new Error("OAuth state is invalid.");
-  const expectedSignature = crypto3.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
+  const expectedSignature = crypto4.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
   if (!secureEqual(expectedSignature, decodeBase64Url(encodedSignature))) throw new Error("OAuth state signature is invalid.");
   let payload;
   try {
@@ -3343,8 +3818,8 @@ function encryptionKey2(rawKey) {
 }
 function encryptGoogleDriveRefreshToken(refreshToken, rawKey) {
   if (!refreshToken) throw new Error("Google OAuth refresh token is missing.");
-  const iv = crypto3.randomBytes(12);
-  const cipher = crypto3.createCipheriv("aes-256-gcm", encryptionKey2(rawKey), iv);
+  const iv = crypto4.randomBytes(12);
+  const cipher = crypto4.createCipheriv("aes-256-gcm", encryptionKey2(rawKey), iv);
   const ciphertext = Buffer.concat([cipher.update(refreshToken, "utf8"), cipher.final()]);
   return ["v1", base64Url(iv), base64Url(cipher.getAuthTag()), base64Url(ciphertext)].join(".");
 }
@@ -3352,7 +3827,7 @@ function decryptGoogleDriveRefreshToken(storedCredential, rawKey) {
   const [version, encodedIv, encodedTag, encodedCiphertext, ...extra] = storedCredential.split(".");
   if (version !== "v1" || !encodedIv || !encodedTag || !encodedCiphertext || extra.length) throw new Error("Google OAuth credential is invalid.");
   try {
-    const decipher = crypto3.createDecipheriv("aes-256-gcm", encryptionKey2(rawKey), decodeBase64Url(encodedIv));
+    const decipher = crypto4.createDecipheriv("aes-256-gcm", encryptionKey2(rawKey), decodeBase64Url(encodedIv));
     decipher.setAuthTag(decodeBase64Url(encodedTag));
     return Buffer.concat([decipher.update(decodeBase64Url(encodedCiphertext)), decipher.final()]).toString("utf8");
   } catch {
@@ -3364,7 +3839,7 @@ function decryptGoogleDriveRefreshToken(storedCredential, rawKey) {
 import { OAuth2Client as OAuth2Client2 } from "google-auth-library";
 
 // server/src/security/google-oidc.ts
-import crypto4 from "node:crypto";
+import crypto5 from "node:crypto";
 var STATE_TTL_MS2 = 10 * 60 * 1e3;
 function base64Url2(value) {
   return Buffer.from(value).toString("base64url");
@@ -3376,7 +3851,7 @@ function requireSecret2(value) {
   if (!value || value.length < 16) throw new Error("Google OIDC state secret is not configured.");
 }
 function safeEqual(left, right) {
-  return left.length === right.length && crypto4.timingSafeEqual(left, right);
+  return left.length === right.length && crypto5.timingSafeEqual(left, right);
 }
 var INTERNAL_ORIGIN = "https://audit-bgs.invalid";
 function requireSafeReturnTo(value) {
@@ -3399,17 +3874,17 @@ function createGoogleOidcState({ secret, returnTo, now = Date.now() }) {
     version: 1,
     returnTo: requireSafeReturnTo(returnTo),
     expiresAt: now + STATE_TTL_MS2,
-    nonce: crypto4.randomUUID()
+    nonce: crypto5.randomUUID()
   };
   const encodedPayload = base64Url2(JSON.stringify(payload));
-  const signature = crypto4.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
+  const signature = crypto5.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
   return `${encodedPayload}.${base64Url2(signature)}`;
 }
 function verifyGoogleOidcState({ state, secret, now = Date.now() }) {
   requireSecret2(secret);
   const [encodedPayload, encodedSignature, ...extra] = state.split(".");
   if (!encodedPayload || !encodedSignature || extra.length) throw new Error("Google OIDC state is invalid.");
-  const expected = crypto4.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
+  const expected = crypto5.createHmac("sha256", secret).update(encodedPayload, "utf8").digest();
   if (!safeEqual(expected, decodeBase64Url2(encodedSignature))) throw new Error("Google OIDC state signature is invalid.");
   let payload;
   try {
@@ -3726,7 +4201,7 @@ function assertSafeZip2(zip) {
 }
 var decodeXml2 = (value) => value.replace(/&amp;/g, "&").replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&quot;/g, '"').replace(/&apos;/g, "'");
 var cellText = (xml) => decodeXml2([...xml.matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/g)].map((match) => match[1]).join(" ")).replace(/\s+/g, " ").trim();
-var normalize2 = (value) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+var normalize = (value) => value.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/đ/g, "d").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 var aliases = {
   cif: ["cif", "ma kh", "ma khach hang"],
   customerName: ["ten khach hang", "ten kh"],
@@ -3755,7 +4230,7 @@ async function parseFindingDocx(buffer) {
   for (const table of tables) {
     const rows = (table.match(/<w:tr\b[\s\S]*?<\/w:tr>/g) ?? []).map((row) => (row.match(/<w:tc\b[\s\S]*?<\/w:tc>/g) ?? []).map(cellText));
     if (rows.length < 2) continue;
-    const headers = rows[0].map(normalize2);
+    const headers = rows[0].map(normalize);
     const column = (key) => headers.findIndex((header) => aliases[key].some((alias) => header === alias || header.includes(alias)));
     const columns = Object.fromEntries(Object.keys(aliases).map((key) => [key, column(key)]));
     if (columns.cif < 0 || columns.customerName < 0 || columns.branchCode < 0 || columns.errorCode < 0) continue;
@@ -4032,7 +4507,7 @@ function assertOidcStateBound(request, state) {
   const cookie = cookieValue(request, OIDC_STATE_COOKIE);
   const expected = Buffer.from(cookie ?? "", "utf8");
   const received = Buffer.from(state, "utf8");
-  if (!cookie || expected.length !== received.length || !crypto5.timingSafeEqual(expected, received)) {
+  if (!cookie || expected.length !== received.length || !crypto6.timingSafeEqual(expected, received)) {
     throw new HttpProblem(401, "GOOGLE_OIDC_STATE_MISMATCH", "Phi\xEAn \u0111\u0103ng nh\u1EADp Google kh\xF4ng h\u1EE3p l\u1EC7", "H\xE3y b\u1EAFt \u0111\u1EA7u l\u1EA1i \u0111\u0103ng nh\u1EADp Google trong c\xF9ng tr\xECnh duy\u1EC7t.");
   }
 }
@@ -4709,6 +5184,8 @@ var authSessions = [];
 var authenticatorCredentials = [];
 var googleDriveOAuthCredential;
 var securityEvents = [];
+var pendingSecurityEvents = [];
+var SECURITY_EVENT_RETENTION = 5e3;
 var loginAttempts = [];
 function normalizeReportDefinition(definition) {
   return {
@@ -4739,11 +5216,11 @@ var DEMO_SEED_IDS = {
 };
 function generateTemporaryPassword() {
   const alphabet = "ABCDEFGHJKMNPQRSTUVWXYZabcdefghijkmnpqrstuvwxyz23456789";
-  const bytes = crypto5.randomBytes(20);
+  const bytes = crypto6.randomBytes(20);
   return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
 }
 var credentialDirectory = [...localCredentialDirectory];
-var unknownUserPasswordHash = await hashPassword(crypto5.randomUUID());
+var unknownUserPasswordHash = await hashPassword(crypto6.randomUUID());
 if (!DEMO_SEED_ENABLED) {
   appUsers = [];
   orgUnits = [createHeadOfficeOrgUnit()];
@@ -4757,9 +5234,15 @@ var stateRepository = createStateRepository({
   filePath: process.env.LOCAL_STATE_FILE ?? path4.join(process.cwd(), "data", "local-state.json"),
   dataStoreMode: process.env.DATA_STORE_MODE,
   persistenceEnabled: process.env.NODE_ENV !== "test",
-  snapshotId: process.env.STATE_SNAPSHOT_ID ?? (process.env.NODE_ENV === "test" ? `test-${process.pid}-${crypto5.randomUUID().slice(0, 8)}` : void 0)
+  snapshotId: process.env.STATE_SNAPSHOT_ID ?? (process.env.NODE_ENV === "test" ? `test-${process.pid}-${crypto6.randomUUID().slice(0, 8)}` : void 0)
 });
 var workflowEventLedger = stateRepository instanceof PostgresStateRepository ? new PostgresWorkflowEventLedger({ pool }) : void 0;
+var securityEventLedger = stateRepository instanceof PostgresStateRepository ? new PostgresSecurityEventLedger({ pool }) : void 0;
+var findingRecords = stateRepository instanceof PostgresStateRepository ? new PostgresFindingRecords({ pool }) : void 0;
+var findingsReadPath = process.env.FINDINGS_READ_PATH === "sql" && findingRecords ? "sql" : "memory";
+if (findingsReadPath === "sql" && findingRecords) await findingRecords.assertReady();
+var usesPostgresIdempotency = stateRepository instanceof PostgresStateRepository;
+var idempotencyStore = usesPostgresIdempotency ? new PostgresIdempotencyStore(pool) : new MemoryIdempotencyStore(() => idempotencyRecords);
 var hydratedState = await stateRepository.load({
   orgUnits,
   appUsers,
@@ -4795,8 +5278,16 @@ if (workflowEventLedger) {
     pendingWorkflowEvents = structuredClone(snapshotEvents);
   }
 }
+if (securityEventLedger) {
+  const snapshotEvents = hydratedState.securityEvents ?? [];
+  const ledgerEvents = await securityEventLedger.loadRecent(SECURITY_EVENT_RETENTION);
+  hydratedState.securityEvents = ledgerEvents.length > 0 || snapshotEvents.length === 0 ? ledgerEvents : snapshotEvents;
+  if (ledgerEvents.length === 0 && snapshotEvents.length > 0) {
+    pendingSecurityEvents = structuredClone(snapshotEvents);
+  }
+}
 var repositoryHydrationBaseline = structuredClone(hydratedState);
-if (workflowEventLedger) repositoryHydrationBaseline = withoutWorkflowEvents(repositoryHydrationBaseline);
+repositoryHydrationBaseline = withoutLedgerArrays(repositoryHydrationBaseline);
 if (!DEMO_SEED_ENABLED) {
   const demoUserIds = new Set(DEMO_SEED_IDS.users);
   const demoOrgUnitIds = new Set(DEMO_SEED_IDS.orgUnits.filter((id) => id !== "org-ho"));
@@ -4846,6 +5337,14 @@ function recordWorkflowEvent(event) {
   if (workflowEventLedger) pendingWorkflowEvents.push(structuredClone(event));
 }
 evidences = hydratedState.evidences;
+if (findingsReadPath === "sql" && findingRecords) {
+  const evidenceCountById = /* @__PURE__ */ new Map();
+  for (const evidence of evidences) {
+    if (evidence.status !== "AVAILABLE") continue;
+    evidenceCountById.set(evidence.findingId, (evidenceCountById.get(evidence.findingId) ?? 0) + 1);
+  }
+  await findingRecords.assertCoverage(findings, evidenceCountById);
+}
 importBatches = hydratedState.importBatches;
 slaExtensions = hydratedState.slaExtensions;
 reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
@@ -4908,7 +5407,7 @@ function authenticatorEncryptionKey() {
   if (process.env.NODE_ENV === "production") {
     throw new HttpProblem(503, "AUTHENTICATOR_NOT_CONFIGURED", "Authenticator ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5u h\xECnh", "Thi\u1EBFu AUTHENTICATOR_ENCRYPTION_KEY tr\xEAn m\xE1y ch\u1EE7.");
   }
-  return crypto5.createHash("sha256").update(`auditbgs-local-authenticator:${process.cwd()}`).digest("base64");
+  return crypto6.createHash("sha256").update(`auditbgs-local-authenticator:${process.cwd()}`).digest("base64");
 }
 function hydrateGoogleDriveOAuthCredential(credential) {
   googleDriveOAuthCredential = credential;
@@ -5067,14 +5566,15 @@ function currentLocalState() {
     loginAttempts
   };
 }
-function withoutWorkflowEvents(state) {
+function withoutLedgerArrays(state) {
   const persisted = structuredClone(state);
-  delete persisted.workflowEvents;
+  if (workflowEventLedger) delete persisted.workflowEvents;
+  if (securityEventLedger) delete persisted.securityEvents;
+  if (usesPostgresIdempotency) delete persisted.idempotencyRecords;
   return persisted;
 }
 function persistedLocalState() {
-  const state = currentLocalState();
-  return workflowEventLedger ? withoutWorkflowEvents(state) : state;
+  return withoutLedgerArrays(currentLocalState());
 }
 var durableState = new DurableStateCoordinator(persistedLocalState());
 function restoreDurableLocalState(restored, workflowEventsOverride) {
@@ -5091,13 +5591,13 @@ function restoreDurableLocalState(restored, workflowEventsOverride) {
   dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
   reportCatalogConfiguration = hydrateReportCatalogConfiguration(restored.reportCatalogConfiguration);
   securitySettings = restored.securitySettings ?? createDefaultSecuritySettings();
-  idempotencyRecords = restored.idempotencyRecords ?? {};
+  idempotencyRecords = usesPostgresIdempotency ? {} : restored.idempotencyRecords ?? {};
   findingFollows = restored.findingFollows ?? [];
   workspaceAccepted = restored.workspaceAccepted ?? [];
   workspaceWatchTargets = restored.workspaceWatchTargets ?? [];
   authSessions = restored.authSessions ?? [];
   authenticatorCredentials = restored.authenticatorCredentials ?? [];
-  securityEvents = restored.securityEvents ?? [];
+  securityEvents = securityEventLedger ? securityEvents : restored.securityEvents ?? [];
   loginAttempts = restored.loginAttempts ?? [];
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
@@ -5112,6 +5612,7 @@ var runtimeStateGate = new RuntimeStateGate({
     if (!latest) return;
     restoreDurableLocalState(latest);
     if (workflowEventLedger) workflowEvents = await workflowEventLedger.loadAll();
+    if (securityEventLedger) securityEvents = await securityEventLedger.loadRecent(SECURITY_EVENT_RETENTION);
     durableState.hydrate(persistedLocalState());
   }
 });
@@ -5138,7 +5639,21 @@ app.addHook("onResponse", async (request) => {
 app.addHook("onError", async (request) => {
   releaseRuntimeRequest(request);
 });
+async function syncFindingRecords() {
+  if (!findingRecords) return;
+  try {
+    const evidenceCountById = /* @__PURE__ */ new Map();
+    for (const evidence of evidences) {
+      if (evidence.status !== "AVAILABLE") continue;
+      evidenceCountById.set(evidence.findingId, (evidenceCountById.get(evidence.findingId) ?? 0) + 1);
+    }
+    await findingRecords.sync(findings, evidenceCountById);
+  } catch (error) {
+    app.log.warn({ err: error }, "Kh\xF4ng c\u1EADp nh\u1EADt \u0111\u01B0\u1EE3c b\u1EA3ng chi\u1EBFu h\u1ED3 s\u01A1; l\u01B0\u1EE3t ghi sau s\u1EBD b\u1EAFt k\u1ECBp.");
+  }
+}
 async function persistLocalState() {
+  await appendPendingSecurityEvents();
   const base = durableState.snapshot();
   const snapshot = persistedLocalState();
   const mergeBase = repositoryHydrationBaseline ?? base;
@@ -5149,7 +5664,7 @@ async function persistLocalState() {
     saved = await durableState.persistAsync(
       async () => stateRepository instanceof PostgresStateRepository ? stateRepository.updateWithWorkflowEvents(
         snapshot,
-        (latest) => threeWayMergeState(mergeBase, snapshot, withoutWorkflowEvents(latest)),
+        (latest) => threeWayMergeState(mergeBase, snapshot, withoutLedgerArrays(latest)),
         events
       ) : stateRepository.update(snapshot, (latest) => threeWayMergeState(mergeBase, snapshot, latest)),
       (restored) => restoreDurableLocalState(
@@ -5164,8 +5679,14 @@ async function persistLocalState() {
   repositoryHydrationBaseline = void 0;
   if (eventIds.size > 0) pendingWorkflowEvents = pendingWorkflowEvents.filter((event) => !eventIds.has(event.id));
   restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : void 0);
+  await syncFindingRecords();
 }
 async function evaluateCurrentSlaState() {
+  try {
+    await idempotencyStore.prune();
+  } catch (error) {
+    app.log.warn({ err: error }, "Kh\xF4ng d\u1ECDn \u0111\u01B0\u1EE3c kho\xE1 ch\u1ED1ng l\u1EB7p h\u1EBFt h\u1EA1n; b\u1ECF qua l\u01B0\u1EE3t n\xE0y.");
+  }
   let result = { updatedCount: 0, overdueCount: 0, dueSoonCount: 0 };
   const runtimeWorkflowEvents = workflowEventLedger ? workflowEvents : void 0;
   const saved = await durableState.persistAsync(
@@ -5273,7 +5794,7 @@ async function bootstrapAdministratorFromEnvironment() {
     return false;
   }
   const admin = {
-    id: `user-${crypto5.randomUUID()}`,
+    id: `user-${crypto6.randomUUID()}`,
     username,
     email: process.env.BOOTSTRAP_ADMIN_EMAIL?.trim() || `${username}@localhost`,
     fullName: process.env.BOOTSTRAP_ADMIN_FULLNAME?.trim() || "Qu\u1EA3n tr\u1ECB h\u1EC7 th\u1ED1ng",
@@ -5313,12 +5834,34 @@ function getCurrentUser(req) {
   }
   return user;
 }
-var SECURITY_EVENT_RETENTION = 5e3;
 function recordSecurityEvent(event) {
-  securityEvents.push({ ...event, id: `sec-${crypto5.randomUUID()}`, occurredAt: (/* @__PURE__ */ new Date()).toISOString() });
+  const recorded = {
+    ...event,
+    id: `sec-${crypto6.randomUUID()}`,
+    occurredAt: (/* @__PURE__ */ new Date()).toISOString()
+  };
+  securityEvents.push(recorded);
+  if (securityEventLedger) pendingSecurityEvents.push(structuredClone(recorded));
   if (securityEvents.length > SECURITY_EVENT_RETENTION) {
     securityEvents = securityEvents.slice(-SECURITY_EVENT_RETENTION);
   }
+}
+async function appendPendingSecurityEvents() {
+  if (!securityEventLedger || pendingSecurityEvents.length === 0) return;
+  const flushing = structuredClone(pendingSecurityEvents);
+  const flushedIds = new Set(flushing.map((event) => event.id));
+  try {
+    await securityEventLedger.append(flushing);
+  } finally {
+    pendingSecurityEvents = pendingSecurityEvents.filter((event) => !flushedIds.has(event.id));
+  }
+}
+async function flushSecurityEvents() {
+  if (!securityEventLedger) {
+    await persistLocalState();
+    return;
+  }
+  await appendPendingSecurityEvents();
 }
 function recordUserSecurityEvent(req, user, event) {
   recordSecurityEvent({
@@ -5513,7 +6056,7 @@ async function addWorkspaceTarget(collection, dto, user) {
   const key = workspaceTargetKey(dto);
   let record = collection.find((item) => item.userId === user.id && workspaceTargetKey(item) === key);
   if (!record) {
-    record = { id: `workspace-${crypto5.randomUUID()}`, userId: user.id, ...dto, createdAt: (/* @__PURE__ */ new Date()).toISOString() };
+    record = { id: `workspace-${crypto6.randomUUID()}`, userId: user.id, ...dto, createdAt: (/* @__PURE__ */ new Date()).toISOString() };
     collection.push(record);
     await persistLocalState();
   }
@@ -5551,7 +6094,7 @@ function validateDynamicPayload(channel, dto) {
     }
   }
 }
-function createFindingFromDto(dto, user, id = `find-${crypto5.randomUUID()}`) {
+function createFindingFromDto(dto, user, id = `find-${crypto6.randomUUID()}`) {
   const channel = reportChannels.find((item) => item.id === dto.channelId && item.isActive);
   if (!channel) {
     throw new HttpProblem(422, "CHANNEL_NOT_ACTIVE", "K\xEAnh b\xE1o c\xE1o kh\xF4ng h\u1EE3p l\u1EC7", "K\xEAnh b\xE1o c\xE1o kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng.");
@@ -5956,7 +6499,7 @@ function applyReportFilters(items, filters) {
     return true;
   });
 }
-function idempotencyContext(request, user, body) {
+async function idempotencyContext(request, user, body) {
   const rawKey = request.headers["idempotency-key"];
   const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;
   if (!key) {
@@ -5965,25 +6508,28 @@ function idempotencyContext(request, user, body) {
   if (key.length > 255) {
     throw new HttpProblem(422, "INVALID_IDEMPOTENCY_KEY", "Idempotency-Key kh\xF4ng h\u1EE3p l\u1EC7", "Idempotency-Key kh\xF4ng \u0111\u01B0\u1EE3c d\xE0i qu\xE1 255 k\xFD t\u1EF1.");
   }
+  const path5 = request.url.split("?")[0];
   const cacheKey = `${user.id}:${request.method}:${request.url}:${key}`;
-  const requestHash = crypto5.createHash("sha256").update(JSON.stringify(body)).digest("hex");
-  const existing = idempotencyRecords[cacheKey];
+  const requestHash = crypto6.createHash("sha256").update(JSON.stringify(body)).digest("hex");
+  const existing = await idempotencyStore.get(cacheKey);
   if (existing && existing.requestHash !== requestHash) {
     throw new HttpProblem(409, "IDEMPOTENCY_CONFLICT", "Xung \u0111\u1ED9t Idempotency-Key", "Idempotency-Key \u0111\xE3 \u0111\u01B0\u1EE3c d\xF9ng v\u1EDBi n\u1ED9i dung y\xEAu c\u1EA7u kh\xE1c.");
   }
   return {
     cacheKey,
     requestHash,
+    method: request.method,
+    path: path5,
     replay: existing ? structuredClone(existing.response) : void 0
   };
 }
-function rememberIdempotentResponse(context, response) {
-  if (context.cacheKey && context.requestHash) {
-    idempotencyRecords[context.cacheKey] = {
-      requestHash: context.requestHash,
-      response: structuredClone(response)
-    };
-  }
+async function rememberIdempotentResponse(context, response, status = 200) {
+  if (!context.cacheKey || !context.requestHash) return;
+  await idempotencyStore.put(
+    context.cacheKey,
+    { requestHash: context.requestHash, response: structuredClone(response) },
+    { method: context.method ?? "POST", path: context.path ?? "", status }
+  );
 }
 app.get("/api/v1/health", async () => ({ status: "UP", timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
 var REDACTED_DIAGNOSTIC = "Chi ti\u1EBFt l\u1ED7i ch\u1EC9 hi\u1EC3n th\u1ECB cho qu\u1EA3n tr\u1ECB vi\xEAn \u0111\xE3 \u0111\u0103ng nh\u1EADp.";
@@ -6028,7 +6574,7 @@ function requireCronAuthorization(request) {
   }
   const expected = Buffer.from(`Bearer ${secret}`, "utf8");
   const received = Buffer.from(request.headers.authorization ?? "", "utf8");
-  const authorized = expected.length === received.length && crypto5.timingSafeEqual(expected, received);
+  const authorized = expected.length === received.length && crypto6.timingSafeEqual(expected, received);
   if (!authorized) {
     throw new HttpProblem(401, "CRON_AUTH_REQUIRED", "Kh\xF4ng th\u1EC3 x\xE1c th\u1EF1c cron", "Authorization Bearer kh\xF4ng h\u1EE3p l\u1EC7.");
   }
@@ -6380,7 +6926,7 @@ app.post("/api/v1/admin/campaigns", async (req, reply) => {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const campaign = {
     ...body,
-    id: `campaign-${crypto5.randomUUID()}`,
+    id: `campaign-${crypto6.randomUUID()}`,
     status: "DRAFT",
     driveProvisionStatus: "NOT_CONFIGURED",
     version: 1,
@@ -6573,7 +7119,7 @@ app.post("/api/v1/admin/org-units", async (req) => {
   assertOrgUnitParent(body.type, body.parentId);
   assertOrgUnitLeader(body.leaderUserId);
   const newUnit = {
-    id: `org-${crypto5.randomUUID()}`,
+    id: `org-${crypto6.randomUUID()}`,
     code: body.code,
     name: body.name,
     type: body.type,
@@ -6592,7 +7138,7 @@ app.post("/api/v1/admin/org-units/imports/commit", async (req, reply) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
   const body = BulkOrgUnitImportSchema.parse(req.body);
-  const batchId = `org-import-${crypto5.randomUUID()}`;
+  const batchId = `org-import-${crypto6.randomUUID()}`;
   const result = { batchId, created: [], failed: [] };
   for (const row of body.rows) {
     try {
@@ -6605,7 +7151,7 @@ app.post("/api/v1/admin/org-units/imports/commit", async (req, reply) => {
       if (created.type !== "HEAD_OFFICE" && !parent) throw new HttpProblem(422, "ORG_UNIT_PARENT_INVALID", "\u0110\u01A1n v\u1ECB cha kh\xF4ng h\u1EE3p l\u1EC7", "H\xE3y d\xF9ng m\xE3 ho\u1EB7c t\xEAn \u0111\u01A1n v\u1ECB cha \u0111\xE3 c\xF3 trong h\u1EC7 th\u1ED1ng ho\u1EB7c \u1EDF d\xF2ng tr\u01B0\u1EDBc.");
       assertOrgUnitParent(created.type, created.parentId, void 0);
       const now = (/* @__PURE__ */ new Date()).toISOString();
-      const unit = { id: `org-${crypto5.randomUUID()}`, ...created, createdAt: now, updatedAt: now };
+      const unit = { id: `org-${crypto6.randomUUID()}`, ...created, createdAt: now, updatedAt: now };
       orgUnits.push(unit);
       result.created.push({ rowNumber: row.rowNumber, unit: projectOrgUnit(unit) });
     } catch (error) {
@@ -6715,7 +7261,7 @@ async function createUserAccount(req, body) {
     departmentName: department?.name
   }] : ["ADMIN", "SUPERVISOR", "INTERNAL_APPROVER", "INTERNAL_OFFICER"].includes(body.primaryRole) ? [{ scopeType: "ALL" }] : [];
   const newUser = {
-    id: `user-${crypto5.randomUUID()}`,
+    id: `user-${crypto6.randomUUID()}`,
     username: body.username || body.email.split("@")[0],
     email: body.email,
     fullName: body.fullName,
@@ -6789,9 +7335,9 @@ app.post("/api/v1/admin/users/imports/commit", async (req, reply) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
   const body = BulkUserImportSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, actor, body);
+  const idempotency = await idempotencyContext(req, actor, body);
   if (idempotency.replay) return reply.code(201).send(idempotency.replay);
-  const batchId = `user-import-${crypto5.randomUUID()}`;
+  const batchId = `user-import-${crypto6.randomUUID()}`;
   const result = { batchId, created: [], failed: [] };
   for (const row of body.rows) {
     try {
@@ -6809,7 +7355,7 @@ app.post("/api/v1/admin/users/imports/commit", async (req, reply) => {
     subject: batchId,
     detail: `Nh\u1EADp theo l\xF4: t\u1EA1o ${result.created.length} t\xE0i kho\u1EA3n, ${result.failed.length} d\xF2ng kh\xF4ng t\u1EA1o.`
   });
-  rememberIdempotentResponse(idempotency, result);
+  await rememberIdempotentResponse(idempotency, result, 201);
   await persistLocalState();
   return reply.code(201).send(result);
 });
@@ -7011,7 +7557,7 @@ app.get("/api/v1/channels/active", async () => reportChannels.filter((c) => c.is
 app.post("/api/v1/admin/channels", async (req) => {
   const user = getCurrentUser(req);
   requireCatalogManager(user);
-  const id = `chan-${crypto5.randomUUID()}`;
+  const id = `chan-${crypto6.randomUUID()}`;
   const payload = req.body ?? {};
   const body = CreateReportChannelSchema.parse({
     ...payload,
@@ -7355,9 +7901,19 @@ app.get("/api/v1/findings", async (req) => {
   const user = getCurrentUser(req);
   const { page, limit } = PaginationQuerySchema.parse(req.query);
   const query = req.query ?? {};
+  const offset = (page - 1) * limit;
+  if (findingsReadPath === "sql" && findingRecords) {
+    const page1 = await findingRecords.list({ user, query, page, limit });
+    return {
+      items: page1.items.map(withEvidenceProjection),
+      total: page1.total,
+      page,
+      limit,
+      hasMore: offset + page1.items.length < page1.total
+    };
+  }
   const result = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
   const total = result.length;
-  const offset = (page - 1) * limit;
   const items = result.slice(offset, offset + limit).map(withEvidenceProjection);
   return {
     items,
@@ -7391,7 +7947,7 @@ app.post("/api/v1/findings/:id/sub-items", async (req, reply) => {
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const subItems = finding.subItems ?? [];
   subItems.push({
-    id: `sub-${crypto5.randomUUID()}`,
+    id: `sub-${crypto6.randomUUID()}`,
     findingId: finding.id,
     content: dto.content,
     order: subItems.length + 1,
@@ -7441,7 +7997,7 @@ app.post("/api/v1/findings/:id/sub-items/review", async (req) => {
   finding.version += 1;
   finding.updatedAt = now;
   recordWorkflowEvent({
-    id: `evt-${crypto5.randomUUID()}`,
+    id: `evt-${crypto6.randomUUID()}`,
     findingId: finding.id,
     command: "REVIEW_SUB_ITEMS",
     fromStatus: finding.workflowStatus,
@@ -7498,7 +8054,7 @@ app.post("/api/v1/findings", async (req) => {
   const user = getCurrentUser(req);
   requireRoles(user, ["ADMIN", "INTERNAL_OFFICER"]);
   const b = WebFormFindingSchema.parse(req.body);
-  const newFinding = createFindingFromDto(b, user, `find-${crypto5.randomUUID()}`);
+  const newFinding = createFindingFromDto(b, user, `find-${crypto6.randomUUID()}`);
   await ensureFindingDriveFolder(newFinding);
   findings.unshift(newFinding);
   await persistLocalState();
@@ -7520,11 +8076,17 @@ app.post("/api/v1/imports/findings", async (req, reply) => {
   const user = getCurrentUser(req);
   requireRoles(user, ["ADMIN", "INTERNAL_OFFICER", "SUPERVISOR"]);
   const batch = BulkFindingImportSchema.parse(req.body);
-  const idempotency = batch.sourceType === "API_BULK" ? void 0 : idempotencyContext(req, user, batch);
-  if (idempotency?.replay) return reply.code(201).send(idempotency.replay);
+  const idempotency = batch.sourceType === "API_BULK" ? void 0 : await idempotencyContext(req, user, batch);
+  const replay = idempotency?.replay;
+  if (replay) {
+    return reply.code(201).send({
+      ...replay,
+      findings: findings.filter((item) => item.importBatchId === replay.batchId)
+    });
+  }
   const imported = [];
   let duplicateCount = 0;
-  const batchId = `batch-${crypto5.randomUUID()}`;
+  const batchId = `batch-${crypto6.randomUUID()}`;
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const seenKeys = new Set(findings.map((item) => buildFindingBusinessKey(item)));
   for (const row of batch.rows) {
@@ -7534,7 +8096,7 @@ app.post("/api/v1/imports/findings", async (req, reply) => {
       continue;
     }
     seenKeys.add(key);
-    imported.push({
+    imported.push(ensureFindingSubItems(normalizeFindingSpecialCase({
       ...createFindingFromDto(row, user),
       importBatchId: batchId,
       importedByUserId: user.id,
@@ -7542,7 +8104,7 @@ app.post("/api/v1/imports/findings", async (req, reply) => {
       importedAt: now,
       importSourceType: batch.sourceType,
       importSourceFileName: batch.sourceFileName
-    });
+    })));
   }
   const channel = reportChannels.find((item) => item.id === batch.rows[0].channelId);
   findings.unshift(...imported);
@@ -7564,7 +8126,6 @@ app.post("/api/v1/imports/findings", async (req, reply) => {
     committedAt: now,
     committedFindingsCount: imported.length
   });
-  await persistLocalState();
   const response = {
     batchId,
     sourceFileName: batch.sourceFileName,
@@ -7573,7 +8134,7 @@ app.post("/api/v1/imports/findings", async (req, reply) => {
     duplicateCount,
     findings: imported
   };
-  if (idempotency) rememberIdempotentResponse(idempotency, response);
+  if (idempotency) await rememberIdempotentResponse(idempotency, { ...response, findings: [] }, 201);
   await persistLocalState();
   return reply.code(201).send(response);
 });
@@ -7628,7 +8189,7 @@ app.put("/api/v1/findings/:id/special-case", async (req) => {
     customerFinding.version += 1;
     customerFinding.updatedAt = now;
     recordWorkflowEvent({
-      id: `evt-${crypto5.randomUUID()}`,
+      id: `evt-${crypto6.randomUUID()}`,
       findingId: customerFinding.id,
       command: "SET_SPECIAL_CASE",
       fromStatus: customerFinding.workflowStatus,
@@ -7712,7 +8273,7 @@ app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = SubmitBranchCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
@@ -7728,7 +8289,7 @@ app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
     const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     Object.assign(finding, updated);
     recordWorkflowEvent({
-      id: `evt-${crypto5.randomUUID()}`,
+      id: `evt-${crypto6.randomUUID()}`,
       findingId: finding.id,
       command: "SUBMIT_BRANCH",
       fromStatus,
@@ -7739,7 +8300,7 @@ app.post("/api/v1/findings/:id/actions/submit-branch", async (req, reply) => {
       notes: dto.resolutionNotes,
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -7750,7 +8311,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-approve", async (req, repl
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = BranchControlApproveCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
@@ -7758,7 +8319,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-approve", async (req, repl
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
     recordWorkflowEvent({
-      id: `evt-${crypto5.randomUUID()}`,
+      id: `evt-${crypto6.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_CONTROL_APPROVE",
       fromStatus,
@@ -7769,7 +8330,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-approve", async (req, repl
       notes: dto.notes || "Ki\u1EC3m so\xE1t chi nh\xE1nh \u0111\u1ED3ng \xFD h\u1ED3 s\u01A1 kh\u1EAFc ph\u1EE5c.",
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -7780,14 +8341,14 @@ app.post("/api/v1/findings/:id/actions/branch-control-reject", async (req, reply
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = BranchControlRejectCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
     const updated = workflowService.executeBranchControlReject(finding, dto, user);
     Object.assign(finding, updated);
     recordWorkflowEvent({
-      id: `evt-${crypto5.randomUUID()}`,
+      id: `evt-${crypto6.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_CONTROL_REJECT",
       fromStatus,
@@ -7799,7 +8360,7 @@ app.post("/api/v1/findings/:id/actions/branch-control-reject", async (req, reply
       rejectedFromStage: "BRANCH_CONTROL_REVIEW",
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -7810,7 +8371,7 @@ app.post("/api/v1/findings/:id/actions/branch-leader-approve", async (req) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = BranchLeaderApproveCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
@@ -7818,7 +8379,7 @@ app.post("/api/v1/findings/:id/actions/branch-leader-approve", async (req) => {
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
     recordWorkflowEvent({
-      id: `evt-${crypto5.randomUUID()}`,
+      id: `evt-${crypto6.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_LEADER_APPROVE",
       fromStatus,
@@ -7829,7 +8390,7 @@ app.post("/api/v1/findings/:id/actions/branch-leader-approve", async (req) => {
       notes: dto.notes || "L\xE3nh \u0111\u1EA1o chi nh\xE1nh \u0111\u1ED3ng \xFD chuy\u1EC3n h\u1ED3 s\u01A1 l\xEAn Kh\u1ED1i N\u1ED9i B\u1ED9.",
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -7840,14 +8401,14 @@ app.post("/api/v1/findings/:id/actions/branch-leader-reject", async (req) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = BranchLeaderRejectCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
     const updated = workflowService.executeBranchLeaderReject(finding, dto, user);
     Object.assign(finding, updated);
     recordWorkflowEvent({
-      id: `evt-${crypto5.randomUUID()}`,
+      id: `evt-${crypto6.randomUUID()}`,
       findingId: finding.id,
       command: "BRANCH_LEADER_REJECT",
       fromStatus,
@@ -7859,7 +8420,7 @@ app.post("/api/v1/findings/:id/actions/branch-leader-reject", async (req) => {
       rejectedFromStage: "BRANCH_LEADER_REVIEW",
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -7870,7 +8431,7 @@ app.post("/api/v1/findings/:id/actions/internal-waive", async (req, reply) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = InternalWaiveCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
@@ -7878,7 +8439,7 @@ app.post("/api/v1/findings/:id/actions/internal-waive", async (req, reply) => {
     requireAvailableEvidence(finding);
     Object.assign(finding, updated);
     recordWorkflowEvent({
-      id: `evt-${crypto5.randomUUID()}`,
+      id: `evt-${crypto6.randomUUID()}`,
       findingId: finding.id,
       command: "INTERNAL_WAIVE",
       fromStatus,
@@ -7889,7 +8450,7 @@ app.post("/api/v1/findings/:id/actions/internal-waive", async (req, reply) => {
       notes: `S\u1ED1 c\xF4ng v\u0103n ch\u1EA5p thu\u1EADn b\u1ECF l\u1ED7i: ${dto.decisionNumber}. ${dto.notes || ""}`,
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -7900,14 +8461,14 @@ app.post("/api/v1/findings/:id/actions/internal-reject", async (req, reply) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = InternalRejectCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
     const updated = workflowService.executeInternalReject(finding, dto, user);
     Object.assign(finding, updated);
     recordWorkflowEvent({
-      id: `evt-${crypto5.randomUUID()}`,
+      id: `evt-${crypto6.randomUUID()}`,
       findingId: finding.id,
       command: "INTERNAL_REJECT",
       fromStatus,
@@ -7919,7 +8480,7 @@ app.post("/api/v1/findings/:id/actions/internal-reject", async (req, reply) => {
       rejectedFromStage: "INTERNAL_REVIEW",
       createdAt: (/* @__PURE__ */ new Date()).toISOString()
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -7965,7 +8526,7 @@ function registerEvidence(finding, user, uploadResult, fileName) {
   if (duplicate) return duplicate;
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const evidence = {
-    id: `evi-${crypto5.randomUUID()}`,
+    id: `evi-${crypto6.randomUUID()}`,
     findingId: finding.id,
     fileName,
     fileSize: uploadResult.fileSize,
@@ -8067,7 +8628,7 @@ app.get("/api/v1/evidence/:driveFileId/content", async (req, reply) => {
     subject: evidence.findingId,
     detail: `Xem/t\u1EA3i minh ch\u1EE9ng ${fileName} c\u1EE7a h\u1ED3 s\u01A1 ${evidence.findingId}.`
   });
-  await persistLocalState();
+  await flushSecurityEvents();
   return reply.send(result.stream);
 });
 app.get("/api/v1/dashboards/summary", async (req) => {
@@ -8107,7 +8668,7 @@ app.post("/api/v1/reports/definitions", async (req, reply) => {
   if (body.query) assertReportConfigurationAvailable(body.query, body.exportColumns);
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const definition = {
-    id: `report-${crypto5.randomUUID()}`,
+    id: `report-${crypto6.randomUUID()}`,
     name: body.name,
     description: body.description,
     filters: body.filters,
@@ -8146,7 +8707,7 @@ app.post("/api/v1/reports/dashboards", async (req, reply) => {
   }
   const now = (/* @__PURE__ */ new Date()).toISOString();
   const definition = {
-    id: `dashboard-${crypto5.randomUUID()}`,
+    id: `dashboard-${crypto6.randomUUID()}`,
     name: body.name,
     reportDefinitionIds: body.reportDefinitionIds,
     visibility: body.visibility,
@@ -8344,12 +8905,20 @@ app.get("/api/v1/reports/findings.csv", async (req, reply) => {
   const exportingUser = getCurrentUser(req);
   const filters = ReportFilterSchema.parse(req.query);
   const scoped = applyReportFilters(filterFindingsByScope(findings, exportingUser), filters);
+  if (scoped.length > REPORT_EXPORT_MAX_ROWS) {
+    throw new HttpProblem(
+      422,
+      "REPORT_EXPORT_TOO_LARGE",
+      "B\xE1o c\xE1o qu\xE1 l\u1EDBn \u0111\u1EC3 xu\u1EA5t",
+      `B\u1ED9 l\u1ECDc \u0111ang kh\u1EDBp ${scoped.length.toLocaleString("vi-VN")} d\xF2ng, v\u01B0\u1EE3t m\u1EE9c ${REPORT_EXPORT_MAX_ROWS.toLocaleString("vi-VN")} d\xF2ng cho m\u1ED9t l\u1EA7n xu\u1EA5t. H\xE3y thu h\u1EB9p \u0111i\u1EC1u ki\u1EC7n l\u1ECDc (theo chi nh\xE1nh, ph\xF2ng ho\u1EB7c kho\u1EA3ng th\u1EDDi gian) r\u1ED3i xu\u1EA5t l\u1EA1i.`
+    );
+  }
   recordUserSecurityEvent(req, exportingUser, {
     type: "DATA_REPORT_EXPORTED",
     outcome: "SUCCESS",
     detail: `Xu\u1EA5t CSV danh s\xE1ch h\u1ED3 s\u01A1 g\u1ED3m ${scoped.length} d\xF2ng trong ph\u1EA1m vi d\u1EEF li\u1EC7u \u0111\u01B0\u1EE3c c\u1EA5p.`
   });
-  await persistLocalState();
+  await flushSecurityEvents();
   const header = "CIF,T\xEAn kh\xE1ch h\xE0ng,C\u1EE5m,Chi nh\xE1nh,Ph\xF2ng,M\xE3 chi nh\xE1nh,C\xE1n b\u1ED9,M\xE3 l\u1ED7i,Ti\xEAu \u0111\u1EC1 l\u1ED7i,Chi ti\u1EBFt l\u1ED7i,Tr\u1EA1ng th\xE1i,D\u01B0 n\u1EE3,Gi\xE1 tr\u1ECB \u1EA3nh h\u01B0\u1EDFng";
   const rows = scoped.map((item) => [item.cif, item.customerName, item.clusterName, item.branchName, item.department, item.branchCode, item.officerName, item.errorCode, item.errorTitle, item.description, item.workflowStatus, item.creditBalance, item.exposureAmount]);
   const csv = `\uFEFF${header}\r
