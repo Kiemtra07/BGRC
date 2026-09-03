@@ -79,7 +79,7 @@ Cần làm để đưa vào dùng: xem mục 3.1.
 - [x] Chạy **full `npm run ci`** trên máy: migration dry-run, typecheck, 53 unit file/309 test, 21 integration file/127 test, 3 contract test và Vite build đều đạt.
 - [x] **Gộp `perf/scale-step-01-02` vào `main`** và **push** lên origin; scale ở `298954a`, guard/backfill ở `7919974`, bundle/test isolation ở `9cc5479`.
 - [x] Thêm backfill `finding_records`, dry-run và startup **fail-closed** theo ID/content hash; thêm runbook rollout.
-- [ ] Chạy migration `0120/0121/0122` trên database production; **backfill bảng `finding_records`** từ dữ liệu hiện có.
+- [x] Chạy migration `0120/0121/0122` trên database production; preflight xác nhận đủ bảng nền và `security_event_ledger` có 45 dòng. **Backfill bảng `finding_records`** từ dữ liệu hiện có vẫn còn pending.
 - [ ] **Bật `FINDINGS_READ_PATH=sql`** (bật dần: staging → production), theo dõi hiệu năng.
 - [ ] Tiếp các bước scale sau (03+): phân trang/đếm bằng SQL, tối ưu index theo truy vấn thực, cân nhắc tách thêm entity nóng khỏi blob.
 
@@ -132,12 +132,10 @@ Cần làm để đưa vào dùng: xem mục 3.1.
 - ✅ Bổ sung `db/backfill-finding-records.ts` cùng hai script dry-run/apply; startup khi
   `FINDINGS_READ_PATH=sql` nay fail-closed nếu ID/content hash của `finding_records` thiếu, thừa hoặc
   lệch snapshot. Runbook chuẩn nằm tại `docs/SCALE_ROLLOUT_RUNBOOK.md`.
-- ⚠️ Vercel tự deploy các commit mới thành Ready nhưng runtime của deployment mới lỗi vì
-  `security_event_ledger` chưa tồn tại. Alias đã được rollback về deployment đã kiểm chứng; Vercel CLI
-  xác nhận deployment `bgrc-gk3hmy3za` là production hiện tại. Deployment riêng `bgrc-7nshe77q7` vẫn
-  không được promote cho tới khi migration production hoàn tất.
-- 🔴 Chưa chạy migration/backfill production: `DATABASE_URL` là Secret Vercel và `vercel env run` không
-  cấp secret vào local process. Cần chạy qua Cloud Run Job/DB admin có quyền, không kéo secret về máy.
+- ✅ Migration `0120/0121/0122` đã được chạy trên database production qua SQL Editor; `security_event_ledger`
+  đã có 45 dòng. Cần redeploy và smoke-test deployment mới sau khi schema đã sẵn sàng.
+- 🔴 Chưa backfill production: cần đồng bộ đầy đủ `finding_records`, dry-run, đối chiếu số lượng/hash rồi mới
+  bật `FINDINGS_READ_PATH=sql`.
 - 🔴 Chưa bật `FINDINGS_READ_PATH=sql` production; phải migration → backup → dry-run/backfill → đối
   chiếu hash → staging smoke theo scope → mới promote.
 - 🔴 Backup/restore thật, RLS token thật, MFA/leaked-password protection, cron thực chạy và load test
