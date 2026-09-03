@@ -1,7 +1,6 @@
 import { Finding, UserProfile, UserRole } from '../../../shared/contracts';
 import { HttpProblem } from '../http/problem';
-
-const normalize = (value?: string) => value?.trim().toLocaleLowerCase('vi-VN');
+import { buildScopeClauses, matchesScopeClauses } from './scope-predicate';
 
 export function resolveLocalUser(
   headerValue: string | string[] | undefined,
@@ -45,35 +44,16 @@ export function branchScopeTypeForRole(primaryRole: UserRole): 'BRANCH' | 'DEPAR
   return primaryRole === 'BRANCH_INPUT' ? 'DEPARTMENT' : 'BRANCH';
 }
 
+/**
+ * Người dùng này có được đọc hồ sơ này không.
+ *
+ * Luật nằm trong `scope-predicate`, không nằm ở đây. Hàm này và mệnh đề WHERE mà truy vấn SQL dùng
+ * đều diễn giải cùng một cây điều kiện, nên không có bản nào để lệch khỏi bản nào — chuyện lệch ở
+ * đây nghĩa là một chi nhánh đọc được hồ sơ của chi nhánh khác.
+ *
+ * Tài khoản bị khoá, hoặc hồ sơ cũ chưa lưu `scopes`, đều cho ra danh sách điều kiện rỗng, tức là
+ * không thấy gì: một hồ sơ người dùng dị dạng phải mất quyền đọc chứ không được thành lỗi 500.
+ */
 export function hasFindingAccess(user: UserProfile, finding: Finding): boolean {
-  if (!user.isActive) return false;
-  // Legacy snapshots may not have persisted scopes for an account. Missing scope is deny-all,
-  // and must not turn a malformed profile into a runtime 500.
-  const scopes = Array.isArray(user.scopes) ? user.scopes : [];
-  if (scopes.some(scope => scope.scopeType === 'ALL')) return true;
-
-  return scopes.some(scope => {
-    const scopedBranchCode = scope.orgUnitCode ?? user.branchCode;
-    const scopedBranchName = scope.branchName ?? user.branchName;
-    const branchMatches = scopedBranchCode
-      ? scopedBranchCode === finding.branchCode
-      : normalize(scopedBranchName) === normalize(finding.branchName);
-
-    switch (scope.scopeType) {
-      case 'CLUSTER':
-        return normalize(scope.clusterName ?? user.clusterName) === normalize(finding.clusterName);
-      case 'BRANCH':
-        return branchMatches;
-      case 'DEPARTMENT': {
-        if (!branchMatches) return false;
-        // A hồ sơ that carries no phòng belongs to the branch as a whole. Hiding it from every
-        // department-scoped officer would make it invisible to the branch entirely — the work
-        // would silently disappear instead of merely being scoped.
-        if (!normalize(finding.department)) return true;
-        return normalize(scope.departmentName ?? user.department) === normalize(finding.department);
-      }
-      default:
-        return false;
-    }
-  });
+  return matchesScopeClauses(buildScopeClauses(user), finding);
 }

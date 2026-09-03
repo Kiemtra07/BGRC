@@ -112,6 +112,7 @@ import { PostgresStateRepository } from './repositories/postgres-state';
 import type { PostgresPoolLike } from './repositories/postgres-state';
 import { PostgresWorkflowEventLedger } from './repositories/workflow-event-ledger';
 import { PostgresSecurityEventLedger } from './repositories/security-event-ledger';
+import { PostgresFindingRecords } from './repositories/finding-records';
 import {
   IdempotencyRecord,
   IdempotencyStore,
@@ -1247,6 +1248,19 @@ const securityEventLedger = stateRepository instanceof PostgresStateRepository
  * chuyển hẳn sang đó. Snapshot vì thế không còn lớn dần theo số lệnh ghi — trước đây mỗi lệnh để
  * lại vĩnh viễn một bản sao toàn bộ phản hồi ngay trong blob mà mọi request đều phải đọc và ghi.
  */
+/**
+ * Chiếu hồ sơ sang bảng `finding_records` để Postgres lọc theo phạm vi thay cho `Array.filter`.
+ *
+ * Cờ `FINDINGS_READ_PATH` quyết định danh sách hồ sơ đọc từ đâu; mặc định vẫn là `memory`, tức
+ * hành vi không đổi cho tới khi có người bật. Việc *ghi* chiếu thì luôn chạy khi có Postgres, nên
+ * lúc bật cờ thì bảng đã sẵn dữ liệu chứ không phải bắt đầu từ rỗng.
+ */
+const findingRecords = stateRepository instanceof PostgresStateRepository
+  ? new PostgresFindingRecords({ pool: pool as unknown as PostgresPoolLike })
+  : undefined;
+const findingsReadPath = process.env.FINDINGS_READ_PATH === 'sql' && findingRecords ? 'sql' : 'memory';
+if (findingsReadPath === 'sql' && findingRecords) await findingRecords.assertReady();
+
 const usesPostgresIdempotency = stateRepository instanceof PostgresStateRepository;
 const idempotencyStore: IdempotencyStore = usesPostgresIdempotency
   ? new PostgresIdempotencyStore(pool as unknown as PostgresPoolLike)
@@ -1730,6 +1744,27 @@ app.addHook('onError', async (request) => {
   releaseRuntimeRequest(request);
 });
 
+/**
+ * Cập nhật bảng chiếu hồ sơ sau khi state đã ghi xong.
+ *
+ * Chạy sau chứ không chạy cùng transaction ghi snapshot, vì đây là bản chiếu chứ không phải nguồn
+ * sự thật: chiếu lỡ nhịp một lượt thì lượt ghi sau tự bắt kịp (vân tay nội dung sẽ khác), còn để
+ * nó làm hỏng lượt ghi nghiệp vụ thì người dùng mất việc vừa làm. Lỗi ở đây chỉ ghi log.
+ */
+async function syncFindingRecords(): Promise<void> {
+  if (!findingRecords) return;
+  try {
+    const evidenceCountById = new Map<string, number>();
+    for (const evidence of evidences) {
+      if (evidence.status !== 'AVAILABLE') continue;
+      evidenceCountById.set(evidence.findingId, (evidenceCountById.get(evidence.findingId) ?? 0) + 1);
+    }
+    await findingRecords.sync(findings, evidenceCountById);
+  } catch (error) {
+    app.log.warn({ err: error }, 'Không cập nhật được bảng chiếu hồ sơ; lượt ghi sau sẽ bắt kịp.');
+  }
+}
+
 async function persistLocalState(): Promise<void> {
   // Sổ an ninh độc lập với snapshot, nên ghi trước và ghi riêng. Nếu lần ghi state phía dưới hỏng,
   // dấu vết an ninh vẫn còn — với nhật ký kiểm toán thì ghi thừa an toàn hơn ghi thiếu.
@@ -1763,6 +1798,7 @@ async function persistLocalState(): Promise<void> {
   repositoryHydrationBaseline = undefined;
   if (eventIds.size > 0) pendingWorkflowEvents = pendingWorkflowEvents.filter(event => !eventIds.has(event.id));
   restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : undefined);
+  await syncFindingRecords();
 }
 
 interface SlaRunResult {
@@ -4379,10 +4415,23 @@ app.get('/api/v1/findings', async (req: FastifyRequest<{ Querystring: any }>) =>
   const { page, limit } = PaginationQuerySchema.parse(req.query);
   // Query strings are always strings or absent; read them as such instead of trusting `any`.
   const query = (req.query ?? {}) as Record<string, string | undefined>;
-  const result = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
-
-  const total = result.length;
   const offset = (page - 1) * limit;
+
+  if (findingsReadPath === 'sql' && findingRecords) {
+    // Phạm vi và bộ lọc đi thẳng xuống WHERE: một cán bộ chi nhánh chỉ chạm đúng số dòng được xem,
+    // thay vì nạp hồ sơ của cả 200 đơn vị vào RAM rồi lọc để hiển thị 20 dòng.
+    const page1 = await findingRecords.list({ user, query, page, limit });
+    return {
+      items: page1.items.map(withEvidenceProjection),
+      total: page1.total,
+      page,
+      limit,
+      hasMore: offset + page1.items.length < page1.total,
+    };
+  }
+
+  const result = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
+  const total = result.length;
   const items = result.slice(offset, offset + limit).map(withEvidenceProjection);
   return {
     items,

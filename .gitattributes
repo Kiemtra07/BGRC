@@ -2,3 +2,7 @@
 *.pdf binary
 *.docx binary
 *.xlsx binary
+
+# Checksum migration tinh theo byte trong db/migrate.ts, nen xuong dong phai co dinh:
+# CRLF tren may nay va LF tren CI se thanh "Checksum drift detected" cho cung mot file.
+*.sql text eol=lf
