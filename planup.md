@@ -1,14 +1,14 @@
 # AuditBGS — PLANUP: Đánh giá đã / chưa triển khai
 
 > Ngày lập: 03/09/2026
-> Phạm vi: rà soát mã nguồn, git (nhánh `main` + `perf/scale-step-01-02`) và migration `0001…0122`.
+> Phạm vi: rà soát mã nguồn, git (nhánh `main` + `perf/scale-step-01-02`) và migration `0001…0123`.
 > Ký hiệu: ✅ đã triển khai · 🟡 đã code nhưng chưa bật/chưa gộp · 🔴 chưa triển khai.
 
 ---
 
 ## 0. Tóm tắt nhanh
 
-Lõi nghiệp vụ và bảo mật đã hoàn chỉnh và nằm trên `main`. Mảng **mở rộng quy mô (nhiều tệp / nhiều KH / nhiều user)** đã có 2 bước lõi, được kiểm thử, gộp và push lên `main`; hiện **chưa bật cờ SQL**. Việc còn lại chủ yếu là: migration/backfill và kiểm thử scale ở quy mô thật, các cổng nghiệm thu production, và dọn dẹp kỹ thuật.
+Lõi nghiệp vụ và bảo mật đã hoàn chỉnh và nằm trên `main`. Mảng **mở rộng quy mô (nhiều tệp / nhiều KH / nhiều user)** đã có 2 bước lõi, được kiểm thử, gộp và push lên `main`; backfill đã hoàn tất và cờ SQL đã được bật/kiểm tra ở production. Việc còn lại chủ yếu là: kiểm thử scale ở quy mô thật, các cổng nghiệm thu production, và dọn dẹp kỹ thuật.
 
 | Nhóm | Trạng thái |
 |---|---|
@@ -18,8 +18,8 @@ Lõi nghiệp vụ và bảo mật đã hoàn chỉnh và nằm trên `main`. M�
 | Minh chứng (Drive / local) | ✅ |
 | SLA, báo cáo, cấu hình admin | ✅ |
 | Bảo mật (RLS, ledger, read-through) | ✅ |
-| Scale: chống blob phình + đọc SQL theo phạm vi | 🟡 code + test xong, đã gộp/push, sau cờ |
-| Bật scale ở production + backfill | 🔴 |
+| Scale: chống blob phình + đọc SQL theo phạm vi | ✅ code + test + backfill + production SQL path |
+| Bật scale ở production + backfill | ✅ production đã bật; staging/scope smoke còn pending |
 | Nghiệm thu production (backup/RLS/MFA) | 🔴 |
 | Dọn diff CRLF, merge/push nhánh scale | ✅ |
 
@@ -60,13 +60,13 @@ Lõi nghiệp vụ và bảo mật đã hoàn chỉnh và nằm trên `main`. M�
 
 ---
 
-## 2. ĐÃ CODE NHƯNG CHƯA BẬT / CHƯA GỘP (🟡) — mảng mở rộng quy mô
+## 2. MẢNG MỞ RỘNG QUY MÔ — đã triển khai lõi, còn bước tiếp theo
 
 Nhánh `perf/scale-step-01-02` đã được fast-forward vào `main` và push lên `origin/main`:
 
 - **Chống snapshot phình** (`9a4a85c`): tách các nguồn tích tụ (idempotency, security event…) ra bảng riêng thay vì để trong blob JSON. Lý do đo được: 20.000 hồ sơ, 500 user × 10 ghi/ngày → sau 30 ngày blob 268MB, ~10,2 giây mỗi lượt ghi. Có migration `0120`/`0122` hỗ trợ.
 - **Đọc danh sách hồ sơ bằng SQL theo phạm vi** (`298954a`): đẩy phạm vi + bộ lọc xuống `WHERE` thay vì nạp toàn bộ ~200 đơn vị vào RAM. `scope-predicate.ts` là **một nguồn sự thật** cho cả JS (`matchesScopeClauses` = `hasFindingAccess`) và SQL (`renderScopeSql`); test vi phân **1.296 tổ hợp** phạm vi × hồ sơ. Migration `0121` (cột phạm vi + index).
-- **Trạng thái:** đường đọc SQL **sau cờ `FINDINGS_READ_PATH`**, mặc định `memory` (chưa bật). Typecheck và test PASS.
+- **Trạng thái:** đường đọc SQL **sau cờ `FINDINGS_READ_PATH`** đã bật ở production sau khi backfill và đối chiếu hash. Typecheck và test PASS; staging/authenticated scope smoke và theo dõi hiệu năng quy mô thật còn pending.
 
 Cần làm để đưa vào dùng: xem mục 3.1.
 
@@ -79,8 +79,8 @@ Cần làm để đưa vào dùng: xem mục 3.1.
 - [x] Chạy **full `npm run ci`** trên máy: migration dry-run, typecheck, 53 unit file/309 test, 21 integration file/127 test, 3 contract test và Vite build đều đạt.
 - [x] **Gộp `perf/scale-step-01-02` vào `main`** và **push** lên origin; scale ở `298954a`, guard/backfill ở `7919974`, bundle/test isolation ở `9cc5479`.
 - [x] Thêm backfill `finding_records`, dry-run và startup **fail-closed** theo ID/content hash; thêm runbook rollout.
-- [x] Chạy migration `0120/0121/0122` trên database production; preflight xác nhận đủ bảng nền và `security_event_ledger` có 45 dòng. **Backfill bảng `finding_records`** từ dữ liệu hiện có vẫn còn pending.
-- [ ] **Bật `FINDINGS_READ_PATH=sql`** (bật dần: staging → production), theo dõi hiệu năng.
+- [x] Chạy migration `0120/0121/0122` trên database production; preflight xác nhận đủ bảng nền và `security_event_ledger` có 45 dòng. Backfill `finding_records` hoàn tất: `21 source / 21 target / 21 matching hash / 0 mismatch`; migration `0123` đã nới `error_title` thành `TEXT` để giữ nguyên lỗi dài.
+- [x] **Bật `FINDINGS_READ_PATH=sql`** trên Vercel Production, deploy và kiểm tra startup guard/health + endpoint findings có auth. Deployment cuối `dpl_8Vd5dXv7o9fjBbgupg8AzzCE88bt`; health `UP`, protected findings trả `401`. Đối chiếu staging và authenticated scope smoke vẫn pending.
 - [ ] Tiếp các bước scale sau (03+): phân trang/đếm bằng SQL, tối ưu index theo truy vấn thực, cân nhắc tách thêm entity nóng khỏi blob.
 
 ### 3.2 Nghiệm thu production
@@ -106,16 +106,15 @@ Cần làm để đưa vào dùng: xem mục 3.1.
 ---
 
 ## 4. Rủi ro cần lưu ý
-- Nếu bật `FINDINGS_READ_PATH=sql` mà `finding_records` chưa backfill đủ → danh sách thiếu hồ sơ. Phải backfill + đối chiếu số lượng trước khi bật production.
-- Chừng nào chưa bật SQL path + chưa chạy migration de-bloat trên production, rủi ro chậm/ghi nặng khi dữ liệu lớn vẫn còn (đã đo ~10s/ghi sau 30 ngày ở quy mô lớn).
+- Nếu `finding_records` lệch snapshot → startup guard phải fail-closed để tránh danh sách thiếu hoặc stale. Hiện production đã đối chiếu `21/21`, `0 mismatch` tại thời điểm rollout.
+- SQL path đã bật nhưng chưa có authenticated scope comparison trên staging/production và chưa có load test ở quy mô mục tiêu; rủi ro hiệu năng thực tế vẫn chưa được nghiệm thu.
 - Diff CRLF chưa dọn có thể che lấp thay đổi thật trong lần commit sau.
 
 ## 5. Đề xuất thứ tự làm tiếp
-1. Migration + backup/restore kiểm chứng → dry-run/backfill `finding_records` trên production.
-2. Đối chiếu hash → staging smoke theo scope → bật `FINDINGS_READ_PATH=sql` dần.
-3. Nghiệm thu production (RLS theo role, MFA, cron, load test).
-4. Bước scale kế tiếp (phân trang/đếm SQL) và monitoring.
-5. Dọn mã chết + chốt bộ tài liệu chuẩn.
+1. Bổ sung staging revision và smoke authenticated theo scope; theo dõi health/readiness sau rollout.
+2. Nghiệm thu production (backup/restore, RLS theo role, MFA, cron, load test).
+3. Bước scale kế tiếp (phân trang/đếm SQL) và monitoring.
+4. Dọn mã chết + chốt bộ tài liệu chuẩn.
 
 > Ghi chú: file này là ảnh chụp trạng thái tại 03/09/2026; cập nhật lại sau mỗi mốc ở mục 5.
 
@@ -133,11 +132,11 @@ Cần làm để đưa vào dùng: xem mục 3.1.
   `FINDINGS_READ_PATH=sql` nay fail-closed nếu ID/content hash của `finding_records` thiếu, thừa hoặc
   lệch snapshot. Runbook chuẩn nằm tại `docs/SCALE_ROLLOUT_RUNBOOK.md`.
 - ✅ Migration `0120/0121/0122` đã được chạy trên database production qua SQL Editor; `security_event_ledger`
-  đã có 45 dòng. Deployment `dpl_3HQrFhm623NT1VHM1ZUVc1swY4AV` từ commit `54ac78a` đã Ready, health UP,
-  readiness HTTP 200 và alias `bgrc.vercel.app` đã trỏ sang bản mới.
-- 🔴 Chưa backfill production: cần đồng bộ đầy đủ `finding_records`, dry-run, đối chiếu số lượng/hash rồi mới
-  bật `FINDINGS_READ_PATH=sql`.
-- 🔴 Chưa bật `FINDINGS_READ_PATH=sql` production; phải migration → backup → dry-run/backfill → đối
-  chiếu hash → staging smoke theo scope → mới promote.
+  đã có 45 dòng.
+- ✅ Đã backfill `finding_records` production: **21/21 bản ghi**, **21 hash khớp**, **0 mismatch**; bổ sung
+  migration `0123` cho `error_title TEXT`.
+- ✅ Đã bật `FINDINGS_READ_PATH=sql` trên production; deployment cuối `dpl_8Vd5dXv7o9fjBbgupg8AzzCE88bt`
+  healthy, `/api/v1/health` `UP`, `/api/v1/findings` unauthenticated `401`. `/api/v1/ready` vẫn `DEGRADED`
+  theo đúng readiness gate của ứng dụng; staging revision và authenticated scope comparison vẫn pending.
 - 🔴 Backup/restore thật, RLS token thật, MFA/leaked-password protection, cron thực chạy và load test
   vẫn chưa có bằng chứng trong phiên này.
