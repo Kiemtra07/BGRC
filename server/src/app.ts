@@ -120,7 +120,7 @@ import {
   PostgresIdempotencyStore,
 } from './repositories/idempotency-store';
 import { DurableStateCoordinator } from './state/durable-state-coordinator';
-import { threeWayMergeState } from './state/three-way-state-merge';
+import { StateMergeConflictError, threeWayMergeState } from './state/three-way-state-merge';
 import { RuntimeStateGate, requestCarriesCredentials, shouldHydrateRuntimeStatePerRequest } from './state/runtime-request-lock';
 import { addCalendarDays, runSlaEvaluation, slaWorker, toCalendarDateString } from './worker/sla-worker';
 import { shouldStartEmbeddedSlaRuntime, startDailySlaRuntime } from './worker/sla-scheduler';
@@ -1811,6 +1811,39 @@ async function persistLocalState(): Promise<void> {
   await syncFindingRecords();
 }
 
+/**
+ * Backfill tương thích chạy lúc cold start không được làm chết serverless function chỉ vì một
+ * instance khác vừa ghi cùng snapshot. Conflict thật trong thao tác nghiệp vụ vẫn đi qua
+ * `normalizeProblem()` và trả 409; riêng cold-start backfill thì bỏ thay đổi cục bộ, đọc lại bản
+ * mới nhất từ repository rồi để request tiếp theo tiếp tục phục vụ dữ liệu đó.
+ */
+async function recoverStartupStateMergeConflict(error: StateMergeConflictError): Promise<void> {
+  const latest = await stateRepository.load(currentLocalState());
+  const latestWorkflowEvents = workflowEventLedger ? await workflowEventLedger.loadAll() : undefined;
+  const latestSecurityEvents = securityEventLedger
+    ? await securityEventLedger.loadRecent(SECURITY_EVENT_RETENTION) as SecurityEvent[]
+    : undefined;
+  restoreDurableLocalState(latest, latestWorkflowEvents);
+  if (latestSecurityEvents) securityEvents = latestSecurityEvents;
+  // The failed compatibility projection is intentionally discarded. Treat the rehydrated state as
+  // the new local base so the next request does not retry against the stale pre-conflict snapshot.
+  repositoryHydrationBaseline = undefined;
+  durableState.hydrate(persistedLocalState());
+  app.log.warn(
+    { conflictPath: error.conflictPath },
+    'Bỏ qua xung đột state trong backfill cold start; đã nạp lại snapshot mới nhất.',
+  );
+}
+
+async function persistStartupCompatibilityState(): Promise<void> {
+  try {
+    await persistLocalState();
+  } catch (error) {
+    if (!(error instanceof StateMergeConflictError)) throw error;
+    await recoverStartupStateMergeConflict(error);
+  }
+}
+
 interface SlaRunResult {
   evaluatedCount: number;
   updatedCount: number;
@@ -1978,7 +2011,7 @@ if ([
   backfillFindingProvenance(),
   backfillFindingSpecialCase(),
   await bootstrapAdministratorFromEnvironment(),
-].some(Boolean)) await persistLocalState();
+].some(Boolean)) await persistStartupCompatibilityState();
 
 if (shouldStartEmbeddedSlaRuntime()) {
   const stopSlaRuntime = startDailySlaRuntime(async () => { await evaluateCurrentSlaState(); });

@@ -5681,6 +5681,27 @@ async function persistLocalState() {
   restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : void 0);
   await syncFindingRecords();
 }
+async function recoverStartupStateMergeConflict(error) {
+  const latest = await stateRepository.load(currentLocalState());
+  const latestWorkflowEvents = workflowEventLedger ? await workflowEventLedger.loadAll() : void 0;
+  const latestSecurityEvents = securityEventLedger ? await securityEventLedger.loadRecent(SECURITY_EVENT_RETENTION) : void 0;
+  restoreDurableLocalState(latest, latestWorkflowEvents);
+  if (latestSecurityEvents) securityEvents = latestSecurityEvents;
+  repositoryHydrationBaseline = void 0;
+  durableState.hydrate(persistedLocalState());
+  app.log.warn(
+    { conflictPath: error.conflictPath },
+    "B\u1ECF qua xung \u0111\u1ED9t state trong backfill cold start; \u0111\xE3 n\u1EA1p l\u1EA1i snapshot m\u1EDBi nh\u1EA5t."
+  );
+}
+async function persistStartupCompatibilityState() {
+  try {
+    await persistLocalState();
+  } catch (error) {
+    if (!(error instanceof StateMergeConflictError)) throw error;
+    await recoverStartupStateMergeConflict(error);
+  }
+}
 async function evaluateCurrentSlaState() {
   try {
     await idempotencyStore.prune();
@@ -5818,7 +5839,7 @@ if ([
   backfillFindingProvenance(),
   backfillFindingSpecialCase(),
   await bootstrapAdministratorFromEnvironment()
-].some(Boolean)) await persistLocalState();
+].some(Boolean)) await persistStartupCompatibilityState();
 if (shouldStartEmbeddedSlaRuntime()) {
   const stopSlaRuntime = startDailySlaRuntime(async () => {
     await evaluateCurrentSlaState();

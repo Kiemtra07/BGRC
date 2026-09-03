@@ -35,6 +35,13 @@ describe('shouldHydrateRuntimeStatePerRequest', () => {
       requiresAuth: false, carriesCredentials: false,
     })).toBe(true);
   });
+
+  it('keeps a cold-start state merge conflict from terminating the API module', () => {
+    const appSource = fs.readFileSync('server/src/app.ts', 'utf8');
+    expect(appSource).toContain('async function persistStartupCompatibilityState()');
+    expect(appSource).toContain('if (!(error instanceof StateMergeConflictError)) throw error;');
+    expect(appSource).toContain('].some(Boolean)) await persistStartupCompatibilityState();');
+  });
 });
 
 describe('requestCarriesCredentials', () => {

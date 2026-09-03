@@ -217,11 +217,33 @@ export const App: React.FC = () => {
    * Danh sách hồ sơ cố tình **không** nằm ở đây. Nó chờ người dùng chọn chuyên đề và bấm Tìm kiếm —
    * mở màn hình lên không còn kéo về cả phạm vi dữ liệu chỉ để rồi bị lọc bớt ngay sau đó.
    */
-  const load = async (): Promise<string | undefined> => {
+  type LoadResult = { authenticated: boolean; error?: string };
+  const load = async (): Promise<LoadResult> => {
+    setBootstrapping(true);
+    setLoadError(null);
+
+    let me: Awaited<ReturnType<typeof api.getMe>>;
     try {
-      setBootstrapping(true);
-      setLoadError(null);
-      const me = await api.getMe();
+      me = await api.getMe();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : 'Không thể kiểm tra phiên đăng nhập.';
+      setCurrentUser(null);
+      // `/me` is the auth gate. A missing/expired cookie must reveal LoginPage immediately; it
+      // must not wait for the five authenticated bootstrap calls below.
+      setAuthChecked(true);
+      setBootstrapping(false);
+      if (reason instanceof ApiError && reason.status === 401) {
+        return { authenticated: false, error: 'Phiên đăng nhập chưa hợp lệ. Vui lòng đăng nhập lại.' };
+      }
+      setLoadError(message);
+      return { authenticated: false, error: message };
+    }
+
+    // The shell can render as soon as identity is known. The remaining data is non-blocking
+    // bootstrap and its spinner/error belongs inside the authenticated shell.
+    setCurrentUser(me.user);
+    setAuthChecked(true);
+    try {
       // Every role that can create a hồ sơ needs the branch list; only admins get the full org tree.
       const [activeChannels, accessibleCampaigns, branches, summary, work] = await Promise.all([
         api.getActiveChannels(), api.getCampaigns(), api.getScopedBranches(),
@@ -236,21 +258,16 @@ export const App: React.FC = () => {
       if (accessibleCampaigns.length) {
         setDraftCriteria(previous => previous.campaignId ? previous : { ...previous, campaignId: accessibleCampaigns[0].id });
       }
-      // `setCurrentUser` để cuối cùng: React gộp nó chung với các setState phía trên thành một lần
-      // render. Trước đây nó nằm trước `await`, nên màn hình render một lần với chuyên đề rỗng rồi
-      // render lại khi chuyên đề được chọn — hai vòng effect và ba request bị lặp vô ích.
-      setCurrentUser(me.user);
-      return undefined;
+      return { authenticated: true };
     } catch (reason) {
-      if (reason instanceof ApiError && reason.status === 401) setCurrentUser(null);
-      const message = reason instanceof Error ? reason.message : 'Không thể tải dữ liệu.';
+      const message = reason instanceof ApiError && reason.code === 'STATE_MERGE_CONFLICT'
+        ? 'Dữ liệu vừa được cập nhật ở phiên khác. Hãy tải lại trang rồi thử lại.'
+        : reason instanceof Error ? reason.message : 'Không thể tải dữ liệu.';
       setLoadError(message);
-      // Trả lỗi về cho nơi gọi thay vì chỉ nuốt vào `loadError`. Băng `loadError` chỉ hiện trong
-      // khung màn hình đã đăng nhập; khi lần khởi động ngay sau đăng nhập hỏng thì người dùng vẫn
-      // đang đứng ở trang đăng nhập và không nhìn thấy nó ở đâu cả.
-      return message;
+      // Bootstrap failure must not send an already authenticated user back to LoginPage. The
+      // shell remains usable and exposes a retryable error instead.
+      return { authenticated: true, error: message };
     } finally {
-      setAuthChecked(true);
       setBootstrapping(false);
     }
   };
@@ -279,11 +296,10 @@ export const App: React.FC = () => {
   const login = async (credentials: LoginDTO) => {
     setLoadError(null);
     await api.login(credentials);
-    // Đăng nhập đúng mà lần tải dữ liệu đầu tiên hỏng thì vẫn là một lần đăng nhập hỏng dưới mắt
-    // người dùng: màn hình không đổi. Ném lỗi lên để `LoginPage` nói ra ngay tại chỗ họ vừa bấm,
-    // thay vì lặng lẽ trả cái nút về "Đăng nhập" như thể chưa có chuyện gì xảy ra.
-    const failure = await load();
-    if (failure) throw new Error(failure);
+    const result = await load();
+    // A successful `/me` is enough to enter the shell. Only a failure to establish identity is a
+    // login error; slow/failed bootstrap data is already rendered by the shell's alert banner.
+    if (!result.authenticated && result.error) throw new Error(result.error);
   };
 
   const logout = async () => {

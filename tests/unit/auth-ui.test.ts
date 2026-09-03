@@ -13,12 +13,26 @@ describe('authentication UI architecture', () => {
     expect(appSource).not.toContain('switchUser');
     expect(loginSource).toContain('autoComplete="username"');
     expect(loginSource).toContain('autoComplete="current-password"');
-    expect(loginSource).toContain('autoComplete="one-time-code"');
+    expect(loginSource).not.toContain('autoComplete="one-time-code"');
+    expect(loginSource).not.toContain('Google Authenticator');
+    expect(loginSource).not.toContain('mfaCode');
     expect(loginSource).toContain('Email đăng nhập');
     expect(loginSource).toContain('Đăng nhập');
     expect(apiSource).not.toContain("'x-user-id'");
     expect(apiSource).toContain("credentials: 'same-origin'");
     expect(apiSource).toContain('/authenticator');
+  });
+
+  it('reveals login after identity check instead of waiting on authenticated bootstrap', () => {
+    const appSource = read('src/App.tsx');
+    const identityCheck = appSource.indexOf('me = await api.getMe();');
+    const authGate = appSource.indexOf('setAuthChecked(true);', identityCheck);
+    const bootstrap = appSource.indexOf('const [activeChannels, accessibleCampaigns, branches, summary, work]', identityCheck);
+
+    expect(identityCheck).toBeGreaterThanOrEqual(0);
+    expect(authGate).toBeGreaterThan(identityCheck);
+    expect(bootstrap).toBeGreaterThan(authGate);
+    expect(appSource).toContain("reason.code === 'STATE_MERGE_CONFLICT'");
   });
 
   it('keeps browser smokes on the real session-login contract', () => {
