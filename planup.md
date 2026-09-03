@@ -133,7 +133,8 @@ Cần làm để đưa vào dùng: xem mục 3.1.
   `FINDINGS_READ_PATH=sql` nay fail-closed nếu ID/content hash của `finding_records` thiếu, thừa hoặc
   lệch snapshot. Runbook chuẩn nằm tại `docs/SCALE_ROLLOUT_RUNBOOK.md`.
 - ✅ Migration `0120/0121/0122` đã được chạy trên database production qua SQL Editor; `security_event_ledger`
-  đã có 45 dòng. Cần redeploy và smoke-test deployment mới sau khi schema đã sẵn sàng.
+  đã có 45 dòng. Deployment `dpl_3HQrFhm623NT1VHM1ZUVc1swY4AV` từ commit `54ac78a` đã Ready, health UP,
+  readiness HTTP 200 và alias `bgrc.vercel.app` đã trỏ sang bản mới.
 - 🔴 Chưa backfill production: cần đồng bộ đầy đủ `finding_records`, dry-run, đối chiếu số lượng/hash rồi mới
   bật `FINDINGS_READ_PATH=sql`.
 - 🔴 Chưa bật `FINDINGS_READ_PATH=sql` production; phải migration → backup → dry-run/backfill → đối
