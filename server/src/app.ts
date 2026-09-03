@@ -111,6 +111,13 @@ import {
 import { PostgresStateRepository } from './repositories/postgres-state';
 import type { PostgresPoolLike } from './repositories/postgres-state';
 import { PostgresWorkflowEventLedger } from './repositories/workflow-event-ledger';
+import { PostgresSecurityEventLedger } from './repositories/security-event-ledger';
+import {
+  IdempotencyRecord,
+  IdempotencyStore,
+  MemoryIdempotencyStore,
+  PostgresIdempotencyStore,
+} from './repositories/idempotency-store';
 import { DurableStateCoordinator } from './state/durable-state-coordinator';
 import { threeWayMergeState } from './state/three-way-state-merge';
 import { RuntimeStateGate, requestCarriesCredentials, shouldHydrateRuntimeStatePerRequest } from './state/runtime-request-lock';
@@ -993,6 +1000,8 @@ let securitySettings: SecuritySettings = createDefaultSecuritySettings();
 interface IdempotencyEntry {
   requestHash: string;
   response: unknown;
+  /** Thời điểm ghi, để dọn theo hạn. Bản ghi từ phiên bản cũ không có trường này. */
+  storedAt?: string;
 }
 
 let idempotencyRecords: Record<string, IdempotencyEntry> = {};
@@ -1080,6 +1089,16 @@ interface SecurityEvent {
 }
 
 let securityEvents: SecurityEvent[] = [];
+
+/** Sự kiện an ninh chưa kịp ghi sổ. Cùng vai trò với `pendingWorkflowEvents`. */
+let pendingSecurityEvents: SecurityEvent[] = [];
+
+/**
+ * Giữ lại bao nhiêu bản ghi an ninh gần nhất trong bộ nhớ. Mảng này là bản chiếu cho màn hình
+ * Nhật ký, nên nó phải có trần: không giới hạn thì mỗi lần dựng lại state là một lần nạp toàn bộ
+ * lịch sử. Toàn bộ nhật ký vẫn nằm nguyên trong `security_event_ledger` và tra được bằng SQL.
+ */
+const SECURITY_EVENT_RETENTION = 5_000;
 
 /**
  * Đếm số lần đăng nhập sai theo **tên đăng nhập đã chuẩn hoá, bất kể tài khoản có tồn tại hay
@@ -1219,6 +1238,20 @@ const workflowEventLedger = stateRepository instanceof PostgresStateRepository
   ? new PostgresWorkflowEventLedger({ pool: pool as unknown as PostgresPoolLike })
   : undefined;
 
+const securityEventLedger = stateRepository instanceof PostgresStateRepository
+  ? new PostgresSecurityEventLedger({ pool: pool as unknown as PostgresPoolLike })
+  : undefined;
+
+/**
+ * Bảng `idempotency_keys` có sẵn từ 0003 và có `expires_at`; ở chế độ postgres, bộ nhớ chống lặp
+ * chuyển hẳn sang đó. Snapshot vì thế không còn lớn dần theo số lệnh ghi — trước đây mỗi lệnh để
+ * lại vĩnh viễn một bản sao toàn bộ phản hồi ngay trong blob mà mọi request đều phải đọc và ghi.
+ */
+const usesPostgresIdempotency = stateRepository instanceof PostgresStateRepository;
+const idempotencyStore: IdempotencyStore = usesPostgresIdempotency
+  ? new PostgresIdempotencyStore(pool as unknown as PostgresPoolLike)
+  : new MemoryIdempotencyStore(() => idempotencyRecords as Record<string, IdempotencyRecord>);
+
 const hydratedState = await stateRepository.load({
   orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
   importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows,
@@ -1240,12 +1273,24 @@ if (workflowEventLedger) {
     pendingWorkflowEvents = structuredClone(snapshotEvents);
   }
 }
+if (securityEventLedger) {
+  const snapshotEvents = hydratedState.securityEvents ?? [];
+  const ledgerEvents = await securityEventLedger.loadRecent(SECURITY_EVENT_RETENTION);
+  // Database mới chưa có sổ nhưng snapshot cũ có thể còn nhật ký. Giữ lại phần đó cho tới khi
+  // lần ghi đầu tiên chuyển được nó sang sổ, thay vì đánh rơi dấu vết an ninh đã có.
+  hydratedState.securityEvents = ledgerEvents.length > 0 || snapshotEvents.length === 0
+    ? ledgerEvents as SecurityEvent[]
+    : snapshotEvents;
+  if (ledgerEvents.length === 0 && snapshotEvents.length > 0) {
+    pendingSecurityEvents = structuredClone(snapshotEvents);
+  }
+}
 // Keep the exact repository snapshot as the merge base. Startup compatibility projections below
 // may remove demo records or restore structural fields before DurableStateCoordinator is created;
 // using that already-projected state as the merge base would make the first startup backfill look
 // like a concurrent edit and crash a serverless module during initialization.
 let repositoryHydrationBaseline: LocalAppState | undefined = structuredClone(hydratedState);
-if (workflowEventLedger) repositoryHydrationBaseline = withoutWorkflowEvents(repositoryHydrationBaseline);
+repositoryHydrationBaseline = withoutLedgerArrays(repositoryHydrationBaseline);
 // A production process can be started against an older local snapshot that still contains
 // records from the opt-in demo seed. Never rehydrate those fabricated identities or business
 // records when demo seeding is disabled; the structural head-office root is kept separately.
@@ -1577,15 +1622,23 @@ function currentLocalState(): LocalAppState {
   };
 }
 
-function withoutWorkflowEvents(state: LocalAppState): LocalAppState {
+/**
+ * Bỏ khỏi snapshot những mảng đã có sổ append-only riêng.
+ *
+ * Cả ba nơi dùng — mốc gộp lúc khởi động, ảnh chụp đem đi ghi, và bản `latest` đọc lên để gộp —
+ * bắt buộc bỏ đúng cùng một tập. Nếu một bên còn mảng còn bên kia đã bỏ, phép gộp ba chiều sẽ thấy
+ * "một bên xoá, một bên sửa" và ném STATE_MERGE_CONFLICT cho một thao tác hoàn toàn bình thường.
+ */
+function withoutLedgerArrays(state: LocalAppState): LocalAppState {
   const persisted = structuredClone(state) as Partial<LocalAppState>;
-  delete persisted.workflowEvents;
+  if (workflowEventLedger) delete persisted.workflowEvents;
+  if (securityEventLedger) delete persisted.securityEvents;
+  if (usesPostgresIdempotency) delete persisted.idempotencyRecords;
   return persisted as LocalAppState;
 }
 
 function persistedLocalState(): LocalAppState {
-  const state = currentLocalState();
-  return workflowEventLedger ? withoutWorkflowEvents(state) : state;
+  return withoutLedgerArrays(currentLocalState());
 }
 
 const durableState = new DurableStateCoordinator<LocalAppState>(persistedLocalState());
@@ -1604,13 +1657,16 @@ function restoreDurableLocalState(restored: LocalAppState, workflowEventsOverrid
   dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
   reportCatalogConfiguration = hydrateReportCatalogConfiguration(restored.reportCatalogConfiguration);
   securitySettings = restored.securitySettings ?? createDefaultSecuritySettings();
-  idempotencyRecords = restored.idempotencyRecords ?? {};
+  // Ở chế độ postgres, snapshot không mang bộ nhớ chống lặp nữa; bảng riêng mới là nguồn thật.
+  idempotencyRecords = usesPostgresIdempotency ? {} : (restored.idempotencyRecords ?? {});
   findingFollows = restored.findingFollows ?? [];
   workspaceAccepted = restored.workspaceAccepted ?? [];
   workspaceWatchTargets = restored.workspaceWatchTargets ?? [];
   authSessions = restored.authSessions ?? [];
   authenticatorCredentials = restored.authenticatorCredentials ?? [];
-  securityEvents = restored.securityEvents ?? [];
+  // Khi sổ an ninh đang hoạt động, snapshot không mang mảng này nữa — lấy theo `restored` sẽ xoá
+  // sạch bản chiếu trong bộ nhớ và làm màn hình Nhật ký trống sau mỗi lần ghi.
+  securityEvents = securityEventLedger ? securityEvents : (restored.securityEvents ?? []);
   loginAttempts = restored.loginAttempts ?? [];
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
@@ -1631,6 +1687,9 @@ const runtimeStateGate = new RuntimeStateGate({
     if (!latest) return;
     restoreDurableLocalState(latest);
     if (workflowEventLedger) workflowEvents = await workflowEventLedger.loadAll();
+    // Sổ cố tình không ràng buộc theo union SecurityEventType: nhật ký bất biến có thể còn giữ
+    // những loại sự kiện mà mã nguồn hôm nay đã bỏ, và đọc lên vẫn phải đọc được.
+    if (securityEventLedger) securityEvents = await securityEventLedger.loadRecent(SECURITY_EVENT_RETENTION) as SecurityEvent[];
     durableState.hydrate(persistedLocalState());
   },
 });
@@ -1672,6 +1731,9 @@ app.addHook('onError', async (request) => {
 });
 
 async function persistLocalState(): Promise<void> {
+  // Sổ an ninh độc lập với snapshot, nên ghi trước và ghi riêng. Nếu lần ghi state phía dưới hỏng,
+  // dấu vết an ninh vẫn còn — với nhật ký kiểm toán thì ghi thừa an toàn hơn ghi thiếu.
+  await appendPendingSecurityEvents();
   const base = durableState.snapshot();
   const snapshot = persistedLocalState();
   const mergeBase = repositoryHydrationBaseline ?? base;
@@ -1683,7 +1745,7 @@ async function persistLocalState(): Promise<void> {
       async () => stateRepository instanceof PostgresStateRepository
         ? stateRepository.updateWithWorkflowEvents(
           snapshot,
-          latest => threeWayMergeState(mergeBase, snapshot, withoutWorkflowEvents(latest)),
+          latest => threeWayMergeState(mergeBase, snapshot, withoutLedgerArrays(latest)),
           events,
         )
         : stateRepository.update(snapshot, latest => threeWayMergeState(mergeBase, snapshot, latest)),
@@ -1711,6 +1773,15 @@ interface SlaRunResult {
 }
 
 async function evaluateCurrentSlaState(): Promise<SlaRunResult> {
+  // Cron hằng ngày là chỗ tự nhiên để dọn khoá chống lặp đã hết hạn: nó chạy sẵn, ngoài đường đi
+  // của người dùng, và lần dọn chỉ là một DELETE dùng đúng chỉ mục idx_idempotency_expires có sẵn
+  // từ 0003. Bản ghi hết hạn cũng đã bị `get` lọc theo `expires_at`, nên lượt dọn chỉ thu hồi chỗ.
+  try {
+    await idempotencyStore.prune();
+  } catch (error) {
+    // Dọn rác không được phép làm hỏng lượt đánh giá SLA — đó mới là việc chính của cron này.
+    app.log.warn({ err: error }, 'Không dọn được khoá chống lặp hết hạn; bỏ qua lượt này.');
+  }
   let result = { updatedCount: 0, overdueCount: 0, dueSoonCount: 0 };
   const runtimeWorkflowEvents = workflowEventLedger ? workflowEvents : undefined;
   const saved = await durableState.persistAsync(
@@ -1881,18 +1952,51 @@ function getCurrentUser(req: FastifyRequest): UserProfile {
   return user;
 }
 
-/**
- * Giữ lại bao nhiêu bản ghi an ninh gần nhất. Nhật ký nằm chung blob state với dữ liệu nghiệp vụ,
- * nên nó phải có trần — một nhật ký không giới hạn sẽ làm phình snapshot cho tới lúc mọi thao tác
- * ghi đều chậm. Ở nhịp dùng nội bộ, 5.000 bản ghi phủ nhiều tháng.
- */
-const SECURITY_EVENT_RETENTION = 5_000;
-
 function recordSecurityEvent(event: Omit<SecurityEvent, 'id' | 'occurredAt'>): void {
-  securityEvents.push({ ...event, id: `sec-${crypto.randomUUID()}`, occurredAt: new Date().toISOString() });
+  const recorded: SecurityEvent = {
+    ...event,
+    id: `sec-${crypto.randomUUID()}`,
+    occurredAt: new Date().toISOString(),
+  };
+  securityEvents.push(recorded);
+  // Khi có sổ riêng, mảng trong bộ nhớ chỉ là bản chiếu để màn hình Nhật ký đọc; nguồn thật là sổ.
+  if (securityEventLedger) pendingSecurityEvents.push(structuredClone(recorded));
   if (securityEvents.length > SECURITY_EVENT_RETENTION) {
     securityEvents = securityEvents.slice(-SECURITY_EVENT_RETENTION);
   }
+}
+
+/**
+ * Ghi những sự kiện an ninh đang chờ vào sổ, KHÔNG đụng tới snapshot.
+ *
+ * Đây là đường dành cho các endpoint chỉ đọc. Trước đây chúng gọi `persistLocalState()` chỉ để lưu
+ * một dòng nhật ký, tức trả cái giá đọc + gộp + ghi đè cả snapshot — chi phí lớn dần theo số hồ sơ
+ * trong hệ thống chứ không theo việc chúng vừa làm. Một lần INSERT vào sổ có kích thước cố định.
+ *
+ */
+async function appendPendingSecurityEvents(): Promise<void> {
+  if (!securityEventLedger || pendingSecurityEvents.length === 0) return;
+  const flushing = structuredClone(pendingSecurityEvents);
+  const flushedIds = new Set(flushing.map(event => event.id));
+  try {
+    await securityEventLedger.append(flushing);
+  } finally {
+    // Dù ghi hỏng cũng bỏ khỏi hàng chờ: giữ lại thì mỗi lần gọi sau lại thử ghi cả đống cũ, và
+    // hàng chờ chỉ có thể dài ra. Sự kiện vẫn còn trong mảng bộ nhớ để màn hình Nhật ký đọc được.
+    pendingSecurityEvents = pendingSecurityEvents.filter(event => !flushedIds.has(event.id));
+  }
+}
+
+/**
+ * Ở chế độ local-json/memory không có sổ riêng, nên vẫn phải quay về đường ghi state cũ — hành vi
+ * ở môi trường phát triển không được lệch khỏi production chỉ vì thiếu một bảng.
+ */
+async function flushSecurityEvents(): Promise<void> {
+  if (!securityEventLedger) {
+    await persistLocalState();
+    return;
+  }
+  await appendPendingSecurityEvents();
 }
 
 /** Ghi lại nhật ký an ninh cho một người dùng đã xác thực, kèm IP để lần vết được. */
@@ -2616,11 +2720,19 @@ function applyReportFilters(items: Finding[], filters: ReportFilterQuery): Findi
   });
 }
 
-function idempotencyContext<T = Finding>(
+interface IdempotencyContext<T> {
+  cacheKey?: string;
+  requestHash?: string;
+  method: string;
+  path: string;
+  replay?: T;
+}
+
+async function idempotencyContext<T = Finding>(
   request: FastifyRequest,
   user: UserProfile,
   body: unknown,
-): { cacheKey?: string; requestHash?: string; replay?: T } {
+): Promise<IdempotencyContext<T>> {
   const rawKey = request.headers['idempotency-key'];
   const key = Array.isArray(rawKey) ? rawKey[0] : rawKey;
   if (!key) {
@@ -2630,29 +2742,33 @@ function idempotencyContext<T = Finding>(
     throw new HttpProblem(422, 'INVALID_IDEMPOTENCY_KEY', 'Idempotency-Key không hợp lệ', 'Idempotency-Key không được dài quá 255 ký tự.');
   }
 
+  const path = request.url.split('?')[0];
   const cacheKey = `${user.id}:${request.method}:${request.url}:${key}`;
   const requestHash = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
-  const existing = idempotencyRecords[cacheKey];
+  const existing = await idempotencyStore.get(cacheKey);
   if (existing && existing.requestHash !== requestHash) {
     throw new HttpProblem(409, 'IDEMPOTENCY_CONFLICT', 'Xung đột Idempotency-Key', 'Idempotency-Key đã được dùng với nội dung yêu cầu khác.');
   }
   return {
     cacheKey,
     requestHash,
+    method: request.method,
+    path,
     replay: existing ? structuredClone(existing.response) as T : undefined,
   };
 }
 
-function rememberIdempotentResponse<T>(
-  context: { cacheKey?: string; requestHash?: string },
+async function rememberIdempotentResponse<T>(
+  context: { cacheKey?: string; requestHash?: string; method?: string; path?: string },
   response: T,
-): void {
-  if (context.cacheKey && context.requestHash) {
-    idempotencyRecords[context.cacheKey] = {
-      requestHash: context.requestHash,
-      response: structuredClone(response),
-    };
-  }
+  status = 200,
+): Promise<void> {
+  if (!context.cacheKey || !context.requestHash) return;
+  await idempotencyStore.put(
+    context.cacheKey,
+    { requestHash: context.requestHash, response: structuredClone(response) },
+    { method: context.method ?? 'POST', path: context.path ?? '', status },
+  );
 }
 
 // ----------------------------------------------------
@@ -3596,7 +3712,7 @@ app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body
   const actor = getCurrentUser(req);
   requireAdmin(actor);
   const body = BulkUserImportSchema.parse(req.body);
-  const idempotency = idempotencyContext<BulkUserImportResult>(req, actor, body);
+  const idempotency = await idempotencyContext<BulkUserImportResult>(req, actor, body);
   if (idempotency.replay) return reply.code(201).send(idempotency.replay);
 
   const batchId = `user-import-${crypto.randomUUID()}`;
@@ -3618,7 +3734,7 @@ app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body
     subject: batchId,
     detail: `Nhập theo lô: tạo ${result.created.length} tài khoản, ${result.failed.length} dòng không tạo.`,
   });
-  rememberIdempotentResponse(idempotency, result);
+  await rememberIdempotentResponse(idempotency, result, 201);
   await persistLocalState();
   return reply.code(201).send(result);
 });
@@ -4447,7 +4563,7 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
   const batch = BulkFindingImportSchema.parse(req.body);
   const idempotency = batch.sourceType === 'API_BULK'
     ? undefined
-    : idempotencyContext<{
+    : await idempotencyContext<{
       batchId: string;
       sourceFileName: string;
       customerCount: number;
@@ -4455,7 +4571,15 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
       duplicateCount: number;
       findings: Finding[];
     }>(req, user, batch);
-  if (idempotency?.replay) return reply.code(201).send(idempotency.replay);
+  const replay = idempotency?.replay;
+  if (replay) {
+    // Bản lưu chỉ giữ phần tóm tắt; danh sách hồ sơ dựng lại từ chính state theo batchId, nên nó
+    // luôn phản ánh đúng dữ liệu đang có thay vì một ảnh chụp đông cứng từ lần gọi đầu.
+    return reply.code(201).send({
+      ...replay,
+      findings: findings.filter(item => item.importBatchId === replay.batchId),
+    });
+  }
   const imported: Finding[] = [];
   let duplicateCount = 0;
   const batchId = `batch-${crypto.randomUUID()}`;
@@ -4468,7 +4592,10 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
       continue;
     }
     seenKeys.add(key);
-    imported.push({
+    // Chiếu đúng như restoreDurableLocalState chiếu khi nạp lại state. Thiếu bước này thì hồ sơ nằm
+    // trong state có `isSpecialCase` còn hồ sơ vừa trả về thì không, nên hai lần gọi cùng một
+    // Idempotency-Key trả về hai thân khác nhau — mà idempotent thì đúng nghĩa là không được khác.
+    imported.push(ensureFindingSubItems(normalizeFindingSpecialCase({
       ...createFindingFromDto(row, user),
       importBatchId: batchId,
       importedByUserId: user.id,
@@ -4476,7 +4603,7 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
       importedAt: now,
       importSourceType: batch.sourceType,
       importSourceFileName: batch.sourceFileName,
-    });
+    })));
   }
   const channel = reportChannels.find(item => item.id === batch.rows[0].channelId)!;
   findings.unshift(...imported);
@@ -4498,7 +4625,6 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
     committedAt: now,
     committedFindingsCount: imported.length,
   });
-  await persistLocalState();
   const response = {
     batchId,
     sourceFileName: batch.sourceFileName,
@@ -4507,7 +4633,12 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
     duplicateCount,
     findings: imported,
   };
-  if (idempotency) rememberIdempotentResponse(idempotency, response);
+  // Không lưu mảng hồ sơ vào bộ nhớ chống lặp. Một lần nhập 5.000 dòng để lại khoảng 8,5 MB nằm
+  // vĩnh viễn trong snapshot mà mọi request sau đó đều phải đọc và ghi; phần tóm tắt cộng batchId
+  // là đủ để dựng lại nguyên phản hồi khi có lần gọi lặp.
+  if (idempotency) await rememberIdempotentResponse(idempotency, { ...response, findings: [] }, 201);
+  // Một lần ghi là đủ. Bản trước gọi persistLocalState() hai lần liền nhau trong cùng handler, tức
+  // nhân đôi đúng thao tác đắt nhất của hệ thống mà không đổi lấy gì.
   await persistLocalState();
   return reply.code(201).send(response);
 });
@@ -4694,7 +4825,7 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = SubmitBranchCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
 
@@ -4729,7 +4860,7 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
       createdAt: new Date().toISOString(),
     });
 
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -4742,7 +4873,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-approve', async (req: Fast
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = BranchControlApproveCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
 
@@ -4764,7 +4895,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-approve', async (req: Fast
       createdAt: new Date().toISOString(),
     });
 
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -4777,7 +4908,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-reject', async (req: Fasti
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = BranchControlRejectCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
 
@@ -4799,7 +4930,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-reject', async (req: Fasti
       createdAt: new Date().toISOString(),
     });
 
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -4812,7 +4943,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-approve', async (req: Fasti
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = BranchLeaderApproveCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
@@ -4831,7 +4962,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-approve', async (req: Fasti
       notes: dto.notes || 'Lãnh đạo chi nhánh đồng ý chuyển hồ sơ lên Khối Nội Bộ.',
       createdAt: new Date().toISOString(),
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -4843,7 +4974,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-reject', async (req: Fastif
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = BranchLeaderRejectCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
   try {
@@ -4862,7 +4993,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-reject', async (req: Fastif
       rejectedFromStage: 'BRANCH_LEADER_REVIEW',
       createdAt: new Date().toISOString(),
     });
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -4875,7 +5006,7 @@ app.post('/api/v1/findings/:id/actions/internal-waive', async (req: FastifyReque
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = InternalWaiveCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
 
@@ -4897,7 +5028,7 @@ app.post('/api/v1/findings/:id/actions/internal-waive', async (req: FastifyReque
       createdAt: new Date().toISOString(),
     });
 
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -4910,7 +5041,7 @@ app.post('/api/v1/findings/:id/actions/internal-reject', async (req: FastifyRequ
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   const dto = InternalRejectCommandSchema.parse(req.body);
-  const idempotency = idempotencyContext(req, user, dto);
+  const idempotency = await idempotencyContext(req, user, dto);
   if (idempotency.replay) return idempotency.replay;
   const fromStatus = finding.workflowStatus;
 
@@ -4932,7 +5063,7 @@ app.post('/api/v1/findings/:id/actions/internal-reject', async (req: FastifyRequ
       createdAt: new Date().toISOString(),
     });
 
-    rememberIdempotentResponse(idempotency, finding);
+    await rememberIdempotentResponse(idempotency, finding);
     await persistLocalState();
     return finding;
   } catch (err) {
@@ -5108,7 +5239,10 @@ app.get('/api/v1/evidence/:driveFileId/content', async (req: FastifyRequest<{ Pa
     subject: evidence.findingId,
     detail: `Xem/tải minh chứng ${fileName} của hồ sơ ${evidence.findingId}.`,
   });
-  await persistLocalState();
+  // Endpoint này không đổi dữ liệu nghiệp vụ, chỉ để lại dấu vết. Ghi thẳng vào sổ an ninh thay vì
+  // ghi đè cả snapshot — trước đây chỉ xem một tệp minh chứng cũng phải trả giá của một lượt ghi
+  // toàn bộ state, và cái giá đó lớn dần theo số hồ sơ trong hệ thống.
+  await flushSecurityEvents();
 
   return reply.send(result.stream);
 });
@@ -5463,12 +5597,23 @@ app.get('/api/v1/reports/findings.csv', async (req: FastifyRequest<{ Querystring
   const exportingUser = getCurrentUser(req);
   const filters = ReportFilterSchema.parse(req.query);
   const scoped = applyReportFilters(filterFindingsByScope(findings, exportingUser), filters);
+  // Cùng trần với POST /reports/exports, và cùng lý do: thân phản hồi của hàm serverless bị cắt ở
+  // khoảng 4,5 MB, nên một lần xuất không giới hạn sẽ hỏng mà không có thông báo nào cho người dùng
+  // — họ bấm nút, chờ, rồi không có gì xảy ra. Từ chối kèm con số vẫn hơn im lặng hỏng.
+  if (scoped.length > REPORT_EXPORT_MAX_ROWS) {
+    throw new HttpProblem(
+      422,
+      'REPORT_EXPORT_TOO_LARGE',
+      'Báo cáo quá lớn để xuất',
+      `Bộ lọc đang khớp ${scoped.length.toLocaleString('vi-VN')} dòng, vượt mức ${REPORT_EXPORT_MAX_ROWS.toLocaleString('vi-VN')} dòng cho một lần xuất. Hãy thu hẹp điều kiện lọc (theo chi nhánh, phòng hoặc khoảng thời gian) rồi xuất lại.`,
+    );
+  }
   recordUserSecurityEvent(req, exportingUser, {
     type: 'DATA_REPORT_EXPORTED',
     outcome: 'SUCCESS',
     detail: `Xuất CSV danh sách hồ sơ gồm ${scoped.length} dòng trong phạm vi dữ liệu được cấp.`,
   });
-  await persistLocalState();
+  await flushSecurityEvents();
   const header = 'CIF,Tên khách hàng,Cụm,Chi nhánh,Phòng,Mã chi nhánh,Cán bộ,Mã lỗi,Tiêu đề lỗi,Chi tiết lỗi,Trạng thái,Dư nợ,Giá trị ảnh hưởng';
   const rows = scoped.map(item => [item.cif, item.customerName, item.clusterName, item.branchName, item.department, item.branchCode, item.officerName, item.errorCode, item.errorTitle, item.description, item.workflowStatus, item.creditBalance, item.exposureAmount]);
   const csv = `\uFEFF${header}\r\n${rows.map(row => row.map(csvCell).join(',')).join('\r\n')}`;
