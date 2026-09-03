@@ -136,6 +136,7 @@ export const QueueSearchPanel: React.FC<QueueSearchPanelProps> = ({
   const campaignOptions: SelectOption[] = campaigns.map(campaign => ({
     value: campaign.id, label: `${campaign.code} · ${campaign.name}`,
   }));
+  const showChannelFilter = channels.length > 1;
   const channelOptions: SelectOption[] = channels.map(channel => ({ value: channel.id, label: channel.name }));
   const branchOptions: SelectOption[] = orgUnits
     .filter(unit => unit.type === 'BRANCH' && unit.isActive)
@@ -149,7 +150,7 @@ export const QueueSearchPanel: React.FC<QueueSearchPanelProps> = ({
     officer: facetOptions(facetValues.officerName, criteria.officerName),
   }), [facetValues, criteria.clusterName, criteria.department, criteria.errorCode, criteria.errorGroup, criteria.officerName]);
 
-  const advancedCount = ADVANCED_KEYS.filter(key => Boolean(criteria[key]?.trim())).length;
+  const advancedCount = ADVANCED_KEYS.filter(key => (key !== 'channelId' || showChannelFilter) && Boolean(criteria[key]?.trim())).length;
   const anyCriteria = countCriteria(criteria) > 0;
 
   const submit = (event: React.FormEvent) => {
@@ -218,9 +219,9 @@ export const QueueSearchPanel: React.FC<QueueSearchPanelProps> = ({
           {/* Ba nhóm, mỗi nhóm trả lời một câu hỏi: ở đâu, tình trạng nào, lỗi gì. Mười sáu ô xếp
               thành một khối liền mạch thì không ai đọc nổi. */}
           <div className="grid gap-2.5 sm:grid-cols-2 lg:grid-cols-4">
-            <Field label="Kênh dữ liệu">
+            {showChannelFilter && <Field label="Kênh dữ liệu">
               <SearchableSelect value={criteria.channelId} options={channelOptions} emptyLabel="Tất cả kênh" ariaLabel="Kênh dữ liệu" onChange={value => set('channelId', value)} />
-            </Field>
+            </Field>}
             <Field label="Cụm">
               <SearchableSelect value={criteria.clusterName} options={dataOptions.cluster} emptyLabel="Tất cả cụm" ariaLabel="Cụm" onChange={value => set('clusterName', value)} />
             </Field>
