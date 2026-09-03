@@ -3456,8 +3456,7 @@ app.post('/api/v1/admin/campaigns/:id/provision-drive', async (req: FastifyReque
  * Branches the caller may file a finding against. Anyone allowed to create a hồ sơ needs this —
  * not just admins — otherwise the branch picker on the capture form has nothing to offer.
  */
-app.get('/api/v1/org-units/branches', async (req) => {
-  const user = getCurrentUser(req);
+function getScopedBranchesForUser(user: UserProfile): OrgUnit[] {
   const seesEverything = user.scopes.some(scope => scope.scopeType === 'ALL');
   const scopedBranchCodes = new Set(user.scopes.flatMap(scope => scope.orgUnitCode ? [scope.orgUnitCode] : []));
   const scopedClusters = new Set(user.scopes.flatMap(scope => scope.clusterName ? [scope.clusterName] : []));
@@ -3468,7 +3467,9 @@ app.get('/api/v1/org-units/branches', async (req) => {
       || scopedBranchCodes.has(unit.code)
       || (unit.parentName ? scopedClusters.has(unit.parentName) : false)
       || unit.code === user.branchCode);
-});
+}
+
+app.get('/api/v1/org-units/branches', async (req) => getScopedBranchesForUser(getCurrentUser(req)));
 
 // Admin: Org Units
 app.get('/api/v1/admin/org-units', async (req) => {
@@ -4306,8 +4307,7 @@ app.delete('/api/v1/admin/audit-events', async (req) => {
   return { cleared };
 });
 
-app.get('/api/v1/workspace/my-work', async (req) => {
-  const user = getCurrentUser(req);
+function getMyWorkForUser(user: UserProfile) {
   const scoped = filterFindingsByScope(findings, user);
   const actionable = scoped
     .filter(finding => isActionableForUser(finding, user))
@@ -4330,7 +4330,9 @@ app.get('/api/v1/workspace/my-work', async (req) => {
     .map(target => projectWorkspaceTarget(target, user))
     .filter((target): target is WorkspaceTarget => Boolean(target)));
   return { actionable, following, accepted, watchTargets };
-});
+}
+
+app.get('/api/v1/workspace/my-work', async (req) => getMyWorkForUser(getCurrentUser(req)));
 
 app.put('/api/v1/workspace/accepted', async (req: FastifyRequest<{ Body: unknown }>) => {
   const user = getCurrentUser(req);
@@ -5354,9 +5356,7 @@ app.get('/api/v1/evidence/:driveFileId/content', async (req: FastifyRequest<{ Pa
  * rồi trả về. Đây là con số "của chuyên đề này", và nó khớp với danh sách bên dưới vì cả hai chạy
  * qua cùng `applyFindingQueryFilters`.
  */
-app.get('/api/v1/dashboards/summary', async (req: FastifyRequest<{ Querystring: any }>) => {
-  const user = getCurrentUser(req);
-  const query = (req.query ?? {}) as Record<string, string | undefined>;
+function getDashboardSummaryForUser(user: UserProfile, query: Record<string, string | undefined> = {}): DashboardSummary {
   const scoped = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
 
   const active = scoped.filter(f => f.workflowStatus !== 'WAIVED_RESOLVED');
@@ -5384,6 +5384,27 @@ app.get('/api/v1/dashboards/summary', async (req: FastifyRequest<{ Querystring: 
   };
 
   return summary;
+}
+
+app.get('/api/v1/dashboards/summary', async (req: FastifyRequest<{ Querystring: any }>) => {
+  const query = (req.query ?? {}) as Record<string, string | undefined>;
+  return getDashboardSummaryForUser(getCurrentUser(req), query);
+});
+
+/**
+ * Initial workspace data is intentionally returned in one authenticated response. The client used
+ * to make five parallel calls here; on serverless each one could independently pay the runtime
+ * state hydration and cold-start cost even though all five values are needed for the same shell.
+ */
+app.get('/api/v1/bootstrap', async (req) => {
+  const user = getCurrentUser(req);
+  return {
+    channels: reportChannels.filter(channel => channel.isActive),
+    campaigns: auditCampaigns.filter(campaign => canAccessCampaign(user, campaign)),
+    branches: getScopedBranchesForUser(user),
+    summary: getDashboardSummaryForUser(user),
+    work: getMyWorkForUser(user),
+  };
 });
 
 app.get('/api/v1/reports/definitions', async (req) => {

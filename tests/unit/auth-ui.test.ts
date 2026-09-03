@@ -25,14 +25,31 @@ describe('authentication UI architecture', () => {
 
   it('reveals login after identity check instead of waiting on authenticated bootstrap', () => {
     const appSource = read('src/App.tsx');
-    const identityCheck = appSource.indexOf('me = await api.getMe();');
+    const identityCheck = appSource.indexOf('const me = await api.getMe();');
     const authGate = appSource.indexOf('setAuthChecked(true);', identityCheck);
-    const bootstrap = appSource.indexOf('const [activeChannels, accessibleCampaigns, branches, summary, work]', identityCheck);
+    const bootstrapCall = appSource.indexOf('void bootstrapData();', authGate);
+    const loginResponse = appSource.indexOf('const response = await api.login(credentials);');
 
     expect(identityCheck).toBeGreaterThanOrEqual(0);
     expect(authGate).toBeGreaterThan(identityCheck);
-    expect(bootstrap).toBeGreaterThan(authGate);
+    expect(bootstrapCall).toBeGreaterThan(authGate);
+    expect(loginResponse).toBeGreaterThanOrEqual(0);
+    expect(appSource).toContain('setCurrentUser(response.user);');
+    expect(appSource).toContain('void bootstrapData();');
     expect(appSource).toContain("reason.code === 'STATE_MERGE_CONFLICT'");
+  });
+
+  it('uses one authenticated bootstrap request for initial workspace data', () => {
+    const appSource = read('src/App.tsx');
+    const apiSource = read('src/services/api.ts');
+    const serverSource = read('server/src/app.ts');
+
+    expect(apiSource).toContain("this.request('/bootstrap')");
+    expect(appSource).toContain('api.getBootstrap()');
+    expect(serverSource).toContain("app.get('/api/v1/bootstrap'");
+    expect(serverSource).toContain('getScopedBranchesForUser(user)');
+    expect(serverSource).toContain('getDashboardSummaryForUser(user)');
+    expect(serverSource).toContain('getMyWorkForUser(user)');
   });
 
   it('keeps browser smokes on the real session-login contract', () => {

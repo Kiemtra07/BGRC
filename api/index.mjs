@@ -7078,13 +7078,13 @@ app.post("/api/v1/admin/campaigns/:id/provision-drive", async (req) => {
     throw error;
   }
 });
-app.get("/api/v1/org-units/branches", async (req) => {
-  const user = getCurrentUser(req);
+function getScopedBranchesForUser(user) {
   const seesEverything = user.scopes.some((scope) => scope.scopeType === "ALL");
   const scopedBranchCodes = new Set(user.scopes.flatMap((scope) => scope.orgUnitCode ? [scope.orgUnitCode] : []));
   const scopedClusters = new Set(user.scopes.flatMap((scope) => scope.clusterName ? [scope.clusterName] : []));
   return orgUnits.filter((unit) => unit.type === "BRANCH" && unit.isActive).map((unit) => ({ ...unit, parentName: orgUnits.find((candidate) => candidate.id === unit.parentId)?.name })).filter((unit) => seesEverything || scopedBranchCodes.has(unit.code) || (unit.parentName ? scopedClusters.has(unit.parentName) : false) || unit.code === user.branchCode);
-});
+}
+app.get("/api/v1/org-units/branches", async (req) => getScopedBranchesForUser(getCurrentUser(req)));
 app.get("/api/v1/admin/org-units", async (req) => {
   requireCatalogManager(getCurrentUser(req));
   const index = buildOrgUnitLookup();
@@ -7799,8 +7799,7 @@ app.delete("/api/v1/admin/audit-events", async (req) => {
   await persistLocalState();
   return { cleared };
 });
-app.get("/api/v1/workspace/my-work", async (req) => {
-  const user = getCurrentUser(req);
+function getMyWorkForUser(user) {
   const scoped = filterFindingsByScope(findings, user);
   const actionable = scoped.filter((finding) => isActionableForUser(finding, user)).map((finding) => withWorkspaceProjection(finding, user.id)).sort((left, right) => left.deadlineDate.localeCompare(right.deadlineDate));
   const followingIds = new Set(
@@ -7810,7 +7809,8 @@ app.get("/api/v1/workspace/my-work", async (req) => {
   const accepted = workspaceAccepted.filter((target) => target.userId === user.id).map((target) => projectWorkspaceTarget(target, user)).filter((target) => Boolean(target)).sort((left, right) => right.createdAt.localeCompare(left.createdAt));
   const watchTargets = sortWatchTargets(workspaceWatchTargets.filter((target) => target.userId === user.id).map((target) => projectWorkspaceTarget(target, user)).filter((target) => Boolean(target)));
   return { actionable, following, accepted, watchTargets };
-});
+}
+app.get("/api/v1/workspace/my-work", async (req) => getMyWorkForUser(getCurrentUser(req)));
 app.put("/api/v1/workspace/accepted", async (req) => {
   const user = getCurrentUser(req);
   requireRoles(user, ["INTERNAL_OFFICER", "SUPERVISOR", "INTERNAL_APPROVER", "BRANCH_INPUT", "BRANCH_CONTROLLER"]);
@@ -8652,9 +8652,7 @@ app.get("/api/v1/evidence/:driveFileId/content", async (req, reply) => {
   await flushSecurityEvents();
   return reply.send(result.stream);
 });
-app.get("/api/v1/dashboards/summary", async (req) => {
-  const user = getCurrentUser(req);
-  const query = req.query ?? {};
+function getDashboardSummaryForUser(user, query = {}) {
   const scoped = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
   const active = scoped.filter((f) => f.workflowStatus !== "WAIVED_RESOLVED");
   const resolved = scoped.filter((f) => f.workflowStatus === "WAIVED_RESOLVED");
@@ -8678,6 +8676,20 @@ app.get("/api/v1/dashboards/summary", async (req) => {
     remediationRatePercent: scoped.length ? Math.round(resolved.length / scoped.length * 100) : 0
   };
   return summary;
+}
+app.get("/api/v1/dashboards/summary", async (req) => {
+  const query = req.query ?? {};
+  return getDashboardSummaryForUser(getCurrentUser(req), query);
+});
+app.get("/api/v1/bootstrap", async (req) => {
+  const user = getCurrentUser(req);
+  return {
+    channels: reportChannels.filter((channel) => channel.isActive),
+    campaigns: auditCampaigns.filter((campaign) => canAccessCampaign(user, campaign)),
+    branches: getScopedBranchesForUser(user),
+    summary: getDashboardSummaryForUser(user),
+    work: getMyWorkForUser(user)
+  };
 });
 app.get("/api/v1/reports/definitions", async (req) => {
   const user = getCurrentUser(req);

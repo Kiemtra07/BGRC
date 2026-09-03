@@ -64,6 +64,26 @@ describe('local credential authentication', () => {
     expect(afterLogout.statusCode).toBe(401);
   });
 
+  it('returns the initial workspace data through one authenticated bootstrap response', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/bootstrap',
+      headers: { 'x-user-id': 'user-branch-635' },
+    });
+
+    expect(response.statusCode, response.body).toBe(200);
+    expect(response.json()).toEqual(expect.objectContaining({
+      channels: expect.any(Array),
+      campaigns: expect.any(Array),
+      branches: expect.any(Array),
+      summary: expect.objectContaining({ totalFindings: expect.any(Number) }),
+      work: expect.objectContaining({ actionable: expect.any(Array), watchTargets: expect.any(Array) }),
+    }));
+
+    const unauthenticated = await app.inject({ method: 'GET', url: '/api/v1/bootstrap' });
+    expect(unauthenticated.statusCode).toBe(401);
+  });
+
   it('does not trust x-user-id when the explicit test bridge is disabled', async () => {
     process.env.ALLOW_TEST_USER_HEADER = 'false';
     const response = await app.inject({ method: 'GET', url: '/api/v1/me', headers: { 'x-user-id': 'user-admin' } });

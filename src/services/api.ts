@@ -22,6 +22,14 @@ export interface FindingApprovalCandidates {
   internalApprovers: UserProfile[];
 }
 
+export interface BootstrapResponse {
+  channels: ReportChannel[];
+  campaigns: AuditCampaign[];
+  branches: OrgUnit[];
+  summary: DashboardSummary;
+  work: MyWorkQueue;
+}
+
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '');
 const API_BASE = `${configuredApiBase || '/api'}/v1`;
 
@@ -111,6 +119,7 @@ class ApiService {
   });
   public logout = (): Promise<void> => this.request('/auth/logout', { method: 'POST' });
   public getMe = (): Promise<{ user: UserProfile }> => this.request('/me');
+  public getBootstrap = (): Promise<BootstrapResponse> => this.request('/bootstrap');
   public getCampaigns = (): Promise<AuditCampaign[]> => this.request('/campaigns');
   public createCampaign = (data: CreateAuditCampaignDTO): Promise<AuditCampaign> => this.request('/admin/campaigns', { method: 'POST', body: JSON.stringify(data) });
   public updateCampaign = (id: string, data: UpdateAuditCampaignDTO): Promise<AuditCampaign> => this.request(`/admin/campaigns/${id}`, { method: 'PATCH', body: JSON.stringify(data) });
