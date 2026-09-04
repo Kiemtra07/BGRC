@@ -171,7 +171,14 @@ var UpdateUserSchema = z3.object({
   fullName: z3.string().trim().min(2).max(255).optional(),
   phone: z3.string().max(50).optional(),
   googleWorkspaceEmail: z3.union([z3.string().email(), z3.literal("")]).optional(),
-  isActive: z3.boolean().optional()
+  isActive: z3.boolean().optional(),
+  /** Assignment is nullable so an account can be provisioned first and routed later. */
+  internalTeamId: z3.string().min(1).nullable().optional(),
+  teamRole: z3.enum(["MEMBER", "LEAD"]).nullable().optional(),
+  clusterId: z3.string().min(1).nullable().optional(),
+  branchCode: z3.string().min(1).nullable().optional(),
+  departmentId: z3.string().min(1).nullable().optional(),
+  department: z3.string().trim().min(2).nullable().optional()
 });
 var UpdateAuthenticatorSchema = z3.object({
   enabled: z3.boolean()
@@ -242,28 +249,29 @@ var CreateUserSchema = z3.object({
       message: "User n\u1ED9i b\u1ED9 kh\xF4ng \u0111\u01B0\u1EE3c mang vai tr\xF2 chi nh\xE1nh"
     });
   }
-  if (["BRANCH_CONTROLLER", "BRANCH_LEADER"].includes(value.primaryRole) && (!value.branchCode || !value.department)) {
+  if (value.department && !value.branchCode) {
     context.addIssue({
       code: z3.ZodIssueCode.custom,
       path: ["branchCode"],
-      message: "Vai tr\xF2 ki\u1EC3m so\xE1t ho\u1EB7c l\xE3nh \u0111\u1EA1o chi nh\xE1nh ph\u1EA3i c\xF3 branchCode v\xE0 department"
+      message: "Ph\xF2ng / PGD ph\u1EA3i \u0111i c\xF9ng branchCode \u0111\u1EC3 x\xE1c \u0111\u1ECBnh chi nh\xE1nh"
     });
   }
-  if (value.primaryRole === "BRANCH_INPUT" && (!value.branchCode || !value.department)) {
+  if (value.branchName && !value.branchCode) {
     context.addIssue({
       code: z3.ZodIssueCode.custom,
       path: ["branchCode"],
-      message: "BRANCH_INPUT ph\u1EA3i c\xF3 branchCode v\xE0 department"
+      message: "T\xEAn chi nh\xE1nh ch\u1EC9 \u0111\u01B0\u1EE3c nh\u1EADp khi \u0111\xE3 c\xF3 branchCode"
     });
   }
-  if (value.primaryRole === "INTERNAL_OFFICER" && (!value.internalTeamId || value.teamRole !== "MEMBER")) {
+  const hasInternalAssignment = Boolean(value.internalTeamId || value.teamRole);
+  if (hasInternalAssignment && value.primaryRole === "INTERNAL_OFFICER" && (!value.internalTeamId || value.teamRole !== "MEMBER")) {
     context.addIssue({
       code: z3.ZodIssueCode.custom,
       path: ["internalTeamId"],
       message: "C\xE1n b\u1ED9 n\u1ED9i b\u1ED9 ph\u1EA3i thu\u1ED9c m\u1ED9t nh\xF3m v\u1EDBi vai tr\xF2 th\xE0nh vi\xEAn"
     });
   }
-  if (value.primaryRole === "INTERNAL_APPROVER" && (!value.internalTeamId || value.teamRole !== "LEAD")) {
+  if (hasInternalAssignment && value.primaryRole === "INTERNAL_APPROVER" && (!value.internalTeamId || value.teamRole !== "LEAD")) {
     context.addIssue({
       code: z3.ZodIssueCode.custom,
       path: ["teamRole"],
@@ -1151,6 +1159,16 @@ var UpdateAuditCampaignSchema = CampaignInputSchema.partial().extend({
   expectedVersion: z12.number().int().positive(),
   status: z12.enum(["DRAFT", "ACTIVE", "CLOSED", "ARCHIVED"]).optional()
 });
+
+// shared/contracts/permissions.ts
+var APP_CAPABILITY_ROLES = {
+  CONFIGURE_CATALOG: ["ADMIN", "SUPERVISOR", "INTERNAL_APPROVER", "INTERNAL_OFFICER"],
+  IMPORT_FINDINGS: ["ADMIN", "SUPERVISOR", "INTERNAL_OFFICER"],
+  CREATE_FINDING: ["ADMIN", "INTERNAL_OFFICER"]
+};
+function hasAppCapability(roles, capability) {
+  return APP_CAPABILITY_ROLES[capability].some((role) => roles.includes(role));
+}
 
 // server/src/modules/workflow/workflow-service.ts
 var WorkflowCommandService = class {
@@ -2929,6 +2947,21 @@ var PostgresFindingRecords = class {
       };
     });
   }
+  /** Load a caller's full SQL-filtered scope for analytics without hydrating the global snapshot. */
+  async listAll(options) {
+    const items = [];
+    const pageSize = 1e3;
+    let page = 1;
+    let total = Number.POSITIVE_INFINITY;
+    while (items.length < total) {
+      const result = await this.list({ ...options, page, limit: pageSize });
+      items.push(...result.items);
+      total = result.total;
+      if (result.items.length === 0) break;
+      page += 1;
+    }
+    return items;
+  }
 };
 function buildListQuery(options) {
   const { user, query, page, limit } = options;
@@ -2994,6 +3027,80 @@ function buildListQuery(options) {
   return { sql, params };
 }
 
+// server/src/state/security-event-queue.ts
+async function flushPendingEventIds(pending, append) {
+  if (pending.length === 0) return /* @__PURE__ */ new Set();
+  const flushing = structuredClone(pending);
+  await append(flushing);
+  return new Set(flushing.map((event) => event.id));
+}
+
+// server/src/modules/org-unit-cascade.ts
+function branchBelongsToCluster(orgUnits2, branchCode, clusterId) {
+  const branch = orgUnits2.find((unit) => unit.type === "BRANCH" && unit.code === branchCode);
+  return branch?.parentId === clusterId;
+}
+function cascadeOrgUnitChange(current, next, collections) {
+  const { orgUnits: orgUnits2, users, findings: findings2, campaigns, acceptedTargets, watchTargets, now } = collections;
+  const nextClusterName = next.type === "BRANCH" && next.parentId ? orgUnits2.find((unit) => unit.id === next.parentId)?.name : next.type === "CLUSTER" ? next.name : void 0;
+  const parentBranchCode = current.type === "DEPARTMENT" ? orgUnits2.find((unit) => unit.id === current.parentId)?.code : void 0;
+  for (const user of users) {
+    if (current.type === "INTERNAL_TEAM" && user.internalTeamId === current.id) {
+      user.internalTeamName = next.name;
+    }
+    if (current.type === "CLUSTER" && (user.clusterName === current.name || branchBelongsToCluster(orgUnits2, user.branchCode, current.id))) {
+      user.clusterName = next.name;
+      user.scopes = user.scopes.map((scope) => scope.clusterName === current.name ? { ...scope, clusterName: next.name } : scope);
+    }
+    if (current.type === "BRANCH" && user.branchCode === current.code) {
+      user.branchCode = next.code;
+      user.branchName = next.name;
+      if (nextClusterName) user.clusterName = nextClusterName;
+      user.scopes = user.scopes.map((scope) => scope.orgUnitCode === current.code ? { ...scope, orgUnitCode: next.code, branchName: next.name, clusterName: nextClusterName } : scope);
+    }
+    if (current.type === "DEPARTMENT" && (user.orgUnitId === current.id || user.branchCode === parentBranchCode && user.department === current.name)) {
+      user.orgUnitId = next.id;
+      user.department = next.name;
+      user.scopes = user.scopes.map((scope) => scope.orgUnitId === current.id || scope.departmentName === current.name ? { ...scope, orgUnitId: next.id, departmentName: next.name } : scope);
+    }
+  }
+  for (const finding of findings2) {
+    let changed = false;
+    if (current.type === "CLUSTER" && (finding.clusterName === current.name || branchBelongsToCluster(orgUnits2, finding.branchCode, current.id))) {
+      finding.clusterName = next.name;
+      changed = true;
+    }
+    if (current.type === "BRANCH" && finding.branchCode === current.code) {
+      finding.branchCode = next.code;
+      finding.branchName = next.name;
+      if (nextClusterName) finding.clusterName = nextClusterName;
+      changed = true;
+    }
+    if (current.type === "DEPARTMENT" && finding.branchCode === parentBranchCode && finding.department === current.name) {
+      finding.department = next.name;
+      changed = true;
+    }
+    if (changed) finding.updatedAt = now;
+  }
+  for (const campaign of campaigns) {
+    if (current.type !== "BRANCH" || !campaign.branchCodes.includes(current.code)) continue;
+    campaign.branchCodes = campaign.branchCodes.map((code) => code === current.code ? next.code : code);
+    campaign.members = campaign.members.map((member) => ({
+      ...member,
+      assignedBranchCodes: member.assignedBranchCodes.map((code) => code === current.code ? next.code : code)
+    }));
+    campaign.version += 1;
+    campaign.updatedAt = now;
+  }
+  for (const target of [...acceptedTargets, ...watchTargets]) {
+    if (current.type === "CLUSTER" && target.clusterName === current.name) target.clusterName = next.name;
+    if (current.type === "BRANCH" && target.branchCode === current.code) {
+      target.branchCode = next.code;
+      if (nextClusterName) target.clusterName = nextClusterName;
+    }
+  }
+}
+
 // server/src/state/idempotency-retention.ts
 var IDEMPOTENCY_RETENTION_MS = 24 * 60 * 6e4;
 function pruneExpiredIdempotencyRecords(records, nowMs = Date.now(), retentionMs = IDEMPOTENCY_RETENTION_MS) {
@@ -3008,6 +3115,8 @@ function pruneExpiredIdempotencyRecords(records, nowMs = Date.now(), retentionMs
 }
 
 // server/src/repositories/idempotency-store.ts
+var IDEMPOTENCY_PENDING_STATUS = 102;
+var IDEMPOTENCY_PENDING_RETENTION_MS = 2 * 6e4;
 var MemoryIdempotencyStore = class {
   constructor(read) {
     this.read = read;
@@ -3017,8 +3126,49 @@ var MemoryIdempotencyStore = class {
     pruneExpiredIdempotencyRecords(records);
     return records[key];
   }
+  async claim(key, requestHash, _options) {
+    const records = this.read();
+    pruneExpiredIdempotencyRecords(records);
+    const existing = records[key];
+    if (!existing) {
+      records[key] = {
+        requestHash,
+        response: void 0,
+        status: IDEMPOTENCY_PENDING_STATUS,
+        storedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      return { state: "CLAIMED" };
+    }
+    if (existing.requestHash !== requestHash) return { state: "CONFLICT" };
+    if (existing.status === IDEMPOTENCY_PENDING_STATUS) {
+      const pendingSince = existing.storedAt ? Date.parse(existing.storedAt) : Number.NaN;
+      if (!Number.isFinite(pendingSince) || Date.now() - pendingSince < IDEMPOTENCY_PENDING_RETENTION_MS) {
+        return { state: "IN_PROGRESS" };
+      }
+      delete records[key];
+      records[key] = {
+        requestHash,
+        response: void 0,
+        status: IDEMPOTENCY_PENDING_STATUS,
+        storedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      return { state: "CLAIMED" };
+    }
+    return { state: "REPLAY", record: structuredClone(existing) };
+  }
   async put(key, record) {
-    this.read()[key] = { ...record, storedAt: (/* @__PURE__ */ new Date()).toISOString() };
+    const records = this.read();
+    const existing = records[key];
+    if (!existing || existing.requestHash !== record.requestHash || existing.status !== IDEMPOTENCY_PENDING_STATUS) {
+      throw new Error("IDEMPOTENCY_CLAIM_LOST \u2014 kh\xF4ng t\xECm th\u1EA5y claim \u0111ang ch\u1EDD \u0111\u1EC3 ho\xE0n t\u1EA5t.");
+    }
+    records[key] = { ...record, status: void 0, storedAt: (/* @__PURE__ */ new Date()).toISOString() };
+  }
+  async release(key, requestHash) {
+    const records = this.read();
+    if (records[key]?.requestHash === requestHash && records[key]?.status === IDEMPOTENCY_PENDING_STATUS) {
+      delete records[key];
+    }
   }
   async prune() {
     return pruneExpiredIdempotencyRecords(this.read());
@@ -3031,7 +3181,7 @@ var PostgresIdempotencyStore = class {
   async get(key) {
     return withBackendTransaction(this.pool, async (client) => {
       const result = await client.query(
-        `SELECT request_hash, response_body, created_at
+        `SELECT request_hash, response_status, response_body, created_at
            FROM idempotency_keys
           WHERE key = $1 AND expires_at > NOW()`,
         [key]
@@ -3041,33 +3191,68 @@ var PostgresIdempotencyStore = class {
       return {
         requestHash: String(row.request_hash),
         response: row.response_body,
+        status: Number(row.response_status),
         storedAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
       };
     });
   }
-  async put(key, record, options) {
-    await withBackendTransaction(this.pool, async (client) => {
+  async claim(key, requestHash, options) {
+    return withBackendTransaction(this.pool, async (client) => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext($1))", [key]);
+      await client.query("DELETE FROM idempotency_keys WHERE key = $1 AND expires_at <= NOW()", [key]);
+      const result = await client.query(
+        `SELECT request_hash, response_status, response_body, created_at
+           FROM idempotency_keys
+          WHERE key = $1 AND expires_at > NOW()
+          FOR UPDATE`,
+        [key]
+      );
+      const row = result.rows[0];
+      if (row) {
+        if (String(row.request_hash) !== requestHash) return { state: "CONFLICT" };
+        if (Number(row.response_status) === IDEMPOTENCY_PENDING_STATUS) return { state: "IN_PROGRESS" };
+        return { state: "REPLAY", record: {
+          requestHash: String(row.request_hash),
+          response: row.response_body,
+          status: Number(row.response_status),
+          storedAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at)
+        } };
+      }
       await client.query(
         `INSERT INTO idempotency_keys(
            key, request_path, request_method, request_hash,
            response_status, response_body, expires_at
-         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW() + ($7 || ' milliseconds')::interval)
-         ON CONFLICT (key) DO UPDATE SET
-           request_hash    = EXCLUDED.request_hash,
-           response_status = EXCLUDED.response_status,
-           response_body   = EXCLUDED.response_body,
-           expires_at      = EXCLUDED.expires_at`,
+         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW() + ($7 || ' milliseconds')::interval)`,
+        [key, options.path.slice(0, 255), options.method, requestHash, IDEMPOTENCY_PENDING_STATUS, JSON.stringify(null), String(IDEMPOTENCY_PENDING_RETENTION_MS)]
+      );
+      return { state: "CLAIMED" };
+    });
+  }
+  async put(key, record, options) {
+    await withBackendTransaction(this.pool, async (client) => {
+      const result = await client.query(
+        `UPDATE idempotency_keys
+            SET response_status = $3,
+                response_body = $4::jsonb,
+                expires_at = NOW() + ($5 || ' milliseconds')::interval
+          WHERE key = $1 AND request_hash = $2 AND response_status = $6`,
         [
           key,
-          options.path.slice(0, 255),
-          options.method,
           record.requestHash,
           options.status,
           JSON.stringify(record.response ?? null),
-          String(IDEMPOTENCY_RETENTION_MS)
+          String(IDEMPOTENCY_RETENTION_MS),
+          IDEMPOTENCY_PENDING_STATUS
         ]
       );
+      if (result.rowCount !== 1) throw new Error("IDEMPOTENCY_CLAIM_LOST \u2014 kh\xF4ng t\xECm th\u1EA5y claim \u0111ang ch\u1EDD \u0111\u1EC3 ho\xE0n t\u1EA5t.");
     });
+  }
+  async release(key, requestHash) {
+    await withBackendTransaction(this.pool, (client) => client.query(
+      "DELETE FROM idempotency_keys WHERE key = $1 AND request_hash = $2 AND response_status = $3",
+      [key, requestHash, IDEMPOTENCY_PENDING_STATUS]
+    ).then(() => void 0));
   }
   async prune() {
     return withBackendTransaction(this.pool, async (client) => {
@@ -4465,12 +4650,14 @@ var publicPaths = /* @__PURE__ */ new Set([
   "/api/v1/ready",
   "/api/v1/auth/login",
   "/api/v1/auth/logout",
+  "/api/v1/auth/refresh",
   "/api/v1/auth/forgot-password",
   "/api/v1/auth/google",
   "/api/v1/auth/google/callback",
   internalSlaPath
 ]);
 var requestUsers = /* @__PURE__ */ new WeakMap();
+var idempotencyRequests = /* @__PURE__ */ new WeakMap();
 var authSessionStore;
 var supabaseAuthAdapter = process.env.AUTH_MODE === "supabase" && process.env.SUPABASE_URL && (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY) ? createSupabaseAuthAdapter({
   url: process.env.SUPABASE_URL,
@@ -5243,6 +5430,16 @@ var findingsReadPath = process.env.FINDINGS_READ_PATH === "sql" && findingRecord
 if (findingsReadPath === "sql" && findingRecords) await findingRecords.assertReady();
 var usesPostgresIdempotency = stateRepository instanceof PostgresStateRepository;
 var idempotencyStore = usesPostgresIdempotency ? new PostgresIdempotencyStore(pool) : new MemoryIdempotencyStore(() => idempotencyRecords);
+app.addHook("onError", async (request) => {
+  const context = idempotencyRequests.get(request);
+  if (!context?.claimed) return;
+  context.claimed = false;
+  try {
+    await idempotencyStore.release(context.cacheKey, context.requestHash);
+  } catch (error) {
+    request.log.error({ err: error }, "Kh\xF4ng th\u1EC3 gi\u1EA3i ph\xF3ng Idempotency-Key sau khi request l\u1ED7i.");
+  }
+});
 var hydratedState = await stateRepository.load({
   orgUnits,
   appUsers,
@@ -5378,11 +5575,19 @@ function applyBranchScopeProjection() {
     const scopes = hasPersistedScopes ? user.scopes : [];
     if (user.portal !== "BRANCH") return hasPersistedScopes ? user : { ...user, scopes };
     const expected = branchScopeTypeForRole(user.primaryRole);
-    const needsChange = scopes.some((scope) => (scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT") && scope.scopeType !== expected) || !hasPersistedScopes;
+    const needsChange = scopes.some((scope) => {
+      if (scope.scopeType !== "BRANCH" && scope.scopeType !== "DEPARTMENT") return false;
+      const partialBranchScope = scope.scopeType === "BRANCH" && !scope.departmentName && !user.department;
+      return scope.scopeType !== (partialBranchScope ? "BRANCH" : expected);
+    }) || !hasPersistedScopes;
     if (!needsChange) return user;
     return {
       ...user,
-      scopes: scopes.map((scope) => scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT" ? { ...scope, scopeType: expected, departmentName: scope.departmentName ?? user.department } : scope)
+      scopes: scopes.map((scope) => scope.scopeType === "BRANCH" || scope.scopeType === "DEPARTMENT" ? {
+        ...scope,
+        scopeType: scope.scopeType === "BRANCH" && !scope.departmentName && !user.department ? "BRANCH" : expected,
+        departmentName: scope.departmentName ?? user.department
+      } : scope)
     };
   });
 }
@@ -5869,13 +6074,8 @@ function recordSecurityEvent(event) {
 }
 async function appendPendingSecurityEvents() {
   if (!securityEventLedger || pendingSecurityEvents.length === 0) return;
-  const flushing = structuredClone(pendingSecurityEvents);
-  const flushedIds = new Set(flushing.map((event) => event.id));
-  try {
-    await securityEventLedger.append(flushing);
-  } finally {
-    pendingSecurityEvents = pendingSecurityEvents.filter((event) => !flushedIds.has(event.id));
-  }
+  const flushedIds = await flushPendingEventIds(pendingSecurityEvents, (events) => securityEventLedger.append(events));
+  pendingSecurityEvents = pendingSecurityEvents.filter((event) => !flushedIds.has(event.id));
 }
 async function flushSecurityEvents() {
   if (!securityEventLedger) {
@@ -5950,6 +6150,12 @@ function clearLoginFailures(usernameKey) {
 function filterFindingsByScope(items, user) {
   return items.filter((finding) => hasFindingAccess(user, finding));
 }
+async function readScopedFindingsForAnalytics(user, query = {}) {
+  if (findingsReadPath === "sql" && findingRecords) {
+    return findingRecords.listAll({ user, query });
+  }
+  return applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
+}
 function getScopedFindingOrThrow(id, user) {
   const finding = findings.find((item) => item.id === id);
   if (!finding || !hasFindingAccess(user, finding)) {
@@ -5969,9 +6175,14 @@ function resolveApprovalRoute(finding, workflowType, actor) {
   const candidates = approvalCandidatesForFinding(finding);
   const requiresBranchLeaderApproval = workflowType === "THREE_TIER" || Boolean(finding.isSpecialCase);
   const pick = (users) => (users.find((user) => user.id !== actor.id) ?? users[0])?.id;
+  const branchControllerUserId = pick(candidates.branchControllers);
+  const branchLeaderUserId = requiresBranchLeaderApproval ? pick(candidates.branchLeaders) : void 0;
+  if (!branchControllerUserId || requiresBranchLeaderApproval && !branchLeaderUserId) {
+    throw new HttpProblem(409, "APPROVAL_ROUTE_UNRESOLVED", "Ch\u01B0a x\xE1c \u0111\u1ECBnh \u0111\u01B0\u1EE3c tuy\u1EBFn duy\u1EC7t", "Chi nh\xE1nh ch\u01B0a c\xF3 ng\u01B0\u1EDDi ki\u1EC3m so\xE1t ho\u1EB7c l\xE3nh \u0111\u1EA1o ph\xF9 h\u1EE3p \u0111\u1EC3 nh\u1EADn h\u1ED3 s\u01A1. H\xE3y b\u1ED5 sung ng\u01B0\u1EDDi ph\u1EE5 tr\xE1ch tr\u01B0\u1EDBc khi n\u1ED9p.");
+  }
   return {
-    branchControllerUserId: pick(candidates.branchControllers),
-    branchLeaderUserId: requiresBranchLeaderApproval ? pick(candidates.branchLeaders) : void 0,
+    branchControllerUserId,
+    branchLeaderUserId,
     internalApproverUserId: void 0,
     requiresBranchLeaderApproval,
     assignedByUserId: actor.id,
@@ -6191,7 +6402,21 @@ function createFindingFromDto(dto, user, id = `find-${crypto6.randomUUID()}`) {
   const evaluation = slaWorker.evaluateFindingSla(newFinding, nowDate);
   newFinding.slaStatus = evaluation.slaStatus;
   newFinding.isOverdue = evaluation.isOverdue;
+  assertFindingCreationAccess(user, newFinding);
   return newFinding;
+}
+function assertFindingCreationAccess(user, finding) {
+  if (user.roles.includes("ADMIN")) return;
+  if (user.scopes.length === 0) {
+    throw new HttpProblem(403, "USER_ASSIGNMENT_REQUIRED", "T\xE0i kho\u1EA3n ch\u01B0a \u0111\u01B0\u1EE3c ph\xE2n lu\u1ED3ng", "T\xE0i kho\u1EA3n \u0111\xE3 t\u1EA1o nh\u01B0ng ch\u01B0a \u0111\u01B0\u1EE3c ph\xE2n v\xE0o nh\xF3m, c\u1EE5m, chi nh\xE1nh ho\u1EB7c ph\xF2ng ban n\xEAn ch\u01B0a th\u1EC3 t\u1EA1o h\u1ED3 s\u01A1.");
+  }
+  if (!hasFindingAccess(user, finding)) {
+    throw new HttpProblem(403, "FINDING_SCOPE_FORBIDDEN", "Ngo\xE0i ph\u1EA1m vi d\u1EEF li\u1EC7u", "H\u1ED3 s\u01A1 thu\u1ED9c c\u1EE5m, chi nh\xE1nh ho\u1EB7c ph\xF2ng ban ngo\xE0i ph\u1EA1m vi \u0111\u01B0\u1EE3c ph\xE2n c\xF4ng.");
+  }
+  const campaign = auditCampaigns.find((item) => item.id === finding.campaignId);
+  if (campaign && !canAccessCampaign(user, campaign)) {
+    throw new HttpProblem(403, "CAMPAIGN_NOT_AVAILABLE", "Chuy\xEAn \u0111\u1EC1 ch\u01B0a \u0111\u01B0\u1EE3c ph\xE2n c\xF4ng", "T\xE0i kho\u1EA3n ch\u01B0a \u0111\u01B0\u1EE3c c\u1EA5p quy\u1EC1n tr\xEAn chuy\xEAn \u0111\u1EC1 n\xE0y.");
+  }
 }
 async function ensureFindingDriveFolder(finding) {
   const campaign = auditCampaigns.find((item) => item.id === finding.campaignId);
@@ -6532,17 +6757,25 @@ async function idempotencyContext(request, user, body) {
   const path5 = request.url.split("?")[0];
   const cacheKey = `${user.id}:${request.method}:${request.url}:${key}`;
   const requestHash = crypto6.createHash("sha256").update(JSON.stringify(body)).digest("hex");
-  const existing = await idempotencyStore.get(cacheKey);
-  if (existing && existing.requestHash !== requestHash) {
+  const claim = await idempotencyStore.claim(cacheKey, requestHash, { method: request.method, path: path5 });
+  if (claim.state === "CONFLICT") {
     throw new HttpProblem(409, "IDEMPOTENCY_CONFLICT", "Xung \u0111\u1ED9t Idempotency-Key", "Idempotency-Key \u0111\xE3 \u0111\u01B0\u1EE3c d\xF9ng v\u1EDBi n\u1ED9i dung y\xEAu c\u1EA7u kh\xE1c.");
   }
-  return {
-    cacheKey,
-    requestHash,
-    method: request.method,
-    path: path5,
-    replay: existing ? structuredClone(existing.response) : void 0
-  };
+  if (claim.state === "IN_PROGRESS") {
+    throw new HttpProblem(409, "IDEMPOTENCY_IN_PROGRESS", "Y\xEAu c\u1EA7u \u0111ang \u0111\u01B0\u1EE3c x\u1EED l\xFD", "M\u1ED9t y\xEAu c\u1EA7u c\xF9ng Idempotency-Key \u0111ang x\u1EED l\xFD. H\xE3y ch\u1EDD k\u1EBFt qu\u1EA3 ho\u1EB7c d\xF9ng kh\xF3a m\u1EDBi cho n\u1ED9i dung kh\xE1c.");
+  }
+  if (claim.state === "REPLAY") {
+    return {
+      cacheKey,
+      requestHash,
+      method: request.method,
+      path: path5,
+      replay: structuredClone(claim.record.response)
+    };
+  }
+  const context = { cacheKey, requestHash, method: request.method, path: path5, claimed: true };
+  idempotencyRequests.set(request, context);
+  return context;
 }
 async function rememberIdempotentResponse(context, response, status = 200) {
   if (!context.cacheKey || !context.requestHash) return;
@@ -6551,6 +6784,7 @@ async function rememberIdempotentResponse(context, response, status = 200) {
     { requestHash: context.requestHash, response: structuredClone(response) },
     { method: context.method ?? "POST", path: context.path ?? "", status }
   );
+  context.claimed = false;
 }
 app.get("/api/v1/health", async () => ({ status: "UP", timestamp: (/* @__PURE__ */ new Date()).toISOString() }));
 var REDACTED_DIAGNOSTIC = "Chi ti\u1EBFt l\u1ED7i ch\u1EC9 hi\u1EC3n th\u1ECB cho qu\u1EA3n tr\u1ECB vi\xEAn \u0111\xE3 \u0111\u0103ng nh\u1EADp.";
@@ -6563,11 +6797,11 @@ function buildReadinessPayload(dataStore, evidenceStorage, options = {}) {
   const dataStoreMessage = dataStore.mode === "postgres" ? postgresUnavailable ? `Postgres kh\xF4ng s\u1EB5n s\xE0ng. ${diagnostic(dataStore.warning, "Kh\xF4ng th\u1EC3 x\xE1c nh\u1EADn k\u1EBFt n\u1ED1i database.")}` : "Postgres \u0111\xE3 k\u1EBFt n\u1ED1i; state \u0111ang l\u01B0u b\u1EC1n v\u1EEFng ngo\xE0i filesystem serverless." : dataStore.durable ? "Local mode \u0111ang l\u01B0u tr\u1EA1ng th\xE1i b\u1EC1n v\u1EEFng b\u1EB1ng JSON nguy\xEAn t\u1EED." : "Local mode \u0111ang ch\u1EA1y b\u1EB1ng b\u1ED9 nh\u1EDB; d\u1EEF li\u1EC7u s\u1EBD m\u1EA5t khi ti\u1EBFn tr\xECnh d\u1EEBng.";
   const evidenceMessage = evidenceStorage.ready ? "" : evidenceStorage.mode === "google-drive" ? ` Google Drive ch\u01B0a s\u1EB5n s\xE0ng. ${diagnostic(evidenceStorage.warning, "Adapter API v3 ch\u01B0a \u0111\u01B0\u1EE3c c\xE0i \u0111\u1EB7t.")} H\u1EC7 th\u1ED1ng kh\xF4ng fallback local.` : ` Ch\u1EBF \u0111\u1ED9 l\u01B0u minh ch\u1EE9ng kh\xF4ng h\u1EE3p l\u1EC7. ${diagnostic(evidenceStorage.warning, "C\u1EA7n c\u1EA5u h\xECnh EVIDENCE_STORAGE_MODE h\u1EE3p l\u1EC7.")} H\u1EC7 th\u1ED1ng kh\xF4ng fallback local.`;
   const ready = !postgresUnavailable && evidenceStorage.ready;
-  const message = `${dataStoreMessage}${evidenceMessage} Ch\u01B0a ph\u1EA3i tr\u1EA1ng th\xE1i production-ready.`;
+  const message = ready ? `${dataStoreMessage}${evidenceMessage} C\xE1c dependency ch\xEDnh \u0111\xE3 s\u1EB5n s\xE0ng.` : `${dataStoreMessage}${evidenceMessage} Ch\u01B0a \u0111\u1EE7 \u0111i\u1EC1u ki\u1EC7n ph\u1EE5c v\u1EE5 production.`;
   const redactedDataStore = includeDiagnostics || !("warning" in dataStore) || dataStore.warning === void 0 ? dataStore : { ...dataStore, warning: REDACTED_DIAGNOSTIC };
   const redactedEvidenceStorage = includeDiagnostics || evidenceStorage.warning === void 0 ? evidenceStorage : { ...evidenceStorage, warning: REDACTED_DIAGNOSTIC };
   return {
-    status: "DEGRADED",
+    status: ready ? "READY" : "DEGRADED",
     ready,
     checks: {
       dataStore: redactedDataStore,
@@ -6930,9 +7164,14 @@ app.get("/api/v1/campaigns", async (req) => {
   const user = getCurrentUser(req);
   return auditCampaigns.filter((campaign) => canAccessCampaign(user, campaign));
 });
-var catalogManagerRoles = ["ADMIN", "SUPERVISOR", "INTERNAL_APPROVER", "INTERNAL_OFFICER"];
+var catalogManagerRoles = APP_CAPABILITY_ROLES.CONFIGURE_CATALOG;
 function requireCatalogManager(user) {
-  requireRoles(user, [...catalogManagerRoles]);
+  if (!hasAppCapability(user.roles, "CONFIGURE_CATALOG")) requireRoles(user, [...catalogManagerRoles]);
+}
+function requireAppCapability(user, capability) {
+  if (!hasAppCapability(user.roles, capability)) {
+    requireRoles(user, [...APP_CAPABILITY_ROLES[capability]]);
+  }
 }
 app.post("/api/v1/admin/campaigns", async (req, reply) => {
   const user = getCurrentUser(req);
@@ -7207,7 +7446,7 @@ app.patch("/api/v1/admin/org-units/:id", async (req) => {
     if (references.length) throw new HttpProblem(409, "ORG_UNIT_HAS_DEPENDENCIES", "Ch\u01B0a th\u1EC3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng \u0111\u01A1n v\u1ECB", `H\xE3y x\u1EED l\xFD ${references.join(", ")} tr\u01B0\u1EDBc khi ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng \u0111\u01A1n v\u1ECB.`);
   }
   const { expectedUpdatedAt: _expectedUpdatedAt, ...changes } = body;
-  orgUnits[index] = {
+  const updatedUnit = {
     ...current,
     ...changes,
     parentId: nextParentId,
@@ -7215,6 +7454,16 @@ app.patch("/api/v1/admin/org-units/:id", async (req) => {
     metadata: body.metadata === null ? void 0 : body.metadata ?? current.metadata,
     updatedAt: (/* @__PURE__ */ new Date()).toISOString()
   };
+  cascadeOrgUnitChange(current, updatedUnit, {
+    orgUnits,
+    users: appUsers,
+    findings,
+    campaigns: auditCampaigns,
+    acceptedTargets: workspaceAccepted,
+    watchTargets: workspaceWatchTargets,
+    now: updatedUnit.updatedAt
+  });
+  orgUnits[index] = updatedUnit;
   await persistLocalState();
   return projectOrgUnit(orgUnits[index]);
 });
@@ -7234,8 +7483,147 @@ app.delete("/api/v1/admin/org-units/:id", async (req, reply) => {
   await persistLocalState();
   return reply.code(204).send();
 });
-app.get("/api/v1/admin/users", async (req) => {
-  requireCatalogManager(getCurrentUser(req));
+function invalidUserAssignment(detail, code = "USER_ASSIGNMENT_INVALID") {
+  throw new HttpProblem(422, code, "Ph\xE2n lu\u1ED3ng ng\u01B0\u1EDDi d\xF9ng kh\xF4ng h\u1EE3p l\u1EC7", detail);
+}
+function resolveUserAssignment(user, input) {
+  const internalTeamId = input.internalTeamId || void 0;
+  const clusterId = input.clusterId || void 0;
+  const clusterName = input.clusterName || void 0;
+  const branchCode = input.branchCode || void 0;
+  const departmentId = input.departmentId || void 0;
+  const departmentName = input.department || void 0;
+  const hasBranchAssignment = Boolean(clusterId || clusterName || branchCode || departmentId || departmentName);
+  if (user.portal === "INTERNAL") {
+    if (hasBranchAssignment) invalidUserAssignment("T\xE0i kho\u1EA3n n\u1ED9i b\u1ED9 ch\u1EC9 \u0111\u01B0\u1EE3c ph\xE2n v\xE0o Nh\xF3m n\u1ED9i b\u1ED9.");
+    if (!internalTeamId) {
+      if (input.teamRole) invalidUserAssignment("Kh\xF4ng th\u1EC3 \u0111\u1EB7t vai tr\xF2 nh\xF3m khi ch\u01B0a ch\u1ECDn Nh\xF3m n\u1ED9i b\u1ED9.");
+      return {
+        orgUnitId: void 0,
+        internalTeamId: void 0,
+        internalTeamName: void 0,
+        teamRole: void 0,
+        clusterName: void 0,
+        branchCode: void 0,
+        branchName: void 0,
+        department: void 0,
+        scopes: ["ADMIN", "SUPERVISOR"].includes(user.primaryRole) ? [{ scopeType: "ALL" }] : []
+      };
+    }
+    const internalTeam = orgUnits.find((unit) => unit.id === internalTeamId && unit.type === "INTERNAL_TEAM" && unit.isActive);
+    if (!internalTeam) invalidUserAssignment("Nh\xF3m n\u1ED9i b\u1ED9 kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng.", "INTERNAL_TEAM_INVALID");
+    const expectedTeamRole = user.primaryRole === "INTERNAL_APPROVER" ? "LEAD" : user.primaryRole === "INTERNAL_OFFICER" ? "MEMBER" : input.teamRole ?? void 0;
+    if (expectedTeamRole && input.teamRole !== expectedTeamRole) {
+      invalidUserAssignment(`Vai tr\xF2 nh\xF3m c\u1EE7a ${user.primaryRole} ph\u1EA3i l\xE0 ${expectedTeamRole}.`);
+    }
+    if (expectedTeamRole === "LEAD" && appUsers.some((candidate) => candidate.id !== user.id && candidate.isActive && candidate.internalTeamId === internalTeam.id && candidate.teamRole === "LEAD")) {
+      throw new HttpProblem(409, "INTERNAL_TEAM_LEAD_EXISTS", "Nh\xF3m \u0111\xE3 c\xF3 tr\u01B0\u1EDFng nh\xF3m", "M\u1ED7i nh\xF3m ch\u1EC9 c\xF3 m\u1ED9t Tr\u01B0\u1EDFng nh\xF3m ki\u1EC3m so\xE1t \u0111ang ho\u1EA1t \u0111\u1ED9ng.");
+    }
+    return {
+      orgUnitId: internalTeam.id,
+      internalTeamId: internalTeam.id,
+      internalTeamName: internalTeam.name,
+      teamRole: expectedTeamRole,
+      clusterName: void 0,
+      branchCode: void 0,
+      branchName: void 0,
+      department: void 0,
+      scopes: [{ scopeType: "ALL" }]
+    };
+  }
+  if (internalTeamId || input.teamRole) invalidUserAssignment("T\xE0i kho\u1EA3n chi nh\xE1nh kh\xF4ng \u0111\u01B0\u1EE3c ph\xE2n v\xE0o Nh\xF3m n\u1ED9i b\u1ED9.");
+  if (!hasBranchAssignment) {
+    return {
+      orgUnitId: void 0,
+      internalTeamId: void 0,
+      internalTeamName: void 0,
+      teamRole: void 0,
+      clusterName: void 0,
+      branchCode: void 0,
+      branchName: void 0,
+      department: void 0,
+      scopes: []
+    };
+  }
+  if (departmentName && !branchCode && !departmentId) {
+    invalidUserAssignment("Ph\xF2ng / PGD ph\u1EA3i \u0111i c\xF9ng Chi nh\xE1nh ho\u1EB7c departmentId \u0111\u1EC3 x\xE1c \u0111\u1ECBnh \u0111\u1ECBa b\xE0n.");
+  }
+  const sameName = (left, right) => left !== void 0 && right !== void 0 && left.toLocaleLowerCase("vi-VN") === right.toLocaleLowerCase("vi-VN");
+  const requestedCluster = clusterId ? orgUnits.find((unit) => unit.id === clusterId && unit.type === "CLUSTER" && unit.isActive) : !branchCode && !departmentId && clusterName ? orgUnits.find((unit) => unit.type === "CLUSTER" && unit.isActive && sameName(unit.name, clusterName)) : void 0;
+  if ((clusterId || !branchCode && !departmentId && clusterName) && !requestedCluster) {
+    invalidUserAssignment("C\u1EE5m \u0111\u1ECBa b\xE0n kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng.", "CLUSTER_ASSIGNMENT_INVALID");
+  }
+  let branch = branchCode ? orgUnits.find((unit) => unit.code === branchCode && unit.type === "BRANCH" && unit.isActive) : void 0;
+  let cluster = requestedCluster;
+  if (branch) {
+    const branchCluster = orgUnits.find((unit) => unit.id === branch.parentId && unit.type === "CLUSTER" && unit.isActive);
+    if (!branchCluster || cluster && branchCluster.id !== cluster.id) {
+      invalidUserAssignment("Chi nh\xE1nh kh\xF4ng thu\u1ED9c C\u1EE5m \u0111\u1ECBa b\xE0n \u0111\xE3 ch\u1ECDn.", "BRANCH_ASSIGNMENT_INVALID");
+    }
+    cluster = branchCluster;
+  }
+  const requestedDepartment = departmentId ? orgUnits.find((unit) => unit.id === departmentId && unit.type === "DEPARTMENT" && unit.isActive) : void 0;
+  if (departmentId && !requestedDepartment) {
+    invalidUserAssignment("Ph\xF2ng / PGD kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng.", "DEPARTMENT_ASSIGNMENT_INVALID");
+  }
+  if (requestedDepartment) {
+    const departmentBranch = orgUnits.find((unit) => unit.id === requestedDepartment.parentId && unit.type === "BRANCH" && unit.isActive);
+    const departmentCluster = departmentBranch?.parentId ? orgUnits.find((unit) => unit.id === departmentBranch.parentId && unit.type === "CLUSTER" && unit.isActive) : void 0;
+    if (!departmentBranch || !departmentCluster || branch && departmentBranch.id !== branch.id || cluster && departmentCluster.id !== cluster.id) {
+      invalidUserAssignment("Ph\xF2ng / PGD kh\xF4ng thu\u1ED9c Chi nh\xE1nh v\xE0 C\u1EE5m \u0111\u1ECBa b\xE0n \u0111\xE3 ch\u1ECDn.", "BRANCH_ASSIGNMENT_INVALID");
+    }
+    branch = departmentBranch;
+    cluster = departmentCluster;
+  }
+  if (!branch && (branchCode || departmentName)) {
+    invalidUserAssignment("Chi nh\xE1nh kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng.", "BRANCH_ASSIGNMENT_INVALID");
+  }
+  const department = departmentId ? requestedDepartment : departmentName ? orgUnits.find((unit) => unit.parentId === branch?.id && unit.type === "DEPARTMENT" && sameName(unit.name, departmentName) && unit.isActive) : void 0;
+  if (departmentName && (!department || !sameName(department.name, departmentName))) {
+    invalidUserAssignment("Ph\xF2ng / PGD kh\xF4ng t\u1ED3n t\u1EA1i trong Chi nh\xE1nh \u0111\xE3 ch\u1ECDn.", "DEPARTMENT_ASSIGNMENT_INVALID");
+  }
+  if (!cluster && !branch && !department) {
+    invalidUserAssignment("Kh\xF4ng th\u1EC3 x\xE1c \u0111\u1ECBnh C\u1EE5m \u0111\u1ECBa b\xE0n t\u1EEB th\xF4ng tin ph\xE2n lu\u1ED3ng.", "CLUSTER_ASSIGNMENT_INVALID");
+  }
+  if (cluster && !branch && !department) {
+    return {
+      orgUnitId: cluster.id,
+      internalTeamId: void 0,
+      internalTeamName: void 0,
+      teamRole: void 0,
+      clusterName: cluster.name,
+      branchCode: void 0,
+      branchName: void 0,
+      department: void 0,
+      scopes: [{ scopeType: "CLUSTER", orgUnitId: cluster.id, clusterName: cluster.name }]
+    };
+  }
+  if (!branch || !cluster) {
+    invalidUserAssignment("Kh\xF4ng th\u1EC3 x\xE1c \u0111\u1ECBnh \u0111\u1EA7y \u0111\u1EE7 C\u1EE5m v\xE0 Chi nh\xE1nh t\u1EEB th\xF4ng tin ph\xE2n lu\u1ED3ng.", "BRANCH_ASSIGNMENT_INVALID");
+  }
+  return {
+    orgUnitId: department?.id ?? branch.id,
+    internalTeamId: void 0,
+    internalTeamName: void 0,
+    teamRole: void 0,
+    clusterName: cluster.name,
+    branchCode: branch.code,
+    branchName: branch.name,
+    department: department?.name,
+    scopes: [{
+      scopeType: department ? branchScopeTypeForRole(user.primaryRole) : "BRANCH",
+      orgUnitId: branch.id,
+      orgUnitCode: branch.code,
+      clusterName: cluster.name,
+      branchName: branch.name,
+      ...department ? { departmentName: department.name } : {}
+    }]
+  };
+}
+function hasUserAssignmentUpdate(input) {
+  return ["internalTeamId", "teamRole", "clusterId", "clusterName", "branchCode", "departmentId", "department"].some((key) => Object.prototype.hasOwnProperty.call(input, key));
+}
+function adminUsersResponse() {
   const unitById = new Map(orgUnits.map((unit) => [unit.id, unit]));
   const branchByCode = new Map(
     orgUnits.filter((unit) => unit.type === "BRANCH").map((unit) => [unit.code, unit])
@@ -7253,34 +7641,25 @@ app.get("/api/v1/admin/users", async (req) => {
       clusterName: cluster?.name ?? user.clusterName
     };
   });
+}
+app.get("/api/v1/admin/users", async (req) => {
+  requireCatalogManager(getCurrentUser(req));
+  return adminUsersResponse();
+});
+app.get("/api/v1/admin/bootstrap", async (req) => {
+  requireCatalogManager(getCurrentUser(req));
+  const lookup = buildOrgUnitLookup();
+  return {
+    users: adminUsersResponse(),
+    orgUnits: orgUnits.map((unit) => projectOrgUnit(unit, lookup)),
+    channels: reportChannels
+  };
 });
 async function createUserAccount(req, body) {
   if (appUsers.some((user) => user.email.toLowerCase() === body.email.toLowerCase())) {
     throw new HttpProblem(409, "USER_EMAIL_EXISTS", "Email \u0111\xE3 \u0111\u01B0\u1EE3c s\u1EED d\u1EE5ng", "\u0110\xE3 t\u1ED3n t\u1EA1i t\xE0i kho\u1EA3n v\u1EDBi email n\xE0y.");
   }
-  const internalTeam = body.internalTeamId ? orgUnits.find((unit) => unit.id === body.internalTeamId && unit.type === "INTERNAL_TEAM" && unit.isActive) : void 0;
-  if (body.internalTeamId && !internalTeam) {
-    throw new HttpProblem(422, "INTERNAL_TEAM_INVALID", "Nh\xF3m n\u1ED9i b\u1ED9 kh\xF4ng h\u1EE3p l\u1EC7", "Nh\xF3m n\u1ED9i b\u1ED9 kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c \u0111\xE3 ng\u1EEBng ho\u1EA1t \u0111\u1ED9ng.");
-  }
-  if (body.teamRole === "LEAD" && appUsers.some((user) => user.isActive && user.internalTeamId === body.internalTeamId && user.teamRole === "LEAD")) {
-    throw new HttpProblem(409, "INTERNAL_TEAM_LEAD_EXISTS", "Nh\xF3m \u0111\xE3 c\xF3 tr\u01B0\u1EDFng nh\xF3m", "M\u1ED7i nh\xF3m ch\u1EC9 c\xF3 m\u1ED9t Tr\u01B0\u1EDFng nh\xF3m ki\u1EC3m so\xE1t \u0111ang ho\u1EA1t \u0111\u1ED9ng.");
-  }
-  const branch = body.branchCode ? orgUnits.find((unit) => unit.code === body.branchCode && unit.type === "BRANCH" && unit.isActive) : void 0;
-  const cluster = branch ? orgUnits.find((unit) => unit.id === branch.parentId && unit.type === "CLUSTER" && unit.isActive) : void 0;
-  const department = branch && body.department ? orgUnits.find((unit) => unit.parentId === branch.id && unit.type === "DEPARTMENT" && unit.name === body.department && unit.isActive) : void 0;
-  if (body.portal === "BRANCH" && (!branch || !cluster || !department)) {
-    throw new HttpProblem(422, "BRANCH_ASSIGNMENT_INVALID", "Ph\xE2n c\xF4ng chi nh\xE1nh kh\xF4ng h\u1EE3p l\u1EC7", "Chi nh\xE1nh ho\u1EB7c Ph\xF2ng/PGD kh\xF4ng t\u1ED3n t\u1EA1i trong C\u1EE5m \u0111\u1ECBa b\xE0n \u0111\xE3 c\u1EA5u h\xECnh.");
-  }
-  const scopes = ["BRANCH_INPUT", "BRANCH_CONTROLLER", "BRANCH_LEADER"].includes(body.primaryRole) ? [{
-    // Capture staff are confined to their Phòng/PGD; reviewers keep the whole branch.
-    // This used to be hard-coded to BRANCH, so departmentName was stored and never enforced.
-    scopeType: branchScopeTypeForRole(body.primaryRole),
-    orgUnitId: branch?.id,
-    orgUnitCode: branch?.code,
-    clusterName: cluster?.name,
-    branchName: branch?.name,
-    departmentName: department?.name
-  }] : ["ADMIN", "SUPERVISOR", "INTERNAL_APPROVER", "INTERNAL_OFFICER"].includes(body.primaryRole) ? [{ scopeType: "ALL" }] : [];
+  const assignment = resolveUserAssignment({ id: `new-${crypto6.randomUUID()}`, portal: body.portal, primaryRole: body.primaryRole }, body);
   const newUser = {
     id: `user-${crypto6.randomUUID()}`,
     username: body.username || body.email.split("@")[0],
@@ -7294,16 +7673,8 @@ async function createUserAccount(req, body) {
     // Every account carries a CoPlus code so the UI can name its role the way the handbook does;
     // fall back to the closest match when the caller did not state one.
     coplusRole: body.coplusRole ?? inferCoPlusRole(body.roles),
-    orgUnitId: internalTeam?.id ?? department?.id,
-    internalTeamId: internalTeam?.id,
-    internalTeamName: internalTeam?.name,
-    teamRole: body.teamRole,
-    clusterName: cluster?.name,
-    branchCode: branch?.code,
-    branchName: branch?.name,
-    department: department?.name,
-    isActive: body.isActive,
-    scopes
+    ...assignment,
+    isActive: body.isActive
   };
   const normalizedUsername = newUser.username.toLocaleLowerCase("vi-VN");
   if (credentialDirectory.some((item) => item.username === normalizedUsername)) {
@@ -7339,10 +7710,13 @@ async function createUserAccount(req, body) {
     subject: newUser.username,
     detail: `C\u1EA5p t\xE0i kho\u1EA3n ${newUser.fullName} v\u1EDBi vai tr\xF2 ${newUser.roles.join(", ")} (${newUser.portal}).`
   });
-  if (internalTeam && body.teamRole === "LEAD") {
-    internalTeam.leaderUserId = newUser.id;
-    internalTeam.leaderName = newUser.fullName;
-    internalTeam.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+  if (newUser.internalTeamId && newUser.teamRole === "LEAD") {
+    const internalTeam = orgUnits.find((unit) => unit.id === newUser.internalTeamId);
+    if (internalTeam) {
+      internalTeam.leaderUserId = newUser.id;
+      internalTeam.leaderName = newUser.fullName;
+      internalTeam.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    }
   }
   return { user: newUser, temporaryPassword };
 }
@@ -7393,6 +7767,16 @@ app.patch("/api/v1/admin/users/:id", async (req) => {
   if (body.username && appUsers.some((item) => item.id !== user.id && item.username.toLocaleLowerCase("vi-VN") === body.username.toLocaleLowerCase("vi-VN"))) {
     throw new HttpProblem(409, "USER_NAME_EXISTS", "T\xEAn \u0111\u0103ng nh\u1EADp \u0111\xE3 t\u1ED3n t\u1EA1i", "Ch\u1ECDn m\u1ED9t t\xEAn \u0111\u0103ng nh\u1EADp kh\xE1c.");
   }
+  const previousTeamId = user.internalTeamId;
+  const assignmentInput = hasUserAssignmentUpdate(body) ? body : {
+    internalTeamId: user.internalTeamId,
+    teamRole: user.teamRole,
+    clusterId: user.branchCode ? orgUnits.find((unit) => unit.type === "BRANCH" && unit.code === user.branchCode)?.parentId : void 0,
+    clusterName: user.branchCode ? void 0 : user.clusterName,
+    branchCode: user.branchCode,
+    department: user.department
+  };
+  const assignment = resolveUserAssignment(user, assignmentInput);
   if (process.env.AUTH_MODE === "supabase" && supabaseAuthAdapter && user.authUserId) {
     await supabaseAuthAdapter.updateUser(user.authUserId, {
       ...body.email ? { email: body.email.toLocaleLowerCase("en-US"), email_confirm: true } : {},
@@ -7407,7 +7791,24 @@ app.patch("/api/v1/admin/users/:id", async (req) => {
   if (body.googleWorkspaceEmail !== void 0) {
     user.googleWorkspaceEmail = body.googleWorkspaceEmail ? body.googleWorkspaceEmail.toLocaleLowerCase("en-US") : void 0;
   }
+  Object.assign(user, assignment);
   if (body.isActive !== void 0) user.isActive = body.isActive;
+  if (previousTeamId && (previousTeamId !== user.internalTeamId || user.teamRole !== "LEAD")) {
+    const previousTeam = orgUnits.find((unit) => unit.id === previousTeamId);
+    if (previousTeam?.leaderUserId === user.id) {
+      previousTeam.leaderUserId = void 0;
+      previousTeam.leaderName = void 0;
+      previousTeam.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    }
+  }
+  if (user.internalTeamId && user.teamRole === "LEAD") {
+    const nextTeam = orgUnits.find((unit) => unit.id === user.internalTeamId);
+    if (nextTeam) {
+      nextTeam.leaderUserId = user.id;
+      nextTeam.leaderName = user.fullName;
+      nextTeam.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+    }
+  }
   if (body.isActive === false) {
     const revokedSessions = authSessionStore.revokeAllForUser(user.id);
     authSessions = authSessionStore.records();
@@ -8073,7 +8474,7 @@ app.get("/api/v1/customers/:cif/case", async (req) => {
 });
 app.post("/api/v1/findings", async (req) => {
   const user = getCurrentUser(req);
-  requireRoles(user, ["ADMIN", "INTERNAL_OFFICER"]);
+  requireAppCapability(user, "CREATE_FINDING");
   const b = WebFormFindingSchema.parse(req.body);
   const newFinding = createFindingFromDto(b, user, `find-${crypto6.randomUUID()}`);
   await ensureFindingDriveFolder(newFinding);
@@ -8095,7 +8496,7 @@ app.get("/api/v1/imports/batches", async (req) => {
 });
 app.post("/api/v1/imports/findings", async (req, reply) => {
   const user = getCurrentUser(req);
-  requireRoles(user, ["ADMIN", "INTERNAL_OFFICER", "SUPERVISOR"]);
+  requireAppCapability(user, "IMPORT_FINDINGS");
   const batch = BulkFindingImportSchema.parse(req.body);
   const idempotency = batch.sourceType === "API_BULK" ? void 0 : await idempotencyContext(req, user, batch);
   const replay = idempotency?.replay;
@@ -8652,8 +9053,8 @@ app.get("/api/v1/evidence/:driveFileId/content", async (req, reply) => {
   await flushSecurityEvents();
   return reply.send(result.stream);
 });
-function getDashboardSummaryForUser(user, query = {}) {
-  const scoped = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
+async function getDashboardSummaryForUser(user, query = {}) {
+  const scoped = await readScopedFindingsForAnalytics(user, query);
   const active = scoped.filter((f) => f.workflowStatus !== "WAIVED_RESOLVED");
   const resolved = scoped.filter((f) => f.workflowStatus === "WAIVED_RESOLVED");
   const totalExposure = scoped.reduce((acc, f) => acc + (f.exposureAmount || 0), 0);
@@ -8687,7 +9088,7 @@ app.get("/api/v1/bootstrap", async (req) => {
     channels: reportChannels.filter((channel) => channel.isActive),
     campaigns: auditCampaigns.filter((campaign) => canAccessCampaign(user, campaign)),
     branches: getScopedBranchesForUser(user),
-    summary: getDashboardSummaryForUser(user),
+    summary: await getDashboardSummaryForUser(user),
     work: getMyWorkForUser(user)
   };
 });
@@ -8778,26 +9179,26 @@ app.put("/api/v1/admin/report-catalog", async (req) => {
   return normalizedReportCatalogConfiguration();
 });
 app.get("/api/v1/reports/catalog", async (req) => {
-  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
   return buildReportCatalog(scoped);
 });
 app.post("/api/v1/reports/runs", async (req) => {
   const query = ReportRunRequestSchema.parse(req.body);
   assertReportConfigurationAvailable(query);
-  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
   return executeReportRun(scoped, query);
 });
 app.post("/api/v1/reports/drill", async (req) => {
   const request = ReportDrillRequestSchema.parse(req.body);
   assertReportConfigurationAvailable(request.query);
-  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
   return executeReportDrill(scoped, request);
 });
 app.post("/api/v1/reports/exports", async (req, reply) => {
   const exportingUser = getCurrentUser(req);
   const request = ReportExportRequestSchema.parse(req.body);
   assertReportConfigurationAvailable(request.query, request.columns);
-  const scoped = filterFindingsByScope(findings, exportingUser);
+  const scoped = await readScopedFindingsForAnalytics(exportingUser);
   const rows = applyCanonicalReportRules(scoped, request.query.rules, request.query.match);
   if (rows.length > REPORT_EXPORT_MAX_ROWS) {
     throw new HttpProblem(
@@ -8908,7 +9309,7 @@ app.post("/api/v1/reports/exports", async (req, reply) => {
 });
 app.get("/api/v1/reports/summary", async (req) => {
   const filters = ReportFilterSchema.parse(req.query);
-  const scoped = applyReportFilters(filterFindingsByScope(findings, getCurrentUser(req)), filters);
+  const scoped = applyReportFilters(await readScopedFindingsForAnalytics(getCurrentUser(req)), filters);
   const breakdown = (keyOf, labelOf) => {
     const groups = /* @__PURE__ */ new Map();
     for (const finding of scoped) {
@@ -8937,7 +9338,7 @@ app.get("/api/v1/reports/summary", async (req) => {
 app.get("/api/v1/reports/findings.csv", async (req, reply) => {
   const exportingUser = getCurrentUser(req);
   const filters = ReportFilterSchema.parse(req.query);
-  const scoped = applyReportFilters(filterFindingsByScope(findings, exportingUser), filters);
+  const scoped = applyReportFilters(await readScopedFindingsForAnalytics(exportingUser), filters);
   if (scoped.length > REPORT_EXPORT_MAX_ROWS) {
     throw new HttpProblem(
       422,

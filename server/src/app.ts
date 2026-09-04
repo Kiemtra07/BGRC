@@ -99,6 +99,8 @@ import {
   AuditCampaign,
   CreateAuditCampaignSchema,
   UpdateAuditCampaignSchema,
+  APP_CAPABILITY_ROLES,
+  hasAppCapability,
 } from '../../shared/contracts';
 import { workflowService } from './modules/workflow/workflow-service';
 import { EvidenceStorageStatus, googleDriveService } from './adapters/google-drive';
@@ -113,6 +115,8 @@ import type { PostgresPoolLike } from './repositories/postgres-state';
 import { PostgresWorkflowEventLedger } from './repositories/workflow-event-ledger';
 import { PostgresSecurityEventLedger } from './repositories/security-event-ledger';
 import { PostgresFindingRecords } from './repositories/finding-records';
+import { flushPendingEventIds } from './state/security-event-queue';
+import { cascadeOrgUnitChange } from './modules/org-unit-cascade';
 import {
   IdempotencyRecord,
   IdempotencyStore,
@@ -215,12 +219,14 @@ const publicPaths = new Set([
   '/api/v1/ready',
   '/api/v1/auth/login',
   '/api/v1/auth/logout',
+  '/api/v1/auth/refresh',
   '/api/v1/auth/forgot-password',
   '/api/v1/auth/google',
   '/api/v1/auth/google/callback',
   internalSlaPath,
 ]);
 const requestUsers = new WeakMap<FastifyRequest, UserProfile>();
+const idempotencyRequests = new WeakMap<FastifyRequest, { cacheKey: string; requestHash: string; claimed: boolean }>();
 let authSessionStore: AuthSessionStore;
 const supabaseAuthAdapter: SupabaseAuthAdapter | undefined = process.env.AUTH_MODE === 'supabase'
   && process.env.SUPABASE_URL
@@ -1266,6 +1272,17 @@ const idempotencyStore: IdempotencyStore = usesPostgresIdempotency
   ? new PostgresIdempotencyStore(pool as unknown as PostgresPoolLike)
   : new MemoryIdempotencyStore(() => idempotencyRecords as Record<string, IdempotencyRecord>);
 
+app.addHook('onError', async (request) => {
+  const context = idempotencyRequests.get(request);
+  if (!context?.claimed) return;
+  context.claimed = false;
+  try {
+    await idempotencyStore.release(context.cacheKey, context.requestHash);
+  } catch (error) {
+    request.log.error({ err: error }, 'Không thể giải phóng Idempotency-Key sau khi request lỗi.');
+  }
+});
+
 const hydratedState = await stateRepository.load({
   orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
   importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows,
@@ -1419,15 +1436,21 @@ function applyBranchScopeProjection(): void {
     const scopes = hasPersistedScopes ? user.scopes : [];
     if (user.portal !== 'BRANCH') return hasPersistedScopes ? user : { ...user, scopes };
     const expected = branchScopeTypeForRole(user.primaryRole);
-    const needsChange = scopes.some(scope => (
-      (scope.scopeType === 'BRANCH' || scope.scopeType === 'DEPARTMENT') && scope.scopeType !== expected
-    )) || !hasPersistedScopes;
+    const needsChange = scopes.some(scope => {
+      if (scope.scopeType !== 'BRANCH' && scope.scopeType !== 'DEPARTMENT') return false;
+      const partialBranchScope = scope.scopeType === 'BRANCH' && !scope.departmentName && !user.department;
+      return scope.scopeType !== (partialBranchScope ? 'BRANCH' : expected);
+    }) || !hasPersistedScopes;
     if (!needsChange) return user;
     return {
       ...user,
       scopes: scopes.map(scope => (
         scope.scopeType === 'BRANCH' || scope.scopeType === 'DEPARTMENT'
-          ? { ...scope, scopeType: expected, departmentName: scope.departmentName ?? user.department }
+          ? {
+            ...scope,
+            scopeType: scope.scopeType === 'BRANCH' && !scope.departmentName && !user.department ? 'BRANCH' : expected,
+            departmentName: scope.departmentName ?? user.department,
+          }
           : scope
       )),
     };
@@ -2055,15 +2078,9 @@ function recordSecurityEvent(event: Omit<SecurityEvent, 'id' | 'occurredAt'>): v
  */
 async function appendPendingSecurityEvents(): Promise<void> {
   if (!securityEventLedger || pendingSecurityEvents.length === 0) return;
-  const flushing = structuredClone(pendingSecurityEvents);
-  const flushedIds = new Set(flushing.map(event => event.id));
-  try {
-    await securityEventLedger.append(flushing);
-  } finally {
-    // Dù ghi hỏng cũng bỏ khỏi hàng chờ: giữ lại thì mỗi lần gọi sau lại thử ghi cả đống cũ, và
-    // hàng chờ chỉ có thể dài ra. Sự kiện vẫn còn trong mảng bộ nhớ để màn hình Nhật ký đọc được.
-    pendingSecurityEvents = pendingSecurityEvents.filter(event => !flushedIds.has(event.id));
-  }
+  const flushedIds = await flushPendingEventIds(pendingSecurityEvents, events => securityEventLedger.append(events));
+  // Chỉ bỏ những event đã được append thành công; event mới chen vào trong lúc await vẫn còn nguyên.
+  pendingSecurityEvents = pendingSecurityEvents.filter(event => !flushedIds.has(event.id));
 }
 
 /**
@@ -2175,6 +2192,13 @@ function filterFindingsByScope(items: Finding[], user: UserProfile): Finding[] {
   return items.filter(finding => hasFindingAccess(user, finding));
 }
 
+async function readScopedFindingsForAnalytics(user: UserProfile, query: Record<string, string | undefined> = {}): Promise<Finding[]> {
+  if (findingsReadPath === 'sql' && findingRecords) {
+    return findingRecords.listAll({ user, query });
+  }
+  return applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
+}
+
 function getScopedFindingOrThrow(id: string, user: UserProfile): Finding {
   const finding = findings.find(item => item.id === id);
   if (!finding || !hasFindingAccess(user, finding)) {
@@ -2194,10 +2218,10 @@ function approvalCandidatesForFinding(finding: Finding) {
 
 /**
  * Suy tuyến duyệt tự động khi chi nhánh nộp hồ sơ: người kiểm soát và (khi cần) lãnh đạo chi nhánh
- * lấy theo vai trò trong phạm vi chi nhánh của hồ sơ; người duyệt Hội sở để trống để resolve theo
- * phân quyền nội bộ. `requiresBranchLeaderApproval` suy từ dấu sao (isSpecialCase) hoặc loại báo cáo
- * ba cấp. Thiếu người theo scope thì để trống — bước đó chạy theo phân quyền như mặc định, không
- * chặn nộp hồ sơ.
+ * lấy theo vai trò trong phạm vi chi nhánh của hồ sơ; người duyệt Hội sở resolve theo phân quyền
+ * nội bộ ở bước tiếp theo. `requiresBranchLeaderApproval` suy từ dấu sao (isSpecialCase) hoặc loại
+ * báo cáo ba cấp. Nếu thiếu người bắt buộc, không tạo tuyến duyệt nửa vời mà trả lỗi để quản trị viên
+ * bổ sung người phụ trách trước khi hồ sơ đi vào hàng đợi.
  */
 function resolveApprovalRoute(
   finding: Finding,
@@ -2208,9 +2232,14 @@ function resolveApprovalRoute(
   const requiresBranchLeaderApproval = workflowType === 'THREE_TIER' || Boolean(finding.isSpecialCase);
   const pick = (users: UserProfile[]): string | undefined =>
     (users.find(user => user.id !== actor.id) ?? users[0])?.id;
+  const branchControllerUserId = pick(candidates.branchControllers);
+  const branchLeaderUserId = requiresBranchLeaderApproval ? pick(candidates.branchLeaders) : undefined;
+  if (!branchControllerUserId || (requiresBranchLeaderApproval && !branchLeaderUserId)) {
+    throw new HttpProblem(409, 'APPROVAL_ROUTE_UNRESOLVED', 'Chưa xác định được tuyến duyệt', 'Chi nhánh chưa có người kiểm soát hoặc lãnh đạo phù hợp để nhận hồ sơ. Hãy bổ sung người phụ trách trước khi nộp.');
+  }
   return {
-    branchControllerUserId: pick(candidates.branchControllers),
-    branchLeaderUserId: requiresBranchLeaderApproval ? pick(candidates.branchLeaders) : undefined,
+    branchControllerUserId,
+    branchLeaderUserId,
     internalApproverUserId: undefined,
     requiresBranchLeaderApproval,
     assignedByUserId: actor.id,
@@ -2449,7 +2478,22 @@ function createFindingFromDto(dto: WebFormFindingDTO, user: UserProfile, id = `f
   const evaluation = slaWorker.evaluateFindingSla(newFinding, nowDate);
   newFinding.slaStatus = evaluation.slaStatus;
   newFinding.isOverdue = evaluation.isOverdue;
+  assertFindingCreationAccess(user, newFinding);
   return newFinding;
+}
+
+function assertFindingCreationAccess(user: UserProfile, finding: Finding): void {
+  if (user.roles.includes('ADMIN')) return;
+  if (user.scopes.length === 0) {
+    throw new HttpProblem(403, 'USER_ASSIGNMENT_REQUIRED', 'Tài khoản chưa được phân luồng', 'Tài khoản đã tạo nhưng chưa được phân vào nhóm, cụm, chi nhánh hoặc phòng ban nên chưa thể tạo hồ sơ.');
+  }
+  if (!hasFindingAccess(user, finding)) {
+    throw new HttpProblem(403, 'FINDING_SCOPE_FORBIDDEN', 'Ngoài phạm vi dữ liệu', 'Hồ sơ thuộc cụm, chi nhánh hoặc phòng ban ngoài phạm vi được phân công.');
+  }
+  const campaign = auditCampaigns.find(item => item.id === finding.campaignId);
+  if (campaign && !canAccessCampaign(user, campaign)) {
+    throw new HttpProblem(403, 'CAMPAIGN_NOT_AVAILABLE', 'Chuyên đề chưa được phân công', 'Tài khoản chưa được cấp quyền trên chuyên đề này.');
+  }
 }
 
 async function ensureFindingDriveFolder(finding: Finding): Promise<void> {
@@ -2805,6 +2849,7 @@ interface IdempotencyContext<T> {
   method: string;
   path: string;
   replay?: T;
+  claimed?: boolean;
 }
 
 async function idempotencyContext<T = Finding>(
@@ -2824,21 +2869,29 @@ async function idempotencyContext<T = Finding>(
   const path = request.url.split('?')[0];
   const cacheKey = `${user.id}:${request.method}:${request.url}:${key}`;
   const requestHash = crypto.createHash('sha256').update(JSON.stringify(body)).digest('hex');
-  const existing = await idempotencyStore.get(cacheKey);
-  if (existing && existing.requestHash !== requestHash) {
+  const claim = await idempotencyStore.claim(cacheKey, requestHash, { method: request.method, path });
+  if (claim.state === 'CONFLICT') {
     throw new HttpProblem(409, 'IDEMPOTENCY_CONFLICT', 'Xung đột Idempotency-Key', 'Idempotency-Key đã được dùng với nội dung yêu cầu khác.');
   }
-  return {
-    cacheKey,
-    requestHash,
-    method: request.method,
-    path,
-    replay: existing ? structuredClone(existing.response) as T : undefined,
-  };
+  if (claim.state === 'IN_PROGRESS') {
+    throw new HttpProblem(409, 'IDEMPOTENCY_IN_PROGRESS', 'Yêu cầu đang được xử lý', 'Một yêu cầu cùng Idempotency-Key đang xử lý. Hãy chờ kết quả hoặc dùng khóa mới cho nội dung khác.');
+  }
+  if (claim.state === 'REPLAY') {
+    return {
+      cacheKey,
+      requestHash,
+      method: request.method,
+      path,
+      replay: structuredClone(claim.record.response) as T,
+    };
+  }
+  const context = { cacheKey, requestHash, method: request.method, path, claimed: true };
+  idempotencyRequests.set(request, context);
+  return context;
 }
 
 async function rememberIdempotentResponse<T>(
-  context: { cacheKey?: string; requestHash?: string; method?: string; path?: string },
+  context: { cacheKey?: string; requestHash?: string; method?: string; path?: string; claimed?: boolean },
   response: T,
   status = 200,
 ): Promise<void> {
@@ -2848,6 +2901,7 @@ async function rememberIdempotentResponse<T>(
     { requestHash: context.requestHash, response: structuredClone(response) },
     { method: context.method ?? 'POST', path: context.path ?? '', status },
   );
+  context.claimed = false;
 }
 
 // ----------------------------------------------------
@@ -2890,7 +2944,9 @@ export function buildReadinessPayload(
       ? ` Google Drive chưa sẵn sàng. ${diagnostic(evidenceStorage.warning, 'Adapter API v3 chưa được cài đặt.')} Hệ thống không fallback local.`
       : ` Chế độ lưu minh chứng không hợp lệ. ${diagnostic(evidenceStorage.warning, 'Cần cấu hình EVIDENCE_STORAGE_MODE hợp lệ.')} Hệ thống không fallback local.`;
   const ready = !postgresUnavailable && evidenceStorage.ready;
-  const message = `${dataStoreMessage}${evidenceMessage} Chưa phải trạng thái production-ready.`;
+  const message = ready
+    ? `${dataStoreMessage}${evidenceMessage} Các dependency chính đã sẵn sàng.`
+    : `${dataStoreMessage}${evidenceMessage} Chưa đủ điều kiện phục vụ production.`;
   // Chỉ nhánh Postgres của StateRepositoryStatus mới có trường warning, nên phải hỏi trước khi đọc.
   const redactedDataStore: StateRepositoryStatus = includeDiagnostics
     || !('warning' in dataStore) || dataStore.warning === undefined
@@ -2900,7 +2956,7 @@ export function buildReadinessPayload(
     ? evidenceStorage
     : { ...evidenceStorage, warning: REDACTED_DIAGNOSTIC };
   return {
-    status: 'DEGRADED' as const,
+    status: ready ? 'READY' as const : 'DEGRADED' as const,
     ready,
     checks: {
       dataStore: redactedDataStore,
@@ -3303,10 +3359,16 @@ app.get('/api/v1/campaigns', async (req) => {
   return auditCampaigns.filter(campaign => canAccessCampaign(user, campaign));
 });
 
-const catalogManagerRoles = ['ADMIN', 'SUPERVISOR', 'INTERNAL_APPROVER', 'INTERNAL_OFFICER'] as const;
+const catalogManagerRoles = APP_CAPABILITY_ROLES.CONFIGURE_CATALOG;
 
 function requireCatalogManager(user: UserProfile): void {
-  requireRoles(user, [...catalogManagerRoles]);
+  if (!hasAppCapability(user.roles, 'CONFIGURE_CATALOG')) requireRoles(user, [...catalogManagerRoles]);
+}
+
+function requireAppCapability(user: UserProfile, capability: 'CREATE_FINDING' | 'IMPORT_FINDINGS'): void {
+  if (!hasAppCapability(user.roles, capability)) {
+    requireRoles(user, [...APP_CAPABILITY_ROLES[capability]]);
+  }
 }
 
 app.post('/api/v1/admin/campaigns', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
@@ -3616,7 +3678,7 @@ app.patch('/api/v1/admin/org-units/:id', async (req: FastifyRequest<{ Params: { 
     if (references.length) throw new HttpProblem(409, 'ORG_UNIT_HAS_DEPENDENCIES', 'Chưa thể ngừng hoạt động đơn vị', `Hãy xử lý ${references.join(', ')} trước khi ngừng hoạt động đơn vị.`);
   }
   const { expectedUpdatedAt: _expectedUpdatedAt, ...changes } = body;
-  orgUnits[index] = {
+  const updatedUnit: OrgUnit = {
     ...current,
     ...changes,
     parentId: nextParentId,
@@ -3624,6 +3686,16 @@ app.patch('/api/v1/admin/org-units/:id', async (req: FastifyRequest<{ Params: { 
     metadata: body.metadata === null ? undefined : body.metadata ?? current.metadata,
     updatedAt: new Date().toISOString(),
   };
+  cascadeOrgUnitChange(current, updatedUnit, {
+    orgUnits,
+    users: appUsers,
+    findings,
+    campaigns: auditCampaigns,
+    acceptedTargets: workspaceAccepted,
+    watchTargets: workspaceWatchTargets,
+    now: updatedUnit.updatedAt,
+  });
+  orgUnits[index] = updatedUnit;
   await persistLocalState();
   return projectOrgUnit(orgUnits[index]);
 });
@@ -3646,8 +3718,196 @@ app.delete('/api/v1/admin/org-units/:id', async (req: FastifyRequest<{ Params: {
 });
 
 // Admin: Users
-app.get('/api/v1/admin/users', async (req) => {
-  requireCatalogManager(getCurrentUser(req));
+type UserAssignmentInput = {
+  internalTeamId?: string | null;
+  teamRole?: 'MEMBER' | 'LEAD' | null;
+  clusterId?: string | null;
+  clusterName?: string | null;
+  branchCode?: string | null;
+  departmentId?: string | null;
+  department?: string | null;
+};
+
+type UserAssignmentProjection = Pick<UserProfile, 'orgUnitId' | 'internalTeamId' | 'internalTeamName' | 'teamRole' | 'clusterName' | 'branchCode' | 'branchName' | 'department' | 'scopes'>;
+
+function invalidUserAssignment(detail: string, code = 'USER_ASSIGNMENT_INVALID'): never {
+  throw new HttpProblem(422, code, 'Phân luồng người dùng không hợp lệ', detail);
+}
+
+function resolveUserAssignment(user: Pick<UserProfile, 'id' | 'portal' | 'primaryRole'>, input: UserAssignmentInput): UserAssignmentProjection {
+  const internalTeamId = input.internalTeamId || undefined;
+  const clusterId = input.clusterId || undefined;
+  const clusterName = input.clusterName || undefined;
+  const branchCode = input.branchCode || undefined;
+  const departmentId = input.departmentId || undefined;
+  const departmentName = input.department || undefined;
+  const hasBranchAssignment = Boolean(clusterId || clusterName || branchCode || departmentId || departmentName);
+
+  if (user.portal === 'INTERNAL') {
+    if (hasBranchAssignment) invalidUserAssignment('Tài khoản nội bộ chỉ được phân vào Nhóm nội bộ.');
+    if (!internalTeamId) {
+      if (input.teamRole) invalidUserAssignment('Không thể đặt vai trò nhóm khi chưa chọn Nhóm nội bộ.');
+      return {
+        orgUnitId: undefined,
+        internalTeamId: undefined,
+        internalTeamName: undefined,
+        teamRole: undefined,
+        clusterName: undefined,
+        branchCode: undefined,
+        branchName: undefined,
+        department: undefined,
+        scopes: ['ADMIN', 'SUPERVISOR'].includes(user.primaryRole) ? [{ scopeType: 'ALL' }] : [],
+      };
+    }
+
+    const internalTeam = orgUnits.find(unit => unit.id === internalTeamId && unit.type === 'INTERNAL_TEAM' && unit.isActive);
+    if (!internalTeam) invalidUserAssignment('Nhóm nội bộ không tồn tại hoặc đã ngừng hoạt động.', 'INTERNAL_TEAM_INVALID');
+    const expectedTeamRole = user.primaryRole === 'INTERNAL_APPROVER'
+      ? 'LEAD'
+      : user.primaryRole === 'INTERNAL_OFFICER' ? 'MEMBER' : input.teamRole ?? undefined;
+    if (expectedTeamRole && input.teamRole !== expectedTeamRole) {
+      invalidUserAssignment(`Vai trò nhóm của ${user.primaryRole} phải là ${expectedTeamRole}.`);
+    }
+    if (expectedTeamRole === 'LEAD' && appUsers.some(candidate => (
+      candidate.id !== user.id && candidate.isActive && candidate.internalTeamId === internalTeam.id && candidate.teamRole === 'LEAD'
+    ))) {
+      throw new HttpProblem(409, 'INTERNAL_TEAM_LEAD_EXISTS', 'Nhóm đã có trưởng nhóm', 'Mỗi nhóm chỉ có một Trưởng nhóm kiểm soát đang hoạt động.');
+    }
+    return {
+      orgUnitId: internalTeam.id,
+      internalTeamId: internalTeam.id,
+      internalTeamName: internalTeam.name,
+      teamRole: expectedTeamRole,
+      clusterName: undefined,
+      branchCode: undefined,
+      branchName: undefined,
+      department: undefined,
+      scopes: [{ scopeType: 'ALL' }],
+    };
+  }
+
+  if (internalTeamId || input.teamRole) invalidUserAssignment('Tài khoản chi nhánh không được phân vào Nhóm nội bộ.');
+  if (!hasBranchAssignment) {
+    return {
+      orgUnitId: undefined,
+      internalTeamId: undefined,
+      internalTeamName: undefined,
+      teamRole: undefined,
+      clusterName: undefined,
+      branchCode: undefined,
+      branchName: undefined,
+      department: undefined,
+      scopes: [],
+    };
+  }
+
+  if (departmentName && !branchCode && !departmentId) {
+    invalidUserAssignment('Phòng / PGD phải đi cùng Chi nhánh hoặc departmentId để xác định địa bàn.');
+  }
+
+  const sameName = (left: string | undefined, right: string | undefined): boolean => (
+    left !== undefined && right !== undefined && left.toLocaleLowerCase('vi-VN') === right.toLocaleLowerCase('vi-VN')
+  );
+  const requestedCluster = clusterId
+    ? orgUnits.find(unit => unit.id === clusterId && unit.type === 'CLUSTER' && unit.isActive)
+    : !branchCode && !departmentId && clusterName
+      ? orgUnits.find(unit => unit.type === 'CLUSTER' && unit.isActive && sameName(unit.name, clusterName))
+      : undefined;
+  if ((clusterId || (!branchCode && !departmentId && clusterName)) && !requestedCluster) {
+    invalidUserAssignment('Cụm địa bàn không tồn tại hoặc đã ngừng hoạt động.', 'CLUSTER_ASSIGNMENT_INVALID');
+  }
+
+  let branch = branchCode
+    ? orgUnits.find(unit => unit.code === branchCode && unit.type === 'BRANCH' && unit.isActive)
+    : undefined;
+  let cluster = requestedCluster;
+  if (branch) {
+    const branchCluster = orgUnits.find(unit => unit.id === branch!.parentId && unit.type === 'CLUSTER' && unit.isActive);
+    if (!branchCluster || (cluster && branchCluster.id !== cluster.id)) {
+      invalidUserAssignment('Chi nhánh không thuộc Cụm địa bàn đã chọn.', 'BRANCH_ASSIGNMENT_INVALID');
+    }
+    cluster = branchCluster;
+  }
+
+  const requestedDepartment = departmentId
+    ? orgUnits.find(unit => unit.id === departmentId && unit.type === 'DEPARTMENT' && unit.isActive)
+    : undefined;
+  if (departmentId && !requestedDepartment) {
+    invalidUserAssignment('Phòng / PGD không tồn tại hoặc đã ngừng hoạt động.', 'DEPARTMENT_ASSIGNMENT_INVALID');
+  }
+  if (requestedDepartment) {
+    const departmentBranch = orgUnits.find(unit => unit.id === requestedDepartment.parentId && unit.type === 'BRANCH' && unit.isActive);
+    const departmentCluster = departmentBranch?.parentId
+      ? orgUnits.find(unit => unit.id === departmentBranch.parentId && unit.type === 'CLUSTER' && unit.isActive)
+      : undefined;
+    if (!departmentBranch || !departmentCluster || (branch && departmentBranch.id !== branch.id) || (cluster && departmentCluster.id !== cluster.id)) {
+      invalidUserAssignment('Phòng / PGD không thuộc Chi nhánh và Cụm địa bàn đã chọn.', 'BRANCH_ASSIGNMENT_INVALID');
+    }
+    branch = departmentBranch;
+    cluster = departmentCluster;
+  }
+
+  if (!branch && (branchCode || departmentName)) {
+    invalidUserAssignment('Chi nhánh không tồn tại hoặc đã ngừng hoạt động.', 'BRANCH_ASSIGNMENT_INVALID');
+  }
+
+  const department = departmentId
+    ? requestedDepartment
+    : departmentName
+      ? orgUnits.find(unit => unit.parentId === branch?.id && unit.type === 'DEPARTMENT' && sameName(unit.name, departmentName) && unit.isActive)
+      : undefined;
+  if (departmentName && (!department || !sameName(department.name, departmentName))) {
+    invalidUserAssignment('Phòng / PGD không tồn tại trong Chi nhánh đã chọn.', 'DEPARTMENT_ASSIGNMENT_INVALID');
+  }
+  if (!cluster && !branch && !department) {
+    // This is a valid account-first state only when the caller supplied no routing data. Any
+    // non-empty assignment input must resolve to at least a cluster.
+    invalidUserAssignment('Không thể xác định Cụm địa bàn từ thông tin phân luồng.', 'CLUSTER_ASSIGNMENT_INVALID');
+  }
+
+  if (cluster && !branch && !department) {
+    return {
+      orgUnitId: cluster.id,
+      internalTeamId: undefined,
+      internalTeamName: undefined,
+      teamRole: undefined,
+      clusterName: cluster.name,
+      branchCode: undefined,
+      branchName: undefined,
+      department: undefined,
+      scopes: [{ scopeType: 'CLUSTER', orgUnitId: cluster.id, clusterName: cluster.name }],
+    };
+  }
+  if (!branch || !cluster) {
+    invalidUserAssignment('Không thể xác định đầy đủ Cụm và Chi nhánh từ thông tin phân luồng.', 'BRANCH_ASSIGNMENT_INVALID');
+  }
+
+  return {
+    orgUnitId: department?.id ?? branch.id,
+    internalTeamId: undefined,
+    internalTeamName: undefined,
+    teamRole: undefined,
+    clusterName: cluster.name,
+    branchCode: branch.code,
+    branchName: branch.name,
+    department: department?.name,
+    scopes: [{
+      scopeType: department ? branchScopeTypeForRole(user.primaryRole) : 'BRANCH',
+      orgUnitId: branch.id,
+      orgUnitCode: branch.code,
+      clusterName: cluster.name,
+      branchName: branch.name,
+      ...(department ? { departmentName: department.name } : {}),
+    }],
+  };
+}
+
+function hasUserAssignmentUpdate(input: UserAssignmentInput): boolean {
+  return ['internalTeamId', 'teamRole', 'clusterId', 'clusterName', 'branchCode', 'departmentId', 'department']
+    .some(key => Object.prototype.hasOwnProperty.call(input, key));
+}
+
+function adminUsersResponse(): UserProfile[] {
   // Ba lượt tra cứu cho mỗi người dùng, nhân với toàn bộ cây tổ chức. Với vài trăm tài khoản và
   // vài trăm đơn vị thì đây là hàng trăm nghìn lượt duyệt mảng cho một màn hình danh sách.
   const unitById = new Map(orgUnits.map(unit => [unit.id, unit]));
@@ -3667,51 +3927,29 @@ app.get('/api/v1/admin/users', async (req) => {
       clusterName: cluster?.name ?? user.clusterName,
     };
   });
+}
+
+app.get('/api/v1/admin/users', async (req) => {
+  requireCatalogManager(getCurrentUser(req));
+  return adminUsersResponse();
+});
+
+/** One request for the configuration shell; each separate admin GET hydrates the same state again. */
+app.get('/api/v1/admin/bootstrap', async (req) => {
+  requireCatalogManager(getCurrentUser(req));
+  const lookup = buildOrgUnitLookup();
+  return {
+    users: adminUsersResponse(),
+    orgUnits: orgUnits.map(unit => projectOrgUnit(unit, lookup)),
+    channels: reportChannels,
+  };
 });
 async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Promise<CreatedUserResponse> {
   if (appUsers.some(user => user.email.toLowerCase() === body.email.toLowerCase())) {
     throw new HttpProblem(409, 'USER_EMAIL_EXISTS', 'Email đã được sử dụng', 'Đã tồn tại tài khoản với email này.');
   }
 
-  const internalTeam = body.internalTeamId
-    ? orgUnits.find(unit => unit.id === body.internalTeamId && unit.type === 'INTERNAL_TEAM' && unit.isActive)
-    : undefined;
-  if (body.internalTeamId && !internalTeam) {
-    throw new HttpProblem(422, 'INTERNAL_TEAM_INVALID', 'Nhóm nội bộ không hợp lệ', 'Nhóm nội bộ không tồn tại hoặc đã ngừng hoạt động.');
-  }
-  if (body.teamRole === 'LEAD' && appUsers.some(user => (
-    user.isActive && user.internalTeamId === body.internalTeamId && user.teamRole === 'LEAD'
-  ))) {
-    throw new HttpProblem(409, 'INTERNAL_TEAM_LEAD_EXISTS', 'Nhóm đã có trưởng nhóm', 'Mỗi nhóm chỉ có một Trưởng nhóm kiểm soát đang hoạt động.');
-  }
-
-  const branch = body.branchCode
-    ? orgUnits.find(unit => unit.code === body.branchCode && unit.type === 'BRANCH' && unit.isActive)
-    : undefined;
-  const cluster = branch
-    ? orgUnits.find(unit => unit.id === branch.parentId && unit.type === 'CLUSTER' && unit.isActive)
-    : undefined;
-  const department = branch && body.department
-    ? orgUnits.find(unit => unit.parentId === branch.id && unit.type === 'DEPARTMENT' && unit.name === body.department && unit.isActive)
-    : undefined;
-  if (body.portal === 'BRANCH' && (!branch || !cluster || !department)) {
-    throw new HttpProblem(422, 'BRANCH_ASSIGNMENT_INVALID', 'Phân công chi nhánh không hợp lệ', 'Chi nhánh hoặc Phòng/PGD không tồn tại trong Cụm địa bàn đã cấu hình.');
-  }
-
-  const scopes: UserProfile['scopes'] = ['BRANCH_INPUT', 'BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(body.primaryRole)
-      ? [{
-          // Capture staff are confined to their Phòng/PGD; reviewers keep the whole branch.
-          // This used to be hard-coded to BRANCH, so departmentName was stored and never enforced.
-          scopeType: branchScopeTypeForRole(body.primaryRole),
-          orgUnitId: branch?.id,
-          orgUnitCode: branch?.code,
-          clusterName: cluster?.name,
-          branchName: branch?.name,
-          departmentName: department?.name,
-        }]
-      : ['ADMIN', 'SUPERVISOR', 'INTERNAL_APPROVER', 'INTERNAL_OFFICER'].includes(body.primaryRole)
-        ? [{ scopeType: 'ALL' }]
-        : [];
+  const assignment = resolveUserAssignment({ id: `new-${crypto.randomUUID()}`, portal: body.portal, primaryRole: body.primaryRole }, body);
   const newUser: UserProfile = {
     id: `user-${crypto.randomUUID()}`,
     username: body.username || body.email.split('@')[0],
@@ -3725,16 +3963,8 @@ async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Prom
     // Every account carries a CoPlus code so the UI can name its role the way the handbook does;
     // fall back to the closest match when the caller did not state one.
     coplusRole: body.coplusRole ?? inferCoPlusRole(body.roles),
-    orgUnitId: internalTeam?.id ?? department?.id,
-    internalTeamId: internalTeam?.id,
-    internalTeamName: internalTeam?.name,
-    teamRole: body.teamRole,
-    clusterName: cluster?.name,
-    branchCode: branch?.code,
-    branchName: branch?.name,
-    department: department?.name,
+    ...assignment,
     isActive: body.isActive,
-    scopes,
   };
   const normalizedUsername = newUser.username.toLocaleLowerCase('vi-VN');
   if (credentialDirectory.some(item => item.username === normalizedUsername)) {
@@ -3773,10 +4003,13 @@ async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Prom
     subject: newUser.username,
     detail: `Cấp tài khoản ${newUser.fullName} với vai trò ${newUser.roles.join(', ')} (${newUser.portal}).`,
   });
-  if (internalTeam && body.teamRole === 'LEAD') {
-    internalTeam.leaderUserId = newUser.id;
-    internalTeam.leaderName = newUser.fullName;
-    internalTeam.updatedAt = new Date().toISOString();
+  if (newUser.internalTeamId && newUser.teamRole === 'LEAD') {
+    const internalTeam = orgUnits.find(unit => unit.id === newUser.internalTeamId);
+    if (internalTeam) {
+      internalTeam.leaderUserId = newUser.id;
+      internalTeam.leaderName = newUser.fullName;
+      internalTeam.updatedAt = new Date().toISOString();
+    }
   }
   return { user: newUser, temporaryPassword } satisfies CreatedUserResponse;
 }
@@ -3832,6 +4065,20 @@ app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: 
   if (body.username && appUsers.some(item => item.id !== user.id && item.username.toLocaleLowerCase('vi-VN') === body.username!.toLocaleLowerCase('vi-VN'))) {
     throw new HttpProblem(409, 'USER_NAME_EXISTS', 'Tên đăng nhập đã tồn tại', 'Chọn một tên đăng nhập khác.');
   }
+  const previousTeamId = user.internalTeamId;
+  const assignmentInput: UserAssignmentInput = hasUserAssignmentUpdate(body)
+    ? body
+    : {
+        internalTeamId: user.internalTeamId,
+        teamRole: user.teamRole,
+        clusterId: user.branchCode
+          ? orgUnits.find(unit => unit.type === 'BRANCH' && unit.code === user.branchCode)?.parentId
+          : undefined,
+        clusterName: user.branchCode ? undefined : user.clusterName,
+        branchCode: user.branchCode,
+        department: user.department,
+      };
+  const assignment = resolveUserAssignment(user, assignmentInput);
   if (process.env.AUTH_MODE === 'supabase' && supabaseAuthAdapter && user.authUserId) {
     await supabaseAuthAdapter.updateUser(user.authUserId, {
       ...(body.email ? { email: body.email.toLocaleLowerCase('en-US'), email_confirm: true } : {}),
@@ -3846,7 +4093,24 @@ app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: 
   if (body.googleWorkspaceEmail !== undefined) {
     user.googleWorkspaceEmail = body.googleWorkspaceEmail ? body.googleWorkspaceEmail.toLocaleLowerCase('en-US') : undefined;
   }
+  Object.assign(user, assignment);
   if (body.isActive !== undefined) user.isActive = body.isActive;
+  if (previousTeamId && (previousTeamId !== user.internalTeamId || user.teamRole !== 'LEAD')) {
+    const previousTeam = orgUnits.find(unit => unit.id === previousTeamId);
+    if (previousTeam?.leaderUserId === user.id) {
+      previousTeam.leaderUserId = undefined;
+      previousTeam.leaderName = undefined;
+      previousTeam.updatedAt = new Date().toISOString();
+    }
+  }
+  if (user.internalTeamId && user.teamRole === 'LEAD') {
+    const nextTeam = orgUnits.find(unit => unit.id === user.internalTeamId);
+    if (nextTeam) {
+      nextTeam.leaderUserId = user.id;
+      nextTeam.leaderName = user.fullName;
+      nextTeam.updatedAt = new Date().toISOString();
+    }
+  }
   if (body.isActive === false) {
     const revokedSessions = authSessionStore.revokeAllForUser(user.id);
     authSessions = authSessionStore.records();
@@ -4628,7 +4892,7 @@ app.get('/api/v1/customers/:cif/case', async (req: FastifyRequest<{ Params: { ci
 // Finding: Create via Web Form (Direct Ingestion)
 app.post('/api/v1/findings', async (req: FastifyRequest<{ Body: any }>) => {
   const user = getCurrentUser(req);
-  requireRoles(user, ['ADMIN', 'INTERNAL_OFFICER']);
+  requireAppCapability(user, 'CREATE_FINDING');
   const b = WebFormFindingSchema.parse(req.body);
   const newFinding = createFindingFromDto(b, user, `find-${crypto.randomUUID()}`);
   await ensureFindingDriveFolder(newFinding);
@@ -4653,7 +4917,7 @@ app.get('/api/v1/imports/batches', async (req: FastifyRequest<{ Querystring: { c
 
 app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, reply) => {
   const user = getCurrentUser(req);
-  requireRoles(user, ['ADMIN', 'INTERNAL_OFFICER', 'SUPERVISOR']);
+  requireAppCapability(user, 'IMPORT_FINDINGS');
   const batch = BulkFindingImportSchema.parse(req.body);
   const idempotency = batch.sourceType === 'API_BULK'
     ? undefined
@@ -5356,8 +5620,8 @@ app.get('/api/v1/evidence/:driveFileId/content', async (req: FastifyRequest<{ Pa
  * rồi trả về. Đây là con số "của chuyên đề này", và nó khớp với danh sách bên dưới vì cả hai chạy
  * qua cùng `applyFindingQueryFilters`.
  */
-function getDashboardSummaryForUser(user: UserProfile, query: Record<string, string | undefined> = {}): DashboardSummary {
-  const scoped = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
+async function getDashboardSummaryForUser(user: UserProfile, query: Record<string, string | undefined> = {}): Promise<DashboardSummary> {
+  const scoped = await readScopedFindingsForAnalytics(user, query);
 
   const active = scoped.filter(f => f.workflowStatus !== 'WAIVED_RESOLVED');
   const resolved = scoped.filter(f => f.workflowStatus === 'WAIVED_RESOLVED');
@@ -5402,7 +5666,7 @@ app.get('/api/v1/bootstrap', async (req) => {
     channels: reportChannels.filter(channel => channel.isActive),
     campaigns: auditCampaigns.filter(campaign => canAccessCampaign(user, campaign)),
     branches: getScopedBranchesForUser(user),
-    summary: getDashboardSummaryForUser(user),
+    summary: await getDashboardSummaryForUser(user),
     work: getMyWorkForUser(user),
   };
 });
@@ -5503,21 +5767,21 @@ app.put('/api/v1/admin/report-catalog', async (req: FastifyRequest<{ Body: any }
 });
 
 app.get('/api/v1/reports/catalog', async (req) => {
-  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
   return buildReportCatalog(scoped);
 });
 
 app.post('/api/v1/reports/runs', async (req: FastifyRequest<{ Body: any }>) => {
   const query = ReportRunRequestSchema.parse(req.body);
   assertReportConfigurationAvailable(query);
-  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
   return executeReportRun(scoped, query);
 });
 
 app.post('/api/v1/reports/drill', async (req: FastifyRequest<{ Body: any }>) => {
   const request = ReportDrillRequestSchema.parse(req.body);
   assertReportConfigurationAvailable(request.query);
-  const scoped = filterFindingsByScope(findings, getCurrentUser(req));
+  const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
   return executeReportDrill(scoped, request);
 });
 
@@ -5525,7 +5789,7 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
   const exportingUser = getCurrentUser(req);
   const request = ReportExportRequestSchema.parse(req.body);
   assertReportConfigurationAvailable(request.query, request.columns);
-  const scoped = filterFindingsByScope(findings, exportingUser);
+  const scoped = await readScopedFindingsForAnalytics(exportingUser);
   const rows = applyCanonicalReportRules(scoped, request.query.rules, request.query.match);
   // A serverless response body is capped (~4.5MB on Vercel) and the function has a wall clock, so
   // an unbounded export fails opaquely in production. Refuse with a count the user can act on
@@ -5676,7 +5940,7 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
 
 app.get('/api/v1/reports/summary', async (req: FastifyRequest<{ Querystring: any }>) => {
   const filters = ReportFilterSchema.parse(req.query);
-  const scoped = applyReportFilters(filterFindingsByScope(findings, getCurrentUser(req)), filters);
+  const scoped = applyReportFilters(await readScopedFindingsForAnalytics(getCurrentUser(req)), filters);
   const breakdown = (keyOf: (finding: Finding) => string, labelOf: (finding: Finding) => string) => {
     const groups = new Map<string, Finding[]>();
     for (const finding of scoped) {
@@ -5709,7 +5973,7 @@ app.get('/api/v1/reports/summary', async (req: FastifyRequest<{ Querystring: any
 app.get('/api/v1/reports/findings.csv', async (req: FastifyRequest<{ Querystring: any }>, reply) => {
   const exportingUser = getCurrentUser(req);
   const filters = ReportFilterSchema.parse(req.query);
-  const scoped = applyReportFilters(filterFindingsByScope(findings, exportingUser), filters);
+  const scoped = applyReportFilters(await readScopedFindingsForAnalytics(exportingUser), filters);
   // Cùng trần với POST /reports/exports, và cùng lý do: thân phản hồi của hàm serverless bị cắt ở
   // khoảng 4,5 MB, nên một lần xuất không giới hạn sẽ hỏng mà không có thông báo nào cho người dùng
   // — họ bấm nút, chờ, rồi không có gì xảy ra. Từ chối kèm con số vẫn hơn im lặng hỏng.

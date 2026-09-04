@@ -83,6 +83,13 @@ export const UpdateUserSchema = z.object({
   phone: z.string().max(50).optional(),
   googleWorkspaceEmail: z.union([z.string().email(), z.literal('')]).optional(),
   isActive: z.boolean().optional(),
+  /** Assignment is nullable so an account can be provisioned first and routed later. */
+  internalTeamId: z.string().min(1).nullable().optional(),
+  teamRole: z.enum(['MEMBER', 'LEAD']).nullable().optional(),
+  clusterId: z.string().min(1).nullable().optional(),
+  branchCode: z.string().min(1).nullable().optional(),
+  departmentId: z.string().min(1).nullable().optional(),
+  department: z.string().trim().min(2).nullable().optional(),
 });
 export type UpdateUserDTO = z.infer<typeof UpdateUserSchema>;
 
@@ -213,28 +220,30 @@ export const CreateUserSchema = z.object({
       message: 'User nội bộ không được mang vai trò chi nhánh',
     });
   }
-  if (['BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(value.primaryRole) && (!value.branchCode || !value.department)) {
+  if (value.department && !value.branchCode) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['branchCode'],
-      message: 'Vai trò kiểm soát hoặc lãnh đạo chi nhánh phải có branchCode và department',
+      message: 'Phòng / PGD phải đi cùng branchCode để xác định chi nhánh',
     });
   }
-  if (value.primaryRole === 'BRANCH_INPUT' && (!value.branchCode || !value.department)) {
+  if (value.branchName && !value.branchCode) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['branchCode'],
-      message: 'BRANCH_INPUT phải có branchCode và department',
+      message: 'Tên chi nhánh chỉ được nhập khi đã có branchCode',
     });
   }
-  if (value.primaryRole === 'INTERNAL_OFFICER' && (!value.internalTeamId || value.teamRole !== 'MEMBER')) {
+  // A cluster or branch is a valid intermediate routing state; the department can be selected later.
+  const hasInternalAssignment = Boolean(value.internalTeamId || value.teamRole);
+  if (hasInternalAssignment && value.primaryRole === 'INTERNAL_OFFICER' && (!value.internalTeamId || value.teamRole !== 'MEMBER')) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['internalTeamId'],
       message: 'Cán bộ nội bộ phải thuộc một nhóm với vai trò thành viên',
     });
   }
-  if (value.primaryRole === 'INTERNAL_APPROVER' && (!value.internalTeamId || value.teamRole !== 'LEAD')) {
+  if (hasInternalAssignment && value.primaryRole === 'INTERNAL_APPROVER' && (!value.internalTeamId || value.teamRole !== 'LEAD')) {
     context.addIssue({
       code: z.ZodIssueCode.custom,
       path: ['teamRole'],

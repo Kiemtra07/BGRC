@@ -11,3 +11,4 @@ export * from './findings';
 export * from './dashboards';
 export * from './audit';
 export * from './campaigns';
+export * from './permissions';

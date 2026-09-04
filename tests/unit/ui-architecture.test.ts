@@ -89,6 +89,29 @@ describe('UI and business terminology architecture', () => {
     expect(appSource).not.toContain('label="Nạp dữ liệu"');
   });
 
+  it('opens the configuration shell without waiting for the admin catalog request', () => {
+    const appSource = read('src/App.tsx');
+    const apiSource = read('src/services/api.ts');
+    const serverSource = read('server/src/app.ts');
+
+    expect(appSource).toContain('api.getAdminBootstrap()');
+    expect(appSource).not.toContain('&& adminCatalogLoaded && <AdminPortal');
+    expect(apiSource).toContain("this.request('/admin/bootstrap')");
+    expect(serverSource).toContain("app.get('/api/v1/admin/bootstrap'");
+  });
+
+  it('keeps unassigned users visible and gives edit a routing path', () => {
+    const userManager = read('src/components/admin/UserManager.tsx');
+    const editModal = read('src/components/admin/UserProfileEditModal.tsx');
+
+    expect(userManager).toContain('const unassignedUsers = filteredUsers.filter');
+    expect(userManager).toContain('onEdit={handleEditUser}');
+    expect(userManager).toContain('Chưa phân công');
+    expect(editModal).toContain('Có thể phân công sau');
+    expect(editModal).toContain('departmentId');
+    expect(editModal).toContain('clusterId');
+  });
+
   it('lets authorized head-office roles configure campaigns and report types', () => {
     const appSource = read('src/App.tsx');
     const portal = read('src/components/admin/AdminPortal.tsx');
@@ -216,6 +239,18 @@ describe('UI and business terminology architecture', () => {
     expect(apiSource).toContain('crypto.randomUUID');
     expect(detailSource).not.toContain('Cần ít nhất một tài liệu hợp lệ');
     expect(serverSource).toContain('idempotencyRecords');
+    expect(serverSource).toContain('IDEMPOTENCY_IN_PROGRESS');
+  });
+
+  it('uses one capability matrix and does not expose catalog actions before bootstrap completes', () => {
+    const appSource = read('src/App.tsx');
+    const adminSource = read('src/components/admin/AdminPortal.tsx');
+    const permissions = read('shared/contracts/permissions.ts');
+    expect(appSource).toContain('hasAppCapability');
+    expect(adminSource).toContain('Đang tải đầy đủ danh mục cấu hình');
+    expect(adminSource).toContain("['CAMPAIGNS', 'CHANNELS', 'ORGANIZATION', 'USERS'].includes(activeTab)");
+    expect(permissions).toContain('IMPORT_FINDINGS');
+    expect(permissions).toContain('CREATE_FINDING');
   });
 
   it('offers evidence replacement only while the branch can edit the finding', () => {

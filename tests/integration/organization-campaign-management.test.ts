@@ -95,8 +95,44 @@ describe('organization and campaign administration APIs', () => {
     });
     expect(department.statusCode).toBe(200);
 
+    const user = await app.inject({
+      method: 'POST', url: '/api/v1/admin/users', headers: adminHeaders,
+      payload: {
+        fullName: 'Cán bộ cascade đơn vị', email: `org-cascade-${suffix}@bank.com.vn`,
+        portal: 'BRANCH', roles: ['BRANCH_INPUT'], primaryRole: 'BRANCH_INPUT',
+        clusterName: cluster.json().name, branchCode: branch.json().code, department: department.json().name, isActive: true,
+      },
+    });
+    expect(user.statusCode, user.body).toBe(200);
+    const campaign = await app.inject({
+      method: 'POST', url: '/api/v1/admin/campaigns', headers: adminHeaders,
+      payload: {
+        code: `CD-CASCADE-${suffix}`, name: 'Chuyên đề cascade', decisionNo: 'QĐ-CASCADE',
+        startDate: '2026-09-01', endDate: '2026-09-30', leadUserId: 'user-admin',
+        members: [{ userId: 'user-admin', memberRole: 'LEAD', assignedBranchCodes: [branch.json().code] }],
+        branchCodes: [branch.json().code], reportChannelIds: ['chan-audit-bgs'],
+      },
+    });
+    expect(campaign.statusCode).toBe(201);
+
+    const renamed = await app.inject({
+      method: 'PATCH', url: `/api/v1/admin/org-units/${branch.json().id}`, headers: adminHeaders,
+      payload: { code: `CN-CASCADE-NEW-${suffix}`, name: 'Chi nhánh cascade mới', expectedUpdatedAt: branch.json().updatedAt },
+    });
+    expect(renamed.statusCode).toBe(200);
+    const usersAfterRename = await app.inject({ method: 'GET', url: '/api/v1/admin/users', headers: adminHeaders });
+    expect(usersAfterRename.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: user.json().user.id, branchCode: `CN-CASCADE-NEW-${suffix}`, branchName: 'Chi nhánh cascade mới' }),
+    ]));
+    const campaignsAfterRename = await app.inject({ method: 'GET', url: '/api/v1/campaigns', headers: adminHeaders });
+    expect(campaignsAfterRename.json()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: campaign.json().id, branchCodes: [`CN-CASCADE-NEW-${suffix}`] }),
+    ]));
+
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/users/${user.json().user.id}`, headers: adminHeaders })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/campaigns/${campaign.json().id}`, headers: adminHeaders })).statusCode).toBe(204);
     expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/org-units/${department.json().id}`, headers: adminHeaders })).statusCode).toBe(204);
-    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/org-units/${branch.json().id}`, headers: adminHeaders })).statusCode).toBe(204);
+    expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/org-units/${renamed.json().id}`, headers: adminHeaders })).statusCode).toBe(204);
     expect((await app.inject({ method: 'DELETE', url: `/api/v1/admin/org-units/${cluster.json().id}`, headers: adminHeaders })).statusCode).toBe(204);
   });
 

@@ -30,6 +30,7 @@ import { UserProfileEditModal } from './UserProfileEditModal';
 interface Props {
   users: UserProfile[];
   orgUnits: OrgUnit[];
+  loading?: boolean;
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
   onUsersImported: (batch: BulkUserImportDTO) => Promise<BulkUserImportResult>;
   onAuthenticatorChange: (id: string, data: UpdateAuthenticatorDTO) => Promise<UpdateAuthenticatorResponse>;
@@ -89,7 +90,7 @@ const UserDirectoryTable: React.FC<{
                   {user.coplusRole && <div className="mt-1 font-mono text-[10px] text-slate-400">{user.coplusRole}</div>}
                 </td>
                 <td className="px-4 py-3 text-[11px] text-slate-600">
-                  <div className="font-semibold text-slate-700">{user.internalTeamName || user.branchName || 'Chưa phân đơn vị'}</div>
+                  <div className="font-semibold text-slate-700">{user.internalTeamName || user.branchName || user.clusterName || 'Chưa phân đơn vị'}</div>
                   <div className="mt-0.5 text-slate-500">{[user.clusterName, user.department].filter(Boolean).join(' · ') || (user.portal === 'INTERNAL' ? 'Khối nội bộ' : 'Mạng lưới chi nhánh')}</div>
                 </td>
                 <td className="px-4 py-3">
@@ -164,7 +165,7 @@ const UserCard: React.FC<UserCardProps> = ({ user, compact = false, onAuthentica
   </article>
 );
 
-export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, onUsersImported, onAuthenticatorChange, onUserUpdated, onUserDeleted, onUserPasswordReset, onUserPasswordResetEmail }) => {
+export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false, onUserCreated, onUsersImported, onAuthenticatorChange, onUserUpdated, onUserDeleted, onUserPasswordReset, onUserPasswordResetEmail }) => {
   const [directoryView, setDirectoryView] = useState<DirectoryView>('INTERNAL');
   // Card grouping is good for reading an org chart and bad for finding one person among
   // hundreds; the list is the opposite. Both read the same filtered set.
@@ -262,8 +263,15 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
   const handleCreateUser = async (event: React.FormEvent) => {
     event.preventDefault();
     const needsInternalTeam = role === 'INTERNAL_OFFICER' || role === 'INTERNAL_APPROVER';
-    if (!fullName || !email || (needsInternalTeam && !selectedInternalTeam)) return;
-    if (portal === 'BRANCH' && (!selectedBranch || !selectedDepartment)) return;
+    if (!fullName || !email) return;
+    if (portal === 'BRANCH' && selectedBranch && !selectedCluster) {
+      setToastMessage('Hãy chọn Cụm trước khi chọn Chi nhánh.');
+      return;
+    }
+    if (portal === 'BRANCH' && selectedDepartment && !selectedBranch) {
+      setToastMessage('Hãy chọn Chi nhánh trước khi chọn Phòng / PGD.');
+      return;
+    }
 
     const payload: CreateUserDTO = {
       fullName,
@@ -277,10 +285,15 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
       // Record the CoPlus code the capability corresponds to, so the account is named the way the
       // CoPlus handbook names it rather than by an internal capability constant.
       coplusRole: inferCoPlusRole([role]),
-      internalTeamId: needsInternalTeam ? selectedInternalTeam : undefined,
-      teamRole: role === 'INTERNAL_APPROVER' ? 'LEAD' : role === 'INTERNAL_OFFICER' ? 'MEMBER' : undefined,
-      branchCode: portal === 'BRANCH' ? selectedBranch : undefined,
-      department: portal === 'BRANCH' ? selectedDepartment : undefined,
+      internalTeamId: needsInternalTeam && selectedInternalTeam ? selectedInternalTeam : undefined,
+      teamRole: needsInternalTeam && selectedInternalTeam
+        ? role === 'INTERNAL_APPROVER' ? 'LEAD' : 'MEMBER'
+        : undefined,
+      branchCode: portal === 'BRANCH' && selectedBranch ? selectedBranch : undefined,
+      clusterName: portal === 'BRANCH' && selectedCluster
+        ? clusters.find(cluster => cluster.id === selectedCluster)?.name
+        : undefined,
+      department: portal === 'BRANCH' && selectedDepartment ? selectedDepartment : undefined,
       isActive: true,
     };
 
@@ -302,6 +315,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
   };
 
   const systemUsers = filteredUsers.filter(user => user.portal === 'INTERNAL' && !user.internalTeamId);
+  const unassignedUsers = filteredUsers.filter(user => user.portal === 'BRANCH' && !user.branchCode);
 
   const handleUserImportFile = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -493,6 +507,8 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
         </div>
       </header>
 
+      {loading && <div role="status" className="rounded-xl border border-info-border bg-info-surface px-4 py-3 text-xs font-semibold text-info">Đang tải danh mục người dùng và đơn vị...</div>}
+
       {userImportPreview.length > 0 && (
         <section className="rounded-2xl border border-rule bg-white p-4 shadow-panel" aria-label="Xem trước nhập người dùng">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -635,6 +651,16 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
               </article>
             );
           })}
+          {unassignedUsers.length > 0 && (
+            <article className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-4 shadow-panel sm:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200 pb-3">
+                <div><div className="text-[10px] font-bold text-amber-700">Chưa phân công</div><h4 className="mt-1 text-base font-bold text-slate-900">Người dùng chưa có địa bàn</h4></div>
+                <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-amber-800">{unassignedUsers.length} người dùng</span>
+              </div>
+              <p className="mt-3 text-[11px] font-semibold text-amber-800">Có thể mở hồ sơ và vào Sửa để phân công Cụm, Chi nhánh, Phòng / PGD sau.</p>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{unassignedUsers.map(user => <UserCard key={user.id} user={user} onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
+            </article>
+          )}
         </section>
       )}
 
@@ -660,15 +686,16 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, onUserCreated, o
               </div>
 
               {portal === 'INTERNAL' && (role === 'INTERNAL_OFFICER' || role === 'INTERNAL_APPROVER') && (
-                <label className="block text-xs font-bold text-slate-700">Nhóm nội bộ<select value={selectedInternalTeam} onChange={event => setSelectedInternalTeam(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs" required><option value="">-- Chọn nhóm --</option>{internalTeams.map(team => <option key={team.id} value={team.id}>{team.code} · {team.name}</option>)}</select></label>
+                <label className="block text-xs font-bold text-slate-700">Nhóm nội bộ<select value={selectedInternalTeam} onChange={event => setSelectedInternalTeam(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs"><option value="">-- Chưa phân công --</option>{internalTeams.map(team => <option key={team.id} value={team.id}>{team.code} · {team.name}</option>)}</select></label>
               )}
 
               {portal === 'BRANCH' && (
                 <div className="space-y-4 rounded-xl border border-info-border bg-info-surface/60 p-4">
                   <p className="text-[11px] font-semibold text-info">Cụm dùng để lọc danh sách; quyền được cấp theo chi nhánh.</p>
-                  <label className="block text-xs font-bold text-slate-700">Cụm địa bàn<select value={selectedCluster} onChange={event => { setSelectedCluster(event.target.value); setSelectedBranch(''); setSelectedDepartment(''); }} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs" required><option value="">-- Chọn cụm --</option>{clusters.map(cluster => <option key={cluster.id} value={cluster.id}>{cluster.name}</option>)}</select></label>
-                  <label className="block text-xs font-bold text-slate-700">Chi nhánh<select value={selectedBranch} onChange={event => { setSelectedBranch(event.target.value); setSelectedDepartment(''); }} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs" required disabled={!selectedCluster}><option value="">-- Chọn chi nhánh --</option>{branchesInCluster.map(branch => <option key={branch.id} value={branch.code}>{branch.code} · {branch.name}</option>)}</select></label>
-                  <label className="block text-xs font-bold text-slate-700">Phòng / PGD<select value={selectedDepartment} onChange={event => setSelectedDepartment(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs" required disabled={!selectedBranch}><option value="">-- Chọn Phòng / PGD --</option>{departments.map(department => <option key={department.id} value={department.name}>{department.name}</option>)}</select></label>
+                  <p className="text-[11px] font-semibold text-info">Phân công là tùy chọn; có thể tạo tài khoản trước rồi vào Sửa để phân luồng sau.</p>
+                  <label className="block text-xs font-bold text-slate-700">Cụm địa bàn<select value={selectedCluster} onChange={event => { setSelectedCluster(event.target.value); setSelectedBranch(''); setSelectedDepartment(''); }} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs"><option value="">-- Chưa phân công --</option>{clusters.map(cluster => <option key={cluster.id} value={cluster.id}>{cluster.name}</option>)}</select></label>
+                  <label className="block text-xs font-bold text-slate-700">Chi nhánh<select value={selectedBranch} onChange={event => { setSelectedBranch(event.target.value); setSelectedDepartment(''); }} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs" disabled={!selectedCluster}><option value="">-- Chưa phân công --</option>{branchesInCluster.map(branch => <option key={branch.id} value={branch.code}>{branch.code} · {branch.name}</option>)}</select></label>
+                  <label className="block text-xs font-bold text-slate-700">Phòng / PGD<select value={selectedDepartment} onChange={event => setSelectedDepartment(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs" disabled={!selectedBranch}><option value="">-- Chưa phân công --</option>{departments.map(department => <option key={department.id} value={department.name}>{department.name}</option>)}</select></label>
                 </div>
               )}
 

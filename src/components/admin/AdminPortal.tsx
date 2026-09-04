@@ -22,6 +22,7 @@ import { CampaignManager } from './campaigns/CampaignManager';
 
 interface Props {
   isSystemAdmin: boolean;
+  adminCatalogLoading?: boolean;
   orgUnits: OrgUnit[];
   users: UserProfile[];
   channels: ReportChannel[];
@@ -52,6 +53,7 @@ type AdminTab = 'CAMPAIGNS' | 'CHANNELS' | 'REPORT_CATALOG' | 'ORGANIZATION' | '
 
 export const AdminPortal: React.FC<Props> = ({
   isSystemAdmin,
+  adminCatalogLoading = false,
   orgUnits,
   users,
   channels,
@@ -136,34 +138,38 @@ export const AdminPortal: React.FC<Props> = ({
 
       {/* Active Tab Content */}
       <div className="animate-fade-in">
-        {activeTab === 'CAMPAIGNS' && <CampaignManager canProvisionDrive={isSystemAdmin} campaigns={campaigns} users={users} orgUnits={orgUnits} channels={channels} onCreate={onCampaignCreated} onUpdate={onCampaignUpdated} onDelete={onCampaignDeleted} onImportDraft={onCampaignImportDraft} onProvisionDrive={onCampaignProvisionDrive} />}
-        {activeTab === 'CHANNELS' && (
-          <DynamicChannelManager channels={channels} onChannelCreated={onChannelCreated} onChannelUpdated={onChannelUpdated} onChannelDeleted={onChannelDeleted} />
-        )}
+        {adminCatalogLoading && ['CAMPAIGNS', 'CHANNELS', 'ORGANIZATION', 'USERS'].includes(activeTab) ? (
+          <div role="status" aria-live="polite" className="rounded-2xl border border-brand-200 bg-brand-50 px-5 py-8 text-center text-sm font-bold text-brand-700">Đang tải đầy đủ danh mục cấu hình...</div>
+        ) : <>
+          {activeTab === 'CAMPAIGNS' && <CampaignManager canProvisionDrive={isSystemAdmin} campaigns={campaigns} users={users} orgUnits={orgUnits} channels={channels} onCreate={onCampaignCreated} onUpdate={onCampaignUpdated} onDelete={onCampaignDeleted} onImportDraft={onCampaignImportDraft} onProvisionDrive={onCampaignProvisionDrive} />}
+          {activeTab === 'CHANNELS' && (
+            <DynamicChannelManager channels={channels} onChannelCreated={onChannelCreated} onChannelUpdated={onChannelUpdated} onChannelDeleted={onChannelDeleted} />
+          )}
 
-        {activeTab === 'ORGANIZATION' && (
-          <OrganizationManager orgUnits={orgUnits} users={users} onOrgUnitCreated={onOrgUnitCreated} onOrgUnitUpdated={onOrgUnitUpdated} onOrgUnitDeleted={onOrgUnitDeleted} onOrgUnitsImported={onOrgUnitsImported} />
-        )}
+          {activeTab === 'ORGANIZATION' && (
+            <OrganizationManager orgUnits={orgUnits} users={users} onOrgUnitCreated={onOrgUnitCreated} onOrgUnitUpdated={onOrgUnitUpdated} onOrgUnitDeleted={onOrgUnitDeleted} onOrgUnitsImported={onOrgUnitsImported} />
+          )}
 
-        {activeTab === 'REPORT_CATALOG' && (
-          <ReportCatalogManager />
-        )}
+          {activeTab === 'REPORT_CATALOG' && (
+            <ReportCatalogManager />
+          )}
 
-        {activeTab === 'USERS' && (
-          <UserManager users={users} orgUnits={orgUnits} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} onUserUpdated={onUserUpdated} onUserDeleted={onUserDeleted} onUserPasswordReset={onUserPasswordReset} onUserPasswordResetEmail={onUserPasswordResetEmail} />
-        )}
+          {activeTab === 'USERS' && (
+            <UserManager users={users} orgUnits={orgUnits} loading={adminCatalogLoading} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} onUserUpdated={onUserUpdated} onUserDeleted={onUserDeleted} onUserPasswordReset={onUserPasswordReset} onUserPasswordResetEmail={onUserPasswordResetEmail} />
+          )}
 
-        {activeTab === 'PERMISSIONS' && (
-          <ButtonPermissionMatrix />
-        )}
+          {activeTab === 'PERMISSIONS' && (
+            <ButtonPermissionMatrix />
+          )}
 
-        {activeTab === 'SECURITY' && (
-          <SecuritySettingsPanel />
-        )}
+          {activeTab === 'SECURITY' && (
+            <SecuritySettingsPanel />
+          )}
 
-        {activeTab === 'AUDIT_LOG' && (
-          <AuditTrailViewer />
-        )}
+          {activeTab === 'AUDIT_LOG' && (
+            <AuditTrailViewer />
+          )}
+        </>}
       </div>
     </div>
   );

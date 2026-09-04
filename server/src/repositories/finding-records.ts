@@ -239,6 +239,22 @@ export class PostgresFindingRecords {
       };
     });
   }
+
+  /** Load a caller's full SQL-filtered scope for analytics without hydrating the global snapshot. */
+  public async listAll(options: Omit<FindingListOptions, 'page' | 'limit'>): Promise<Finding[]> {
+    const items: Finding[] = [];
+    const pageSize = 1_000;
+    let page = 1;
+    let total = Number.POSITIVE_INFINITY;
+    while (items.length < total) {
+      const result = await this.list({ ...options, page, limit: pageSize });
+      items.push(...result.items);
+      total = result.total;
+      if (result.items.length === 0) break;
+      page += 1;
+    }
+    return items;
+  }
 }
 
 /**

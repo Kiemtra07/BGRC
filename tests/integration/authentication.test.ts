@@ -84,6 +84,12 @@ describe('local credential authentication', () => {
     expect(unauthenticated.statusCode).toBe(401);
   });
 
+  it('keeps the Supabase refresh endpoint public to the auth pre-handler', async () => {
+    const response = await app.inject({ method: 'POST', url: '/api/v1/auth/refresh' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ code: 'SUPABASE_AUTH_NOT_ENABLED' });
+  });
+
   it('does not trust x-user-id when the explicit test bridge is disabled', async () => {
     process.env.ALLOW_TEST_USER_HEADER = 'false';
     const response = await app.inject({ method: 'GET', url: '/api/v1/me', headers: { 'x-user-id': 'user-admin' } });

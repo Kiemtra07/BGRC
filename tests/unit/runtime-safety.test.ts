@@ -46,6 +46,7 @@ describe('runtime safety gate', () => {
     });
 
     expect(readiness.checks.dataStore).toEqual({ mode: 'memory', durable: false });
+    expect(readiness.status).toBe('READY');
     expect(readiness.message).toMatch(/bộ nhớ/i);
     expect(readiness.message).not.toMatch(/JSON nguyên tử/i);
   });
@@ -63,6 +64,7 @@ describe('runtime safety gate', () => {
     });
 
     expect(readiness.checks.dataStore).toEqual({ mode: 'local-json', durable: true });
+    expect(readiness.status).toBe('READY');
     expect(readiness.checks.auth).toEqual({ mode: 'local-credential-session', productionSafe: false });
   });
 

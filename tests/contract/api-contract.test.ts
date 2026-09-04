@@ -32,7 +32,7 @@ describe('P0 HTTP contracts', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.json()).toMatchObject({
-      status: 'DEGRADED',
+      status: 'READY',
       ready: true,
       checks: {
         dataStore: { mode: expectedDataStoreMode, durable: true },

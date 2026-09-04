@@ -30,6 +30,12 @@ export interface BootstrapResponse {
   work: MyWorkQueue;
 }
 
+export interface AdminBootstrapResponse {
+  users: UserProfile[];
+  orgUnits: OrgUnit[];
+  channels: ReportChannel[];
+}
+
 const configuredApiBase = import.meta.env.VITE_API_BASE_URL?.replace(/\/+$/, '');
 const API_BASE = `${configuredApiBase || '/api'}/v1`;
 
@@ -72,10 +78,11 @@ export class ApiError extends Error {
  */
 const REQUEST_TIMEOUT_MS = 60_000;
 
-class ApiService {
+export class ApiService {
   private readonly pendingCommandKeys = new Map<string, string>();
+  private refreshInFlight: Promise<boolean> | undefined;
 
-  private async request<T>(endpoint: string, options: RequestInit = {}): Promise<T> {
+  private async request<T>(endpoint: string, options: RequestInit = {}, allowRefresh = true): Promise<T> {
     const providedHeaders = options.headers as Record<string, string> || {};
     const headers = options.body === undefined || options.body === null
       ? providedHeaders
@@ -105,7 +112,11 @@ class ApiService {
     try {
       if (!res.ok) {
         const problem = await res.json().catch(() => ({ detail: res.statusText }));
-        throw new ApiError(problem.detail || problem.title || problem.error || `HTTP ${res.status}`, res.status, problem.code);
+        const error = new ApiError(problem.detail || problem.title || problem.error || `HTTP ${res.status}`, res.status, problem.code);
+        if (res.status === 401 && allowRefresh && endpoint !== '/auth/login' && endpoint !== '/auth/refresh') {
+          if (await this.tryRefreshSession()) return this.request<T>(endpoint, options, false);
+        }
+        throw error;
       }
       if (res.status === 204) return undefined as T;
       return await res.json();
@@ -114,9 +125,20 @@ class ApiService {
     }
   }
 
+  private async tryRefreshSession(): Promise<boolean> {
+    if (!this.refreshInFlight) {
+      this.refreshInFlight = this.request('/auth/refresh', { method: 'POST' }, false)
+        .then(() => true)
+        .catch(() => false)
+        .finally(() => { this.refreshInFlight = undefined; });
+    }
+    return this.refreshInFlight;
+  }
+
   public login = (credentials: LoginDTO): Promise<LoginResponse> => this.request('/auth/login', {
     method: 'POST', body: JSON.stringify(credentials),
   });
+  public refreshSession = (): Promise<LoginResponse> => this.request('/auth/refresh', { method: 'POST' }, false);
   public logout = (): Promise<void> => this.request('/auth/logout', { method: 'POST' });
   public getMe = (): Promise<{ user: UserProfile }> => this.request('/me');
   public getBootstrap = (): Promise<BootstrapResponse> => this.request('/bootstrap');
@@ -139,6 +161,7 @@ class ApiService {
   /** Branches inside the caller's data scope; available to every role that can create a hồ sơ. */
   public getScopedBranches = (): Promise<OrgUnit[]> => this.request('/org-units/branches');
   public getUsers = (): Promise<UserProfile[]> => this.request('/admin/users');
+  public getAdminBootstrap = (): Promise<AdminBootstrapResponse> => this.request('/admin/bootstrap');
   public getChannels = (): Promise<ReportChannel[]> => this.request('/admin/channels');
   public getActiveChannels = (): Promise<ReportChannel[]> => this.request('/channels/active');
   public getAuditEvents = (params: { page?: number; limit?: number; query?: string } = {}): Promise<AuditLogPage> => {
