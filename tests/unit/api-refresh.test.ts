@@ -6,7 +6,10 @@ function response(status: number, body: unknown): Response {
 }
 
 describe('API session recovery', () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
 
   it('attaches the readable CSRF cookie to an unsafe browser request', async () => {
     const fetchMock = vi.fn(async () => new Response(null, { status: 204 }));
@@ -68,6 +71,20 @@ describe('API session recovery', () => {
       .mockResolvedValueOnce(response(404, { code: 'SUPABASE_AUTH_NOT_ENABLED', detail: 'disabled' }));
 
     await expect(new ApiService().getBootstrap()).rejects.toMatchObject({ status: 401, code: 'AUTH_REQUIRED' } satisfies Partial<ApiError>);
+  });
+
+  it('does not probe refresh again after credentials mode reports it unavailable', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch')
+      .mockResolvedValueOnce(response(401, { code: 'AUTH_REQUIRED', detail: 'expired' }))
+      .mockResolvedValueOnce(response(404, { code: 'SUPABASE_AUTH_NOT_ENABLED', detail: 'disabled' }))
+      .mockResolvedValueOnce(response(401, { code: 'AUTH_REQUIRED', detail: 'expired again' }));
+    const api = new ApiService();
+
+    await expect(api.getBootstrap()).rejects.toMatchObject({ status: 401 });
+    await expect(api.getCampaigns()).rejects.toMatchObject({ status: 401 });
+
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('/auth/refresh'))).toHaveLength(1);
   });
 
   it('reuses a workflow idempotency key after an uncertain network failure', async () => {

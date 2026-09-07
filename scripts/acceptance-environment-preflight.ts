@@ -74,6 +74,10 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
     const client = await pool.connect();
     try {
       await client.query('BEGIN READ ONLY');
+      // The runtime account is deliberately not the owner of public tables. 0090 enables RLS
+      // on schema_release_log too, so mirror the production backend transaction context before
+      // reading the manifest. This remains transaction-local and the transaction is read-only.
+      await client.query("SELECT set_config('app.runtime_role', 'backend', true)");
       const [migrationLogResult, roleResult, authSecurityStateResult] = await Promise.all([
         client.query<{ present: boolean }>(`
           SELECT EXISTS (

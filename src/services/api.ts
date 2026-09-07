@@ -106,6 +106,7 @@ function readBrowserCookie(name: string): string | undefined {
 export class ApiService {
   private readonly pendingCommandKeys = new Map<string, string>();
   private refreshInFlight: Promise<boolean> | undefined;
+  private refreshUnavailable = false;
 
   private async request<T>(endpoint: string, options: RequestInit = {}, allowRefresh = true): Promise<T> {
     const providedHeaders = options.headers as Record<string, string> || {};
@@ -165,10 +166,19 @@ export class ApiService {
   }
 
   private async tryRefreshSession(): Promise<boolean> {
+    // Credentials mode has no refresh endpoint. Cache the documented 404 after the first probe so
+    // an expired/cleared credentials session cannot add a failing round trip to every protected
+    // request (including the two requests sent by a queue search).
+    if (this.refreshUnavailable) return false;
     if (!this.refreshInFlight) {
       this.refreshInFlight = this.request('/auth/refresh', { method: 'POST' }, false)
         .then(() => true)
-        .catch(() => false)
+        .catch((error: unknown) => {
+          if (error instanceof ApiError && error.status === 404 && error.code === 'SUPABASE_AUTH_NOT_ENABLED') {
+            this.refreshUnavailable = true;
+          }
+          return false;
+        })
         .finally(() => { this.refreshInFlight = undefined; });
     }
     return this.refreshInFlight;
