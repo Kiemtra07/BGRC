@@ -123,6 +123,24 @@ describe('runtime safety gate', () => {
     expect(readiness.message).toMatch(/lưu minh chứng.*không hợp lệ/i);
     expect(readiness.message).not.toMatch(/sẵn sàng/i);
   });
+
+  it('keeps production API live but reports readiness degraded while evidence scanning is unavailable', () => {
+    const readiness = buildReadinessPayload({ mode: 'postgres', durable: true, ready: true }, {
+      mode: 'google-drive',
+      durable: true,
+      ready: true,
+    }, {
+      runtimeEnvironment: 'production',
+      scannerConfigured: false,
+    });
+
+    expect(readiness).toMatchObject({
+      status: 'DEGRADED',
+      ready: false,
+      checks: { evidenceScanner: { configured: false, required: true } },
+    });
+    expect(readiness.message).toMatch(/scanner.*chưa cấu hình/i);
+  });
 });
 
 describe('demo data must not reach production', () => {
@@ -170,7 +188,16 @@ describe('demo data must not reach production', () => {
     expect(() => assertSafeRuntimeConfiguration(withoutClientSecret)).toThrow(/Google OIDC/);
   });
 
-  it('refuses production without the scanner callback boundary', () => {
+  it('allows production without a scanner but rejects a partial scanner configuration', () => {
+    const {
+      EVIDENCE_SCANNER_WEBHOOK_URL: _webhookUrl,
+      EVIDENCE_SCANNER_WEBHOOK_TOKEN: _webhookToken,
+      EVIDENCE_SCANNER_CALLBACK_BASE_URL: _callbackBaseUrl,
+      EVIDENCE_SCANNER_CALLBACK_TOKEN: _callbackToken,
+      ...withoutScanner
+    } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration(withoutScanner)).not.toThrow();
+
     const { EVIDENCE_SCANNER_CALLBACK_TOKEN, ...withoutScannerCallback } = productionBase;
     expect(() => assertSafeRuntimeConfiguration(withoutScannerCallback)).toThrow(/scanner minh chứng/i);
   });

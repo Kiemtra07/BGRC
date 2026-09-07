@@ -392,6 +392,8 @@ BOOTSTRAP_ADMIN_EMAIL=<admin-google-email>
 BOOTSTRAP_ADMIN_FULLNAME=<ho-ten-admin>
 ```
 
+Nếu chưa có provider scanner, để trống **cả bốn** biến `EVIDENCE_SCANNER_*`: API vẫn khởi động để vận hành các chức năng không liên quan, nhưng `/api/v1/ready` trả `DEGRADED` và mọi minh chứng mới giữ `QUARANTINED`, không được dùng để submit/approve. Không đặt cấu hình một phần: chỉ cần có một biến scanner thì webhook, callback HTTPS sạch và cả hai token tối thiểu 32 byte đều bắt buộc; cấu hình không đầy đủ làm production từ chối khởi động.
+
 Sinh khóa và hash trên PowerShell:
 
 ```powershell

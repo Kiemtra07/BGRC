@@ -7297,13 +7297,18 @@ async function rememberIdempotentResponse(context, response, status = 200) {
 function buildReadinessPayload(dataStore, evidenceStorage, options = {}) {
   const includeDiagnostics = options.includeDiagnostics ?? false;
   const authMode = options.authMode ?? "local-credential-session";
+  const runtimeEnvironment = options.runtimeEnvironment ?? process.env.NODE_ENV;
+  const scannerRequired = runtimeEnvironment === "production";
+  const scannerConfigured = options.scannerConfigured ?? evidenceScannerConfigurationStatus(process.env) === "configured";
+  const scannerReady = !scannerRequired || scannerConfigured;
   const productionSafeAuth = authMode === "credentials" || authMode === "oidc";
   const diagnostic = (warning, fallback) => includeDiagnostics ? warning ?? fallback : REDACTED_DIAGNOSTIC;
   const postgresUnavailable = dataStore.mode === "postgres" && !dataStore.ready;
   const dataStoreMessage = dataStore.mode === "postgres" ? postgresUnavailable ? `Postgres kh\xF4ng s\u1EB5n s\xE0ng. ${diagnostic(dataStore.warning, "Kh\xF4ng th\u1EC3 x\xE1c nh\u1EADn k\u1EBFt n\u1ED1i database.")}` : "Postgres \u0111\xE3 k\u1EBFt n\u1ED1i; state \u0111ang l\u01B0u b\u1EC1n v\u1EEFng ngo\xE0i filesystem serverless." : dataStore.durable ? "Local mode \u0111ang l\u01B0u tr\u1EA1ng th\xE1i b\u1EC1n v\u1EEFng b\u1EB1ng JSON nguy\xEAn t\u1EED." : "Local mode \u0111ang ch\u1EA1y b\u1EB1ng b\u1ED9 nh\u1EDB; d\u1EEF li\u1EC7u s\u1EBD m\u1EA5t khi ti\u1EBFn tr\xECnh d\u1EEBng.";
   const evidenceMessage = evidenceStorage.ready ? "" : evidenceStorage.mode === "google-drive" ? ` Google Drive ch\u01B0a s\u1EB5n s\xE0ng. ${diagnostic(evidenceStorage.warning, "Adapter API v3 ch\u01B0a \u0111\u01B0\u1EE3c c\xE0i \u0111\u1EB7t.")} H\u1EC7 th\u1ED1ng kh\xF4ng fallback local.` : ` Ch\u1EBF \u0111\u1ED9 l\u01B0u minh ch\u1EE9ng kh\xF4ng h\u1EE3p l\u1EC7. ${diagnostic(evidenceStorage.warning, "C\u1EA7n c\u1EA5u h\xECnh EVIDENCE_STORAGE_MODE h\u1EE3p l\u1EC7.")} H\u1EC7 th\u1ED1ng kh\xF4ng fallback local.`;
-  const ready = !postgresUnavailable && evidenceStorage.ready;
-  const message = ready ? `${dataStoreMessage}${evidenceMessage} C\xE1c dependency ch\xEDnh \u0111\xE3 s\u1EB5n s\xE0ng.` : `${dataStoreMessage}${evidenceMessage} Ch\u01B0a \u0111\u1EE7 \u0111i\u1EC1u ki\u1EC7n ph\u1EE5c v\u1EE5 production.`;
+  const scannerMessage = scannerReady ? "" : " Scanner minh ch\u1EE9ng ch\u01B0a c\u1EA5u h\xECnh; m\u1ECDi t\u1EC7p m\u1EDBi v\u1EABn b\u1ECB gi\u1EEF QUARANTINED v\xE0 kh\xF4ng th\u1EC3 \u0111\u01B0\u1EE3c d\xF9ng.";
+  const ready = !postgresUnavailable && evidenceStorage.ready && scannerReady;
+  const message = ready ? `${dataStoreMessage}${evidenceMessage}${scannerMessage} C\xE1c dependency ch\xEDnh \u0111\xE3 s\u1EB5n s\xE0ng.` : `${dataStoreMessage}${evidenceMessage}${scannerMessage} Ch\u01B0a \u0111\u1EE7 \u0111i\u1EC1u ki\u1EC7n ph\u1EE5c v\u1EE5 production.`;
   const redactedDataStore = includeDiagnostics || !("warning" in dataStore) || dataStore.warning === void 0 ? dataStore : { ...dataStore, warning: REDACTED_DIAGNOSTIC };
   const redactedEvidenceStorage = includeDiagnostics || evidenceStorage.warning === void 0 ? evidenceStorage : { ...evidenceStorage, warning: REDACTED_DIAGNOSTIC };
   return {
@@ -7312,6 +7317,7 @@ function buildReadinessPayload(dataStore, evidenceStorage, options = {}) {
     checks: {
       dataStore: redactedDataStore,
       evidenceStorage: redactedEvidenceStorage,
+      evidenceScanner: { configured: scannerConfigured, required: scannerRequired },
       auth: { mode: authMode, productionSafe: productionSafeAuth }
     },
     message
@@ -8121,6 +8127,16 @@ function isProductionScannerEndpoint(value) {
 function hasProductionScannerToken(value) {
   return Boolean(value?.trim()) && Buffer.byteLength(value, "utf8") >= 32;
 }
+function evidenceScannerConfigurationStatus(env) {
+  const values = [
+    env.EVIDENCE_SCANNER_WEBHOOK_URL,
+    env.EVIDENCE_SCANNER_WEBHOOK_TOKEN,
+    env.EVIDENCE_SCANNER_CALLBACK_BASE_URL,
+    env.EVIDENCE_SCANNER_CALLBACK_TOKEN
+  ];
+  if (values.every((value) => !value?.trim())) return "absent";
+  return isProductionScannerEndpoint(env.EVIDENCE_SCANNER_WEBHOOK_URL) && isProductionScannerEndpoint(env.EVIDENCE_SCANNER_CALLBACK_BASE_URL) && hasProductionScannerToken(env.EVIDENCE_SCANNER_WEBHOOK_TOKEN) && hasProductionScannerToken(env.EVIDENCE_SCANNER_CALLBACK_TOKEN) ? "configured" : "invalid";
+}
 function assertSafeRuntimeConfiguration(env = process.env) {
   if (env.NODE_ENV !== "production") return;
   const violations = [];
@@ -8149,8 +8165,7 @@ function assertSafeRuntimeConfiguration(env = process.env) {
   if (env.DATA_STORE_MODE !== "postgres" || !env.DATABASE_URL) violations.push("DATA_STORE_MODE=postgres v\xE0 DATABASE_URL l\xE0 b\u1EAFt bu\u1ED9c");
   if (!env.CRON_SECRET) violations.push("thi\u1EBFu CRON_SECRET");
   if (env.EVIDENCE_STORAGE_MODE !== "google-drive") violations.push("EVIDENCE_STORAGE_MODE ph\u1EA3i l\xE0 google-drive");
-  const scannerConfigured = isProductionScannerEndpoint(env.EVIDENCE_SCANNER_WEBHOOK_URL) && isProductionScannerEndpoint(env.EVIDENCE_SCANNER_CALLBACK_BASE_URL) && hasProductionScannerToken(env.EVIDENCE_SCANNER_WEBHOOK_TOKEN) && hasProductionScannerToken(env.EVIDENCE_SCANNER_CALLBACK_TOKEN);
-  if (!scannerConfigured) {
+  if (evidenceScannerConfigurationStatus(env) === "invalid") {
     violations.push("c\u1EA5u h\xECnh scanner minh ch\u1EE9ng ph\u1EA3i c\xF3 webhook/callback HTTPS kh\xF4ng k\xE8m credential ho\u1EB7c query v\xE0 hai token t\u1ED1i thi\u1EC3u 32 byte");
   }
   const oauthUserDrive = env.GOOGLE_DRIVE_AUTH_MODE === "oauth-user";
@@ -9138,7 +9153,12 @@ var init_app = __esm({
     app.get("/api/v1/ready", async (req) => buildReadinessPayload(
       await stateRepository.getStatus(),
       await googleDriveService.getStorageStatus(),
-      { includeDiagnostics: Boolean(optionalAdminViewer(req)), authMode: process.env.AUTH_MODE }
+      {
+        includeDiagnostics: Boolean(optionalAdminViewer(req)),
+        authMode: process.env.AUTH_MODE,
+        runtimeEnvironment: process.env.NODE_ENV,
+        scannerConfigured: evidenceScannerConfigurationStatus(process.env) === "configured"
+      }
     ));
     app.route({
       method: ["GET", "POST"],

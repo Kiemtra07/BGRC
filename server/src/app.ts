@@ -3241,10 +3241,19 @@ const REDACTED_DIAGNOSTIC = 'Chi tiết lỗi chỉ hiển thị cho quản tr�
 export function buildReadinessPayload(
   dataStore: StateRepositoryStatus,
   evidenceStorage: EvidenceStorageStatus,
-  options: { includeDiagnostics?: boolean; authMode?: string } = {},
+  options: {
+    includeDiagnostics?: boolean;
+    authMode?: string;
+    runtimeEnvironment?: string;
+    scannerConfigured?: boolean;
+  } = {},
 ) {
   const includeDiagnostics = options.includeDiagnostics ?? false;
   const authMode = options.authMode ?? 'local-credential-session';
+  const runtimeEnvironment = options.runtimeEnvironment ?? process.env.NODE_ENV;
+  const scannerRequired = runtimeEnvironment === 'production';
+  const scannerConfigured = options.scannerConfigured ?? evidenceScannerConfigurationStatus(process.env) === 'configured';
+  const scannerReady = !scannerRequired || scannerConfigured;
   const productionSafeAuth = authMode === 'credentials' || authMode === 'oidc';
   const diagnostic = (warning: string | undefined, fallback: string): string => (
     includeDiagnostics ? warning ?? fallback : REDACTED_DIAGNOSTIC
@@ -3263,10 +3272,13 @@ export function buildReadinessPayload(
     : evidenceStorage.mode === 'google-drive'
       ? ` Google Drive chưa sẵn sàng. ${diagnostic(evidenceStorage.warning, 'Adapter API v3 chưa được cài đặt.')} Hệ thống không fallback local.`
       : ` Chế độ lưu minh chứng không hợp lệ. ${diagnostic(evidenceStorage.warning, 'Cần cấu hình EVIDENCE_STORAGE_MODE hợp lệ.')} Hệ thống không fallback local.`;
-  const ready = !postgresUnavailable && evidenceStorage.ready;
+  const scannerMessage = scannerReady
+    ? ''
+    : ' Scanner minh chứng chưa cấu hình; mọi tệp mới vẫn bị giữ QUARANTINED và không thể được dùng.';
+  const ready = !postgresUnavailable && evidenceStorage.ready && scannerReady;
   const message = ready
-    ? `${dataStoreMessage}${evidenceMessage} Các dependency chính đã sẵn sàng.`
-    : `${dataStoreMessage}${evidenceMessage} Chưa đủ điều kiện phục vụ production.`;
+    ? `${dataStoreMessage}${evidenceMessage}${scannerMessage} Các dependency chính đã sẵn sàng.`
+    : `${dataStoreMessage}${evidenceMessage}${scannerMessage} Chưa đủ điều kiện phục vụ production.`;
   // Chỉ nhánh Postgres của StateRepositoryStatus mới có trường warning, nên phải hỏi trước khi đọc.
   const redactedDataStore: StateRepositoryStatus = includeDiagnostics
     || !('warning' in dataStore) || dataStore.warning === undefined
@@ -3281,6 +3293,7 @@ export function buildReadinessPayload(
     checks: {
       dataStore: redactedDataStore,
       evidenceStorage: redactedEvidenceStorage,
+      evidenceScanner: { configured: scannerConfigured, required: scannerRequired },
       auth: { mode: authMode, productionSafe: productionSafeAuth },
     },
     message,
@@ -3298,7 +3311,12 @@ function optionalAdminViewer(request: FastifyRequest): UserProfile | undefined {
 app.get('/api/v1/ready', async (req) => buildReadinessPayload(
   await stateRepository.getStatus(),
   await googleDriveService.getStorageStatus(),
-  { includeDiagnostics: Boolean(optionalAdminViewer(req)), authMode: process.env.AUTH_MODE },
+  {
+    includeDiagnostics: Boolean(optionalAdminViewer(req)),
+    authMode: process.env.AUTH_MODE,
+    runtimeEnvironment: process.env.NODE_ENV,
+    scannerConfigured: evidenceScannerConfigurationStatus(process.env) === 'configured',
+  },
 ));
 
 function requireCronAuthorization(request: FastifyRequest): void {
@@ -7104,6 +7122,24 @@ function hasProductionScannerToken(value: string | undefined): boolean {
   return Boolean(value?.trim()) && Buffer.byteLength(value!, 'utf8') >= 32;
 }
 
+type EvidenceScannerConfigurationStatus = 'absent' | 'configured' | 'invalid';
+
+function evidenceScannerConfigurationStatus(env: NodeJS.ProcessEnv): EvidenceScannerConfigurationStatus {
+  const values = [
+    env.EVIDENCE_SCANNER_WEBHOOK_URL,
+    env.EVIDENCE_SCANNER_WEBHOOK_TOKEN,
+    env.EVIDENCE_SCANNER_CALLBACK_BASE_URL,
+    env.EVIDENCE_SCANNER_CALLBACK_TOKEN,
+  ];
+  if (values.every(value => !value?.trim())) return 'absent';
+  return isProductionScannerEndpoint(env.EVIDENCE_SCANNER_WEBHOOK_URL)
+    && isProductionScannerEndpoint(env.EVIDENCE_SCANNER_CALLBACK_BASE_URL)
+    && hasProductionScannerToken(env.EVIDENCE_SCANNER_WEBHOOK_TOKEN)
+    && hasProductionScannerToken(env.EVIDENCE_SCANNER_CALLBACK_TOKEN)
+    ? 'configured'
+    : 'invalid';
+}
+
 export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.env): void {
   if (env.NODE_ENV !== 'production') return;
 
@@ -7134,11 +7170,7 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
   if (env.DATA_STORE_MODE !== 'postgres' || !env.DATABASE_URL) violations.push('DATA_STORE_MODE=postgres và DATABASE_URL là bắt buộc');
   if (!env.CRON_SECRET) violations.push('thiếu CRON_SECRET');
   if (env.EVIDENCE_STORAGE_MODE !== 'google-drive') violations.push('EVIDENCE_STORAGE_MODE phải là google-drive');
-  const scannerConfigured = isProductionScannerEndpoint(env.EVIDENCE_SCANNER_WEBHOOK_URL)
-    && isProductionScannerEndpoint(env.EVIDENCE_SCANNER_CALLBACK_BASE_URL)
-    && hasProductionScannerToken(env.EVIDENCE_SCANNER_WEBHOOK_TOKEN)
-    && hasProductionScannerToken(env.EVIDENCE_SCANNER_CALLBACK_TOKEN);
-  if (!scannerConfigured) {
+  if (evidenceScannerConfigurationStatus(env) === 'invalid') {
     violations.push('cấu hình scanner minh chứng phải có webhook/callback HTTPS không kèm credential hoặc query và hai token tối thiểu 32 byte');
   }
   const oauthUserDrive = env.GOOGLE_DRIVE_AUTH_MODE === 'oauth-user';
