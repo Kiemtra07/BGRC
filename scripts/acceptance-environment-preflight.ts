@@ -78,22 +78,22 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
       // on schema_release_log too, so mirror the production backend transaction context before
       // reading the manifest. This remains transaction-local and the transaction is read-only.
       await client.query("SELECT set_config('app.runtime_role', 'backend', true)");
-      const [migrationLogResult, roleResult, authSecurityStateResult] = await Promise.all([
-        client.query<{ present: boolean }>(`
+      // `pg` serializes one client connection; do not issue Promise.all queries on it because
+      // newer pg versions warn and will remove that compatibility behavior.
+      const migrationLogResult = await client.query<{ present: boolean }>(`
           SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
             WHERE table_schema = 'public' AND table_name = 'schema_release_log'
           ) AS present
-        `),
-        client.query<{ rolsuper: boolean; rolbypassrls: boolean }>(`
+        `);
+      const roleResult = await client.query<{ rolsuper: boolean; rolbypassrls: boolean }>(`
           SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user
-        `),
-        client.query<{ login_attempts: boolean; used_totp_counters: boolean }>(`
+        `);
+      const authSecurityStateResult = await client.query<{ login_attempts: boolean; used_totp_counters: boolean }>(`
           SELECT
             to_regclass('public.auth_login_attempts') IS NOT NULL AS login_attempts,
             to_regclass('public.auth_used_totp_counters') IS NOT NULL AS used_totp_counters
-        `),
-      ]);
+        `);
 
       result.database.connected = true;
       result.database.migrationLogPresent = migrationLogResult.rows[0]?.present ?? false;

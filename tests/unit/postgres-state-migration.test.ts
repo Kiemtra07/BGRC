@@ -4,12 +4,22 @@ import { describe, expect, it } from 'vitest';
 import { isAcceptedLegacyChecksum } from '../../db/migrate';
 
 const migrationPath = path.resolve('db/migrations/0080_postgres_state_and_rls.sql');
+const runtimeManifestPolicyPath = path.resolve('db/migrations/0131_schema_release_log_runtime_read.sql');
 
 describe('Postgres state migration 0080', () => {
   it('accepts only the audited legacy checksum for migration 0120', () => {
     expect(isAcceptedLegacyChecksum('0120', 'ba7cb687c305cebc8f2f0c78af9749573cb3bbdfef28a36587fcefa2394c059')).toBe(true);
     expect(isAcceptedLegacyChecksum('0120', 'ba7cb687c305ceb8c2f2f0c78af9749573cb3bbdfef28a36587fcefa2394c059')).toBe(false);
     expect(isAcceptedLegacyChecksum('0121', 'ba7cb687c305cebc8f2f0c78af9749573cb3bbdfef28a36587fcefa2394c059')).toBe(false);
+  });
+
+  it('allows the least-privilege backend transaction to read the migration ledger through RLS', () => {
+    const sql = fs.readFileSync(runtimeManifestPolicyPath, 'utf8');
+
+    expect(sql).toMatch(/CREATE POLICY backend_schema_release_log_read/i);
+    expect(sql).toMatch(/FOR SELECT/i);
+    expect(sql).toMatch(/current_setting\('app\.runtime_role',\s*true\)\)\s*=\s*'backend'/i);
+    expect(sql).toMatch(/REVOKE ALL ON TABLE public\.schema_release_log FROM PUBLIC/i);
   });
 
   it('adds a concurrency-safe aggregate snapshot and the normalized entities missing from 0001-0070', () => {
