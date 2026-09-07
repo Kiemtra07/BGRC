@@ -1,7 +1,7 @@
 import { Pool } from 'pg';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { listMigrationFiles } from '../db/migrate';
+import { isAcceptedLegacyChecksum, listMigrationFiles } from '../db/migrate';
 
 type PreflightResult = {
   command: 'acceptance:preflight';
@@ -129,7 +129,10 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
         result.database.checksumDrift = migrations
           .filter(migration => {
             const actual = applied.get(migration.version);
-            return actual !== undefined && actual !== null && actual !== migration.checksum;
+            return actual !== undefined
+              && actual !== null
+              && actual !== migration.checksum
+              && !isAcceptedLegacyChecksum(migration.version, actual);
           })
           .map(migration => migration.version);
       }
