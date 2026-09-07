@@ -1,10 +1,17 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { isAcceptedLegacyChecksum } from '../../db/migrate';
 
 const migrationPath = path.resolve('db/migrations/0080_postgres_state_and_rls.sql');
 
 describe('Postgres state migration 0080', () => {
+  it('accepts only the audited legacy checksum for migration 0120', () => {
+    expect(isAcceptedLegacyChecksum('0120', 'ba7cb687c305cebc8f2f0c78af9749573cb3bbdfef28a36587fcefa2394c059')).toBe(true);
+    expect(isAcceptedLegacyChecksum('0120', 'ba7cb687c305ceb8c2f2f0c78af9749573cb3bbdfef28a36587fcefa2394c059')).toBe(false);
+    expect(isAcceptedLegacyChecksum('0121', 'ba7cb687c305cebc8f2f0c78af9749573cb3bbdfef28a36587fcefa2394c059')).toBe(false);
+  });
+
   it('adds a concurrency-safe aggregate snapshot and the normalized entities missing from 0001-0070', () => {
     expect(fs.existsSync(migrationPath)).toBe(true);
     const sql = fs.readFileSync(migrationPath, 'utf8');

@@ -14,6 +14,18 @@ export interface MigrationFile {
 
 const migrationsDirectory = path.join(path.dirname(fileURLToPath(import.meta.url)), 'migrations');
 
+// Migration 0120 was applied to the first production database from the pre-release
+// artifact, whose SQL differs only in its recorded checksum. Keep that immutable
+// production record intact, but accept only this exact known legacy checksum. A
+// follow-up reconciliation migration verifies the required ledger structure.
+const acceptedLegacyChecksums: Readonly<Record<string, readonly string[]>> = {
+  '0120': ['ba7cb687c305cebc8f2f0c78af9749573cb3bbdfef28a36587fcefa2394c059'],
+};
+
+export function isAcceptedLegacyChecksum(version: string, checksum: string | null): boolean {
+  return checksum !== null && (acceptedLegacyChecksums[version]?.includes(checksum) ?? false);
+}
+
 export async function listMigrationFiles(directory = migrationsDirectory): Promise<MigrationFile[]> {
   const names = (await fs.readdir(directory))
     .filter(name => /^\d{4}_[a-z0-9_]+\.sql$/i.test(name))
@@ -70,7 +82,7 @@ export async function migrate(options: { dryRun?: boolean } = {}): Promise<void>
     for (const migration of migrations) {
       const priorChecksum = applied.get(migration.version);
       if (priorChecksum !== undefined) {
-        if (priorChecksum && priorChecksum !== migration.checksum) {
+        if (priorChecksum && priorChecksum !== migration.checksum && !isAcceptedLegacyChecksum(migration.version, priorChecksum)) {
           throw new Error(`Checksum drift detected for migration ${migration.name}`);
         }
         if (!priorChecksum) {
