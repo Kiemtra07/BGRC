@@ -403,11 +403,13 @@ npm run auth:hash-password -- '<mat-khau-manh>'
 
 ### 7.3a Kiểm tra trước nghiệm thu và chạy worker outbox
 
-Trước khi chạy migration hoặc test trên database staging riêng, dùng lệnh chỉ đọc sau. Lệnh chỉ kiểm URL/configuration, kết nối, role runtime và checksum migration; không in `DATABASE_URL` hay secret:
+Trước khi chạy migration hoặc test trên database staging riêng, dùng lệnh chỉ đọc sau. Lệnh chỉ kiểm URL/configuration, kết nối, role runtime, checksum migration và hai bảng bảo mật đăng nhập; không in `DATABASE_URL` hay secret:
 
 ```powershell
 npm run acceptance:preflight
 ```
+
+Chỉ redeploy bản có thay đổi xác thực khi tất cả check đều PASS, đặc biệt `migration-manifest` và `auth-security-state`. Check cuối yêu cầu cả `auth_login_attempts` lẫn `auth_used_totp_counters`, do migration `0125_auth_security_state.sql` tạo. Nếu thiếu, chạy `npm run db:migrate` từ máy quản trị có `DATABASE_URL` server-only rồi chạy lại preflight; không bỏ qua limiter hoặc dùng Vercel environment download để lấy Secret.
 
 Outbox không chạy trên local JSON/memory. Sau khi PostgreSQL, webhook và scanner đã cấu hình, chạy một vòng worker từ môi trường có các secret server-only:
 

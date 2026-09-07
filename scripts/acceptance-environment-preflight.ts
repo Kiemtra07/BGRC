@@ -14,6 +14,7 @@ type PreflightResult = {
     missingMigrations: string[];
     unexpectedMigrations: string[];
     checksumDrift: string[];
+    authSecurityStateReady: boolean | null;
     runtimeRole: { superuser: boolean | null; bypassRls: boolean | null };
   };
   checks: Array<{ name: string; passed: boolean; detail: string }>;
@@ -40,6 +41,7 @@ function baseResult(applicationMigrationCount: number): PreflightResult {
       missingMigrations: [],
       unexpectedMigrations: [],
       checksumDrift: [],
+      authSecurityStateReady: null,
       runtimeRole: { superuser: null, bypassRls: null },
     },
     checks: [],
@@ -72,7 +74,7 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
     const client = await pool.connect();
     try {
       await client.query('BEGIN READ ONLY');
-      const [migrationLogResult, roleResult] = await Promise.all([
+      const [migrationLogResult, roleResult, authSecurityStateResult] = await Promise.all([
         client.query<{ present: boolean }>(`
           SELECT EXISTS (
             SELECT 1 FROM information_schema.tables
@@ -81,6 +83,11 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
         `),
         client.query<{ rolsuper: boolean; rolbypassrls: boolean }>(`
           SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user
+        `),
+        client.query<{ login_attempts: boolean; used_totp_counters: boolean }>(`
+          SELECT
+            to_regclass('public.auth_login_attempts') IS NOT NULL AS login_attempts,
+            to_regclass('public.auth_used_totp_counters') IS NOT NULL AS used_totp_counters
         `),
       ]);
 
@@ -91,6 +98,9 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
         superuser: role?.rolsuper ?? null,
         bypassRls: role?.rolbypassrls ?? null,
       };
+      const authSecurityState = authSecurityStateResult.rows[0];
+      result.database.authSecurityStateReady = authSecurityState?.login_attempts === true
+        && authSecurityState?.used_totp_counters === true;
 
       result.checks.push({
         name: 'postgres-read-only-connection',
@@ -134,6 +144,13 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
         detail: migrationsCurrent
           ? 'schema_release_log matches the local migration manifest.'
           : 'Apply or reconcile migrations before acceptance testing.',
+      });
+      result.checks.push({
+        name: 'auth-security-state',
+        passed: result.database.authSecurityStateReady === true,
+        detail: result.database.authSecurityStateReady
+          ? 'Authentication rate-limit and TOTP replay tables are present.'
+          : 'Apply migration 0125_auth_security_state.sql before deploying authentication changes.',
       });
       await client.query('ROLLBACK');
     } finally {
