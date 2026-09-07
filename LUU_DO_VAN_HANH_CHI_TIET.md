@@ -28,7 +28,7 @@ flowchart TD
     A0["Admin cấu hình trước khi tạo hồ sơ<br/>User/role/scope • Chuyên đề • Loại báo cáo<br/>Form/Excel • Tuyến 1/2/3 cấp • SLA • Tích hợp"]
     A1["Khối Nội bộ khởi tạo/import<br/>Excel, ZIP, dán Excel, DOCX hoặc Web Form/API"]
     A2{"Dữ liệu hợp lệ?"}
-    A3["Staging + xác nhận import<br/>Xem lỗi theo dòng/cột rồi mới ghi chính thức"]
+    A3["Staging + xác nhận import<br/>Xem lỗi theo dòng/cột; checkpoint thủ công hoặc worker nền PostgreSQL"]
     P["Tạo hồ sơ<br/>workflowStatus = PENDING<br/>Ghim phiên bản form/luồng/SLA"]
     B["Chi nhánh tiếp nhận và khắc phục<br/>Giải trình • xử lý từng ý • tải bằng chứng nếu được yêu cầu"]
     Q{"Đủ bằng chứng và giải trình?"}
@@ -101,7 +101,8 @@ flowchart LR
 - Bằng chứng có MIME, kích thước tối đa 25 MB, checksum, người tải, thời điểm và phiên bản; chi nhánh chỉ thêm/thu hồi khi `PENDING` hoặc `REJECTED`.
 - Khi hồ sơ đã nộp, tài liệu cấp chi nhánh bị khóa sửa; cấp kiểm soát/phê duyệt chỉ xem và đánh giá.
 - SLA quét lúc 08:30 theo `Asia/Ho_Chi_Minh`: `ON_TRACK` → `DUE_SOON` → `OVERDUE`; khi đóng hồ sơ thì `CLOSED`. SLA không thay thế `workflowStatus`.
-- Mọi nộp, duyệt, trả, đổi dấu sao, upload và gia hạn phải có audit event; thông báo production đi qua outbox có retry và chống gửi trùng.
+- Mọi nộp, duyệt, trả, đổi dấu sao, upload và gia hạn phải có audit event; thông báo production đi qua outbox có retry và chống gửi trùng. Scheduler gọi endpoint outbox có `CRON_SECRET`; local JSON/memory từ chối chạy worker.
+- Minh chứng production bắt đầu `QUARANTINED`; scanner callback có token và checksum khớp mới đổi thành `AVAILABLE` hoặc `REJECTED`. Chỉ `AVAILABLE` mới đáp ứng điều kiện nộp/duyệt/đóng.
 - Local hiện còn lưu binary ở `data/drive_storage`; production chỉ được coi là sẵn sàng sau khi nghiệm thu Drive thật và secret triển khai.
 
 ## 6. Chuyên đề và phiên bản cấu hình

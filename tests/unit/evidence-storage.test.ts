@@ -85,6 +85,21 @@ describe('local evidence upload guard', () => {
     },
   );
 
+  it('removes an orphaned local upload by its exact generated file ID only', async () => {
+    const adapter = new GoogleDriveAdapter({ storageMode: 'local', localEvidenceDir: temporaryEvidenceDirectory() });
+    const uploaded = await adapter.uploadEvidenceFile({
+      fileName: 'bien-ban-tam.pdf',
+      fileBuffer: Buffer.from('%PDF-1.7\norphaned upload'),
+      mimeType: 'application/pdf',
+      folderPath: '/AUDIT_BGS/2026',
+      findingId: 'finding-1',
+    });
+
+    await expect(adapter.deleteEvidenceFile(uploaded.driveFileId)).resolves.toBe(true);
+    await expect(adapter.getFileContentStream(uploaded.driveFileId)).resolves.toBeNull();
+    await expect(adapter.deleteEvidenceFile(uploaded.driveFileId)).resolves.toBe(false);
+  });
+
   it('reports Google Drive as not ready without credentials and rejects uploads without local fallback', async () => {
     const adapter = new GoogleDriveAdapter({ storageMode: 'google-drive' });
 
@@ -234,6 +249,8 @@ describe('local evidence upload guard', () => {
 
     const content = await adapter.getFileContentStream('drive-file-123');
     expect(content).toMatchObject({ fileName: 'Biên bản 10MB.pdf', mimeType: 'application/pdf' });
+    await expect(adapter.deleteEvidenceFile('drive-file-123')).resolves.toBe(true);
+    expect(requests.find(request => request.url.includes('/files/drive-file-123') && request.init?.method === 'DELETE')).toBeDefined();
   });
 
   it('starts a resumable upload from the provisioned campaign folder when provided', async () => {

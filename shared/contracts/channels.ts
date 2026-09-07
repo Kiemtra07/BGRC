@@ -106,6 +106,10 @@ export interface DynamicSlaConfig {
   lowRiskDays: number;
   escalationAfterDaysOverdue: number;
   reminderDaysBefore: number[];
+  /** Count SLA duration and reminder thresholds by working days when enabled. */
+  businessDaysOnly: boolean;
+  /** YYYY-MM-DD dates that are non-working days in addition to Saturday and Sunday. */
+  holidayDates: string[];
 }
 
 export interface GoogleSheetsConfig {
@@ -292,6 +296,14 @@ export const DynamicWorkflowConfigSchema = z.object({
   stages: z.array(DynamicWorkflowStageSchema).min(2).max(4),
 });
 
+const SlaHolidayDateSchema = z.string()
+  .regex(/^\d{4}-\d{2}-\d{2}$/, 'Ngày nghỉ phải theo định dạng YYYY-MM-DD')
+  .refine(value => {
+    const [year, month, day] = value.split('-').map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  }, 'Ngày nghỉ không hợp lệ');
+
 export const DynamicSlaConfigSchema = z.object({
   defaultDays: z.number().int().min(1).max(365),
   highRiskDays: z.number().int().min(1).max(365),
@@ -299,6 +311,9 @@ export const DynamicSlaConfigSchema = z.object({
   lowRiskDays: z.number().int().min(1).max(365),
   escalationAfterDaysOverdue: z.number().int().min(0).max(90),
   reminderDaysBefore: z.array(z.number().int().min(0).max(365)).max(20),
+  businessDaysOnly: z.boolean().default(false),
+  holidayDates: z.array(SlaHolidayDateSchema).max(366).default([])
+    .refine(values => new Set(values).size === values.length, 'Ngày nghỉ không được trùng lặp'),
 });
 
 export const ReportChannelIntegrationConfigSchema = z.object({

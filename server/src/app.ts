@@ -10,10 +10,12 @@ import {
   ReportChannel, 
   OrgUnit, 
   ImportBatch, 
+  StagingRow,
   EvidenceObject, 
   RevokeEvidenceSchema,
   CreateEvidenceUploadSessionSchema,
   CompleteEvidenceDirectUploadSchema,
+  CompleteEvidenceScanSchema,
   canManageEvidenceAtBranch,
   WorkflowEvent,
   SlaExtensionRequest,
@@ -23,6 +25,9 @@ import {
   BranchLeaderApproveCommandSchema,
   BranchLeaderRejectCommandSchema,
   BulkFindingImportSchema,
+  StageFindingImportSchema,
+  CommitStagedFindingImportSchema,
+  ScheduleStagedFindingImportSchema,
   buildFindingBusinessKey,
   CreateOrgUnitSchema,
   BulkOrgUnitImportSchema,
@@ -39,6 +44,8 @@ import {
   PaginationQuerySchema,
   SubmitBranchCommandSchema,
   SetFindingSpecialCaseSchema,
+  ReassignApprovalRouteSchema,
+  ApprovalAssignmentStage,
   FindingApprovalRoute,
   WebFormFindingSchema,
   WebFormFindingDTO,
@@ -90,6 +97,9 @@ import {
   AuthSessionRecord,
   UpdateAuthenticatorSchema,
   UpdateAuthenticatorResponse,
+  ConfirmAuthenticatorEnrollmentSchema,
+  ConfirmAuthenticatorEnrollmentResponse,
+  StepUpSchema,
   SecuritySettings,
   SecuritySettingsResponse,
   SecuritySettingsSchema,
@@ -103,6 +113,8 @@ import {
   hasAppCapability,
 } from '../../shared/contracts';
 import { workflowService } from './modules/workflow/workflow-service';
+import { approvalCandidatesForFinding, reassignApprovalStage, resolveApprovalRoute } from './modules/workflow/approval-assignment';
+import { insertApprovalAssignmentHistory, type ApprovalAssignmentHistoryWrite } from './repositories/approval-assignment-history';
 import { EvidenceStorageStatus, googleDriveService } from './adapters/google-drive';
 import { appsScriptDriveGateway } from './adapters/apps-script-drive';
 import { pool } from './adapters/postgres';
@@ -114,7 +126,11 @@ import { PostgresStateRepository } from './repositories/postgres-state';
 import type { PostgresPoolLike } from './repositories/postgres-state';
 import { PostgresWorkflowEventLedger } from './repositories/workflow-event-ledger';
 import { PostgresSecurityEventLedger } from './repositories/security-event-ledger';
-import { PostgresFindingRecords } from './repositories/finding-records';
+import { decodeFindingListCursor, encodeFindingListCursor, PostgresFindingRecords } from './repositories/finding-records';
+import { PostgresAuthSecurityState } from './repositories/auth-security-state';
+import { insertOutboxEvents, type EnqueueOutboxEvent, PostgresOutbox } from './repositories/outbox';
+import { createStagedImportCheckpointEvent } from './modules/ingestion/staged-import-background';
+import { initialEvidenceScanDisposition } from './security/evidence-scan-policy';
 import { flushPendingEventIds } from './state/security-event-queue';
 import { cascadeOrgUnitChange } from './modules/org-unit-cascade';
 import {
@@ -122,11 +138,12 @@ import {
   IdempotencyStore,
   MemoryIdempotencyStore,
   PostgresIdempotencyStore,
+  completeIdempotencyClaim,
 } from './repositories/idempotency-store';
 import { DurableStateCoordinator } from './state/durable-state-coordinator';
 import { StateMergeConflictError, threeWayMergeState } from './state/three-way-state-merge';
 import { RuntimeStateGate, requestCarriesCredentials, shouldHydrateRuntimeStatePerRequest } from './state/runtime-request-lock';
-import { addCalendarDays, runSlaEvaluation, slaWorker, toCalendarDateString } from './worker/sla-worker';
+import { addSlaDays, calendarDate, runSlaEvaluation, slaDaysRemaining, slaWorker, toCalendarDateString } from './worker/sla-worker';
 import { shouldStartEmbeddedSlaRuntime, startDailySlaRuntime } from './worker/sla-scheduler';
 import { HttpProblem, normalizeProblem, sendProblem, workflowErrorToProblem } from './http/problem';
 import {
@@ -150,7 +167,9 @@ import {
   encryptTotpSecret,
   generateTotpSecret,
   verifyTotpCode,
+  matchingTotpCounter,
 } from './security/totp';
+import { validateEvidenceContent } from './security/evidence-content';
 import {
   createGoogleDriveOAuthState,
   decryptGoogleDriveRefreshToken,
@@ -197,7 +216,32 @@ const API_CONTENT_SECURITY_POLICY = [
   "style-src 'unsafe-inline'",
 ].join('; ');
 
-app.addHook('onSend', async (_request, reply) => {
+interface RequestMeasurement { durationMs: number; statusCode: number; path: string; }
+const requestStartedAt = new Map<string, number>();
+const requestMeasurements: RequestMeasurement[] = [];
+const REQUEST_MEASUREMENT_LIMIT = 500;
+let lastSuccessfulSlaRunAt: string | null = null;
+
+function recordRequestMeasurement(request: FastifyRequest, statusCode: number): void {
+  const startedAt = requestStartedAt.get(request.id);
+  requestStartedAt.delete(request.id);
+  if (!startedAt || !request.url.startsWith('/api/')) return;
+  requestMeasurements.push({ durationMs: Math.max(0, Date.now() - startedAt), statusCode, path: request.url.split('?')[0] });
+  if (requestMeasurements.length > REQUEST_MEASUREMENT_LIMIT) requestMeasurements.splice(0, requestMeasurements.length - REQUEST_MEASUREMENT_LIMIT);
+}
+
+function percentile(values: number[], percentileValue: number): number {
+  if (!values.length) return 0;
+  const ordered = [...values].sort((left, right) => left - right);
+  return ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * percentileValue) - 1)];
+}
+
+app.addHook('onRequest', async request => {
+  requestStartedAt.set(request.id, Date.now());
+});
+
+app.addHook('onSend', async (request, reply) => {
+  reply.header('X-Request-Id', request.id);
   reply.header('Content-Security-Policy', API_CONTENT_SECURITY_POLICY);
   reply.header('X-Content-Type-Options', 'nosniff');
   reply.header('X-Frame-Options', 'DENY');
@@ -214,6 +258,9 @@ app.addHook('onSend', async (_request, reply) => {
 app.register(multipart, { limits: { fileSize: 25 * 1024 * 1024 } }); // 25MB max
 
 const internalSlaPath = '/api/v1/internal/sla/run';
+const internalOutboxPath = '/api/v1/internal/outbox/run';
+const evidenceScanCallbackPrefix = '/api/v1/internal/evidence-scans/';
+const isEvidenceScanCallbackPath = (path: string): boolean => /^\/api\/v1\/internal\/evidence-scans\/[^/]+\/complete$/.test(path);
 const publicPaths = new Set([
   '/api/v1/health',
   '/api/v1/ready',
@@ -224,9 +271,10 @@ const publicPaths = new Set([
   '/api/v1/auth/google',
   '/api/v1/auth/google/callback',
   internalSlaPath,
+  internalOutboxPath,
 ]);
 const requestUsers = new WeakMap<FastifyRequest, UserProfile>();
-const idempotencyRequests = new WeakMap<FastifyRequest, { cacheKey: string; requestHash: string; claimed: boolean }>();
+const idempotencyRequests = new WeakMap<FastifyRequest, { cacheKey: string; requestHash: string; claimToken?: string; claimed: boolean }>();
 let authSessionStore: AuthSessionStore;
 const supabaseAuthAdapter: SupabaseAuthAdapter | undefined = process.env.AUTH_MODE === 'supabase'
   && process.env.SUPABASE_URL
@@ -252,6 +300,57 @@ function cookieValue(request: FastifyRequest, name: string): string | undefined 
   return undefined;
 }
 
+const unsafeHttpMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+const CSRF_COOKIE = 'audit_bgs_csrf';
+const CSRF_HEADER = 'x-csrf-token';
+const CSRF_TOKEN_TTL_SECONDS = 8 * 60 * 60;
+const STEP_UP_TTL_MS = 10 * 60 * 1_000;
+
+type CookieReply = { header(name: string, value: string | string[]): unknown };
+
+function csrfCookieValue(): string {
+  return crypto.randomBytes(32).toString('base64url');
+}
+
+function csrfCookie(token: string, maxAge: number): string {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  return `${CSRF_COOKIE}=${encodeURIComponent(token)}; Path=/; SameSite=Lax; Max-Age=${maxAge}${secure}`;
+}
+
+function hasBrowserSessionCookie(request: FastifyRequest): boolean {
+  return Boolean(
+    cookieValue(request, 'audit_bgs_session')
+    || cookieValue(request, 'audit_bgs_supabase_access')
+    || cookieValue(request, 'audit_bgs_supabase_refresh'),
+  );
+}
+
+function assertTrustedOriginForCookieWrite(request: FastifyRequest): void {
+  if (!unsafeHttpMethods.has(request.method) || !hasBrowserSessionCookie(request)) return;
+
+  const origin = request.headers.origin;
+  if (typeof origin !== 'string' || !allowedOrigins.includes(origin)) {
+    throw new HttpProblem(
+      403,
+      'CSRF_ORIGIN_REJECTED',
+      'Nguồn yêu cầu không hợp lệ',
+      'Yêu cầu thay đổi dữ liệu từ phiên trình duyệt phải đến từ ứng dụng đã được cấu hình.',
+    );
+  }
+
+  const cookieToken = cookieValue(request, CSRF_COOKIE);
+  const requestToken = request.headers[CSRF_HEADER];
+  if (typeof requestToken !== 'string' || !cookieToken) {
+    throw new HttpProblem(403, 'CSRF_TOKEN_REQUIRED', 'Thiếu mã bảo vệ yêu cầu', 'Hãy tải lại trang rồi thử lại thao tác.');
+  }
+
+  const expected = Buffer.from(cookieToken, 'utf8');
+  const received = Buffer.from(requestToken, 'utf8');
+  if (expected.length === 0 || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
+    throw new HttpProblem(403, 'CSRF_TOKEN_INVALID', 'Mã bảo vệ yêu cầu không hợp lệ', 'Hãy tải lại trang rồi thử lại thao tác.');
+  }
+}
+
 const OIDC_STATE_COOKIE = 'audit_bgs_oidc_state';
 const OIDC_STATE_TTL_SECONDS = 10 * 60;
 
@@ -274,12 +373,16 @@ function assertOidcStateBound(request: FastifyRequest, state: string): void {
   }
 }
 
-async function createAuthenticatedSession(user: UserProfile, reply: { header(name: string, value: string): unknown }): Promise<string> {
+async function createAuthenticatedSession(user: UserProfile, reply: CookieReply): Promise<string> {
   const session = authSessionStore.create(user.id);
   authSessions = authSessionStore.records();
   await persistLocalState();
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  reply.header('set-cookie', `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure}`);
+  const csrfToken = csrfCookieValue();
+  reply.header('set-cookie', [
+    `audit_bgs_session=${encodeURIComponent(session.token)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=28800${secure}`,
+    csrfCookie(csrfToken, CSRF_TOKEN_TTL_SECONDS),
+  ]);
   return session.record.expiresAt;
 }
 
@@ -290,24 +393,29 @@ function supabaseAccessToken(request: FastifyRequest): string | undefined {
   return authorization?.startsWith('Bearer ') ? authorization.slice('Bearer '.length).trim() : undefined;
 }
 
-function setSupabaseSessionCookies(reply: { header(name: string, value: string | string[]): unknown }, accessToken: string, refreshToken: string, expiresIn: number): void {
+function setSupabaseSessionCookies(reply: CookieReply, accessToken: string, refreshToken: string, expiresIn: number): void {
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   reply.header('set-cookie', [
     `audit_bgs_supabase_access=${encodeURIComponent(accessToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.max(60, Math.floor(expiresIn))}${secure}`,
     `audit_bgs_supabase_refresh=${encodeURIComponent(refreshToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000${secure}`,
+    csrfCookie(csrfCookieValue(), CSRF_TOKEN_TTL_SECONDS),
   ]);
 }
 
-function clearSupabaseSessionCookies(reply: { header(name: string, value: string | string[]): unknown }): void {
+function clearSupabaseSessionCookies(reply: CookieReply): void {
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   reply.header('set-cookie', [
     `audit_bgs_supabase_access=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`,
     `audit_bgs_supabase_refresh=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`,
+    csrfCookie('', 0),
   ]);
 }
 
 app.addHook('preHandler', async (request) => {
-  if (publicPaths.has(request.url.split('?')[0])) return;
+  assertTrustedOriginForCookieWrite(request);
+
+  const requestPath = request.url.split('?')[0];
+  if (publicPaths.has(requestPath) || isEvidenceScanCallbackPath(requestPath)) return;
   if (process.env.AUTH_MODE === 'supabase') {
     const accessToken = supabaseAccessToken(request);
     const authUser = accessToken && supabaseAuthAdapter ? await supabaseAuthAdapter.verifyAccessToken(accessToken) : null;
@@ -515,6 +623,8 @@ const defaultSlaConfig = () => ({
   lowRiskDays: 30,
   escalationAfterDaysOverdue: 1,
   reminderDaysBefore: [3, 1],
+  businessDaysOnly: false,
+  holidayDates: [],
 });
 
 /** Accepts a stored value only when it is a whole number at or above `minimum`. */
@@ -531,6 +641,12 @@ function normalizedSlaConfig(config?: ReportChannel['slaConfig']) {
     escalationAfterDaysOverdue: wholeNumberAtLeast(config?.escalationAfterDaysOverdue, 0) ?? fallback.escalationAfterDaysOverdue,
     reminderDaysBefore: Array.isArray(config?.reminderDaysBefore) && config.reminderDaysBefore.every(day => Number.isInteger(day) && day >= 0)
       ? config.reminderDaysBefore : fallback.reminderDaysBefore,
+    businessDaysOnly: config?.businessDaysOnly === true,
+    holidayDates: Array.isArray(config?.holidayDates)
+      ? [...new Set(config.holidayDates.filter(date => {
+        try { calendarDate(date); return true; } catch { return false; }
+      }))].sort()
+      : fallback.holidayDates,
   };
 }
 
@@ -943,6 +1059,20 @@ let evidences: EvidenceObject[] = [
 ];
 
 let importBatches: ImportBatch[] = [];
+let stagingRows: StagingRow[] = [];
+interface PendingEvidenceUpload {
+  id: string;
+  findingId: string;
+  driveFileId: string;
+  fileName: string;
+  mimeType: string;
+  fileSize: number;
+  sha256Checksum: string;
+  uploadedByUserId: string;
+  createdAt: string;
+  expiresAt: string;
+}
+let pendingEvidenceUploads: PendingEvidenceUpload[] = [];
 let slaExtensions: SlaExtensionRequest[] = [];
 let reportDefinitions: ReportDefinition[] = [];
 let dashboardDefinitions: DashboardDefinition[] = [];
@@ -1037,7 +1167,10 @@ let authSessions: AuthSessionRecord[] = [];
 interface AuthenticatorCredential {
   userId: string;
   encryptedSecret: string;
-  configuredAt: string;
+  /** `configuredAt` is retained to treat secrets written before two-step enrolment as confirmed. */
+  configuredAt?: string;
+  issuedAt?: string;
+  confirmedAt?: string;
 }
 
 let authenticatorCredentials: AuthenticatorCredential[] = [];
@@ -1064,6 +1197,7 @@ type SecurityEventType =
   | 'AUTH_LOGIN_THROTTLED'
   | 'AUTH_MFA_FAILED'
   | 'AUTH_MFA_SUCCEEDED'
+  | 'AUTH_STEP_UP_SUCCEEDED'
   | 'AUTH_LOGOUT'
   | 'AUTH_OIDC_LOGIN_SUCCEEDED'
   | 'AUTH_OIDC_LOGIN_REJECTED'
@@ -1077,6 +1211,8 @@ type SecurityEventType =
   | 'ADMIN_USER_PASSWORD_RESET'
   | 'ADMIN_USER_PASSWORD_RESET_EMAIL_SENT'
   | 'ADMIN_AUTHENTICATOR_TOGGLED'
+  | 'ADMIN_AUTHENTICATOR_ENROLLED'
+  | 'ADMIN_AUTHENTICATOR_RECOVERY_CODES_ISSUED'
   | 'ADMIN_MFA_POLICY_CHANGED'
   | 'ADMIN_GOOGLE_DRIVE_CONNECTED'
   | 'DATA_REPORT_EXPORTED'
@@ -1123,6 +1259,22 @@ interface LoginAttemptRecord {
 
 let loginAttempts: LoginAttemptRecord[] = [];
 
+/** A successfully used OTP must not be accepted a second time during its validity window. */
+interface UsedTotpCounterRecord {
+  userId: string;
+  counter: number;
+  usedAt: string;
+}
+
+let usedTotpCounters: UsedTotpCounterRecord[] = [];
+
+interface RecoveryCodeSet {
+  userId: string;
+  codeHashes: string[];
+  issuedAt: string;
+}
+let recoveryCodeSets: RecoveryCodeSet[] = [];
+
 interface LocalAppState {
   orgUnits: OrgUnit[];
   appUsers: UserProfile[];
@@ -1132,6 +1284,8 @@ interface LocalAppState {
   workflowEvents: WorkflowEvent[];
   evidences: EvidenceObject[];
   importBatches: ImportBatch[];
+  stagingRows?: StagingRow[];
+  pendingEvidenceUploads?: PendingEvidenceUpload[];
   slaExtensions: SlaExtensionRequest[];
   reportDefinitions: ReportDefinition[];
   dashboardDefinitions: DashboardDefinition[];
@@ -1148,6 +1302,8 @@ interface LocalAppState {
   googleDriveOAuthCredential?: GoogleDriveOAuthCredential;
   securityEvents?: SecurityEvent[];
   loginAttempts?: LoginAttemptRecord[];
+  usedTotpCounters?: UsedTotpCounterRecord[];
+  recoveryCodeSets?: RecoveryCodeSet[];
 }
 
 function normalizeReportDefinition(definition: ReportDefinition): ReportDefinition {
@@ -1249,6 +1405,16 @@ const securityEventLedger = stateRepository instanceof PostgresStateRepository
   ? new PostgresSecurityEventLedger({ pool: pool as unknown as PostgresPoolLike })
   : undefined;
 
+// Login lockout and TOTP replay need a row-level database boundary when serverless instances
+// scale horizontally. Local JSON/memory retains the development fallback below.
+const postgresAuthSecurityState = stateRepository instanceof PostgresStateRepository
+  ? new PostgresAuthSecurityState(pool as unknown as PostgresPoolLike)
+  : undefined;
+
+const postgresOutbox = stateRepository instanceof PostgresStateRepository
+  ? new PostgresOutbox(pool as unknown as PostgresPoolLike)
+  : undefined;
+
 /**
  * Bảng `idempotency_keys` có sẵn từ 0003 và có `expires_at`; ở chế độ postgres, bộ nhớ chống lặp
  * chuyển hẳn sang đó. Snapshot vì thế không còn lớn dần theo số lệnh ghi — trước đây mỗi lệnh để
@@ -1277,7 +1443,7 @@ app.addHook('onError', async (request) => {
   if (!context?.claimed) return;
   context.claimed = false;
   try {
-    await idempotencyStore.release(context.cacheKey, context.requestHash);
+    await idempotencyStore.release(context.cacheKey, context.requestHash, context.claimToken);
   } catch (error) {
     request.log.error({ err: error }, 'Không thể giải phóng Idempotency-Key sau khi request lỗi.');
   }
@@ -1289,7 +1455,7 @@ const hydratedState = await stateRepository.load({
   workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
   credentials: credentialDirectory,
   authenticatorCredentials,
-  googleDriveOAuthCredential, securityEvents, loginAttempts,
+  googleDriveOAuthCredential, securityEvents, loginAttempts, usedTotpCounters, recoveryCodeSets,
 });
 if (!Array.isArray(hydratedState.workflowEvents)) hydratedState.workflowEvents = [];
 if (workflowEventLedger) {
@@ -1392,6 +1558,8 @@ if (findingsReadPath === 'sql' && findingRecords) {
   await findingRecords.assertCoverage(findings, evidenceCountById);
 }
 importBatches = hydratedState.importBatches;
+stagingRows = hydratedState.stagingRows ?? [];
+pendingEvidenceUploads = hydratedState.pendingEvidenceUploads ?? [];
 slaExtensions = hydratedState.slaExtensions;
 reportDefinitions = hydratedState.reportDefinitions.map(normalizeReportDefinition);
 dashboardDefinitions = (hydratedState.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
@@ -1405,12 +1573,14 @@ authSessions = hydratedState.authSessions ?? [];
 authenticatorCredentials = hydratedState.authenticatorCredentials ?? [];
 securityEvents = hydratedState.securityEvents ?? [];
 loginAttempts = hydratedState.loginAttempts ?? [];
+usedTotpCounters = hydratedState.usedTotpCounters ?? [];
+recoveryCodeSets = hydratedState.recoveryCodeSets ?? [];
 authSessionStore = new AuthSessionStore({ records: authSessions });
 auditCampaigns = hydratedState.auditCampaigns?.length ? hydratedState.auditCampaigns : auditCampaigns;
 googleDriveOAuthCredential = hydratedState.googleDriveOAuthCredential;
 
 function applyAuthenticatorProjection(): void {
-  const configured = new Set(authenticatorCredentials.map(item => item.userId));
+  const configured = new Set(authenticatorCredentials.filter(isAuthenticatorConfirmed).map(item => item.userId));
   appUsers = appUsers.map(user => ({
     ...user,
     // Derived from the system policy, never from a per-account flag, so the profile the UI
@@ -1661,11 +1831,11 @@ function backfillFindingSpecialCase(): boolean {
 function currentLocalState(): LocalAppState {
   return {
     orgUnits, appUsers, reportChannels, reportChannelVersions, findings, workflowEvents, evidences,
-    importBatches, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows,
+    importBatches, stagingRows, pendingEvidenceUploads, slaExtensions, reportDefinitions, dashboardDefinitions, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows,
     workspaceAccepted, workspaceWatchTargets, authSessions, auditCampaigns,
     credentials: credentialDirectory,
     authenticatorCredentials,
-    googleDriveOAuthCredential, securityEvents, loginAttempts,
+    googleDriveOAuthCredential, securityEvents, loginAttempts, usedTotpCounters, recoveryCodeSets,
   };
 }
 
@@ -1699,6 +1869,8 @@ function restoreDurableLocalState(restored: LocalAppState, workflowEventsOverrid
   workflowEvents = workflowEventsOverride ?? restored.workflowEvents ?? [];
   evidences = restored.evidences;
   importBatches = restored.importBatches;
+  stagingRows = restored.stagingRows ?? [];
+  pendingEvidenceUploads = restored.pendingEvidenceUploads ?? [];
   slaExtensions = restored.slaExtensions;
   reportDefinitions = restored.reportDefinitions.map(normalizeReportDefinition);
   dashboardDefinitions = (restored.dashboardDefinitions ?? []).map(normalizeDashboardDefinition);
@@ -1715,6 +1887,8 @@ function restoreDurableLocalState(restored: LocalAppState, workflowEventsOverrid
   // sạch bản chiếu trong bộ nhớ và làm màn hình Nhật ký trống sau mỗi lần ghi.
   securityEvents = securityEventLedger ? securityEvents : (restored.securityEvents ?? []);
   loginAttempts = restored.loginAttempts ?? [];
+  usedTotpCounters = restored.usedTotpCounters ?? [];
+  recoveryCodeSets = restored.recoveryCodeSets ?? [];
   authSessionStore = new AuthSessionStore({ records: authSessions });
   auditCampaigns = restored.auditCampaigns?.length ? restored.auditCampaigns : auditCampaigns;
   if (restored.credentials?.length) credentialDirectory = restored.credentials;
@@ -1769,11 +1943,13 @@ app.addHook('onRequest', async (request) => {
   if (request.raw.destroyed) releaseRuntimeRequest(request);
 });
 
-app.addHook('onResponse', async (request) => {
+app.addHook('onResponse', async (request, reply) => {
+  recordRequestMeasurement(request, reply.statusCode);
   releaseRuntimeRequest(request);
 });
 
 app.addHook('onError', async (request) => {
+  requestStartedAt.delete(request.id);
   releaseRuntimeRequest(request);
 });
 
@@ -1787,22 +1963,46 @@ app.addHook('onError', async (request) => {
 async function syncFindingRecords(): Promise<void> {
   if (!findingRecords) return;
   try {
+    const sourceRevision = stateRepository instanceof PostgresStateRepository
+      ? stateRepository.currentVersion()
+      : undefined;
+    if (!sourceRevision) throw new Error('FINDING_RECORDS_SOURCE_REVISION_MISSING');
     const evidenceCountById = new Map<string, number>();
     for (const evidence of evidences) {
       if (evidence.status !== 'AVAILABLE') continue;
       evidenceCountById.set(evidence.findingId, (evidenceCountById.get(evidence.findingId) ?? 0) + 1);
     }
-    await findingRecords.sync(findings, evidenceCountById);
+    await findingRecords.sync(findings, evidenceCountById, sourceRevision);
   } catch (error) {
     app.log.warn({ err: error }, 'Không cập nhật được bảng chiếu hồ sơ; lượt ghi sau sẽ bắt kịp.');
   }
 }
 
-async function persistLocalState(): Promise<void> {
+interface PersistLocalStateOptions {
+  completeIdempotency?: {
+    context: IdempotencyContext<unknown>;
+    response: unknown;
+    status?: number;
+  };
+  approvalAssignmentHistory?: readonly ApprovalAssignmentHistoryWrite[];
+  outboxEvents?: readonly EnqueueOutboxEvent[];
+}
+
+function isAuthenticatorConfirmed(credential: AuthenticatorCredential): boolean {
+  return Boolean(credential.confirmedAt ?? credential.configuredAt);
+}
+
+async function persistLocalState(options: PersistLocalStateOptions = {}): Promise<void> {
   // Sổ an ninh độc lập với snapshot, nên ghi trước và ghi riêng. Nếu lần ghi state phía dưới hỏng,
   // dấu vết an ninh vẫn còn — với nhật ký kiểm toán thì ghi thừa an toàn hơn ghi thiếu.
   await appendPendingSecurityEvents();
   const base = durableState.snapshot();
+  const completion = options.completeIdempotency;
+  const approvalAssignments = options.approvalAssignmentHistory ?? [];
+  const outboxEvents = options.outboxEvents ?? [];
+  if (completion && !usesPostgresIdempotency) {
+    await rememberIdempotentResponse(completion.context, completion.response, completion.status);
+  }
   const snapshot = persistedLocalState();
   const mergeBase = repositoryHydrationBaseline ?? base;
   const events = workflowEventLedger ? structuredClone(pendingWorkflowEvents) : [];
@@ -1815,6 +2015,24 @@ async function persistLocalState(): Promise<void> {
           snapshot,
           latest => threeWayMergeState(mergeBase, snapshot, withoutLedgerArrays(latest)),
           events,
+          completion?.context.cacheKey && completion.context.requestHash || approvalAssignments.length || outboxEvents.length
+            ? async client => {
+              if (completion?.context.cacheKey && completion.context.requestHash) {
+                await completeIdempotencyClaim(
+                  client,
+                  completion.context.cacheKey,
+                  { requestHash: completion.context.requestHash, claimToken: completion.context.claimToken, response: completion.response },
+                  {
+                    method: completion.context.method,
+                    path: completion.context.path,
+                    status: completion.status ?? 200,
+                  },
+                );
+              }
+              await insertApprovalAssignmentHistory(client, approvalAssignments);
+              await insertOutboxEvents(client, outboxEvents);
+            }
+            : undefined,
         )
         : stateRepository.update(snapshot, latest => threeWayMergeState(mergeBase, snapshot, latest)),
       restored => restoreDurableLocalState(
@@ -1829,6 +2047,7 @@ async function persistLocalState(): Promise<void> {
     throw error;
   }
   repositoryHydrationBaseline = undefined;
+  if (completion) completion.context.claimed = false;
   if (eventIds.size > 0) pendingWorkflowEvents = pendingWorkflowEvents.filter(event => !eventIds.has(event.id));
   restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : undefined);
   await syncFindingRecords();
@@ -1874,6 +2093,41 @@ interface SlaRunResult {
   dueSoonCount: number;
 }
 
+function dueSlaOutboxEvents(
+  latestFindings: Finding[],
+  channels: ReportChannel[],
+  asOfDate: Date,
+): EnqueueOutboxEvent[] {
+  if (!postgresOutbox) return [];
+  const events = latestFindings.flatMap(finding => {
+    if (finding.workflowStatus === 'WAIVED_RESOLVED') return [];
+    const channel = channels.find(item => item.id === finding.channelId);
+    const slaConfig = normalizedSlaConfig(channel?.slaConfig);
+    const daysRemaining = slaDaysRemaining(finding.deadlineDate, asOfDate, slaConfig);
+    const payload = {
+      findingId: finding.id,
+      deadlineDate: finding.deadlineDate,
+      daysRemaining,
+      workflowStatus: finding.workflowStatus,
+    };
+    if (slaConfig.reminderDaysBefore.includes(daysRemaining)) {
+      return [{
+        eventType: 'SLA_REMINDER', aggregateType: 'FINDING', aggregateId: finding.id, payload,
+        dedupeKey: `sla-reminder:${finding.id}:${finding.deadlineDate}:${daysRemaining}`,
+      }];
+    }
+    const overdueDays = Math.max(0, -daysRemaining);
+    if (daysRemaining < 0 && overdueDays >= slaConfig.escalationAfterDaysOverdue) {
+      return [{
+        eventType: 'SLA_ESCALATION', aggregateType: 'FINDING', aggregateId: finding.id, payload: { ...payload, overdueDays },
+        dedupeKey: `sla-escalation:${finding.id}:${finding.deadlineDate}:${overdueDays}`,
+      }];
+    }
+    return [];
+  });
+  return events;
+}
+
 async function evaluateCurrentSlaState(): Promise<SlaRunResult> {
   // Cron hằng ngày là chỗ tự nhiên để dọn khoá chống lặp đã hết hạn: nó chạy sẵn, ngoài đường đi
   // của người dùng, và lần dọn chỉ là một DELETE dùng đúng chỉ mục idx_idempotency_expires có sẵn
@@ -1886,13 +2140,34 @@ async function evaluateCurrentSlaState(): Promise<SlaRunResult> {
   }
   let result = { updatedCount: 0, overdueCount: 0, dueSoonCount: 0 };
   const runtimeWorkflowEvents = workflowEventLedger ? workflowEvents : undefined;
+  const asOfDate = new Date();
+  let dueEvents: EnqueueOutboxEvent[] = [];
   const saved = await durableState.persistAsync(
-    async () => stateRepository.update(persistedLocalState(), latest => {
-      result = runSlaEvaluation(latest.findings);
-    }),
+    async () => stateRepository instanceof PostgresStateRepository
+      ? stateRepository.updateWithWorkflowEvents(
+        persistedLocalState(),
+        latest => {
+          result = runSlaEvaluation(latest.findings, asOfDate, finding => {
+            const channel = latest.reportChannels.find(item => item.id === finding.channelId);
+            const reminderDays = normalizedSlaConfig(channel?.slaConfig).reminderDaysBefore;
+            return Math.max(0, ...reminderDays);
+          }, finding => normalizedSlaConfig(latest.reportChannels.find(item => item.id === finding.channelId)?.slaConfig));
+          dueEvents = dueSlaOutboxEvents(latest.findings, latest.reportChannels, asOfDate);
+        },
+        [],
+        client => insertOutboxEvents(client, dueEvents),
+      )
+      : stateRepository.update(persistedLocalState(), latest => {
+        result = runSlaEvaluation(latest.findings, asOfDate, finding => {
+          const channel = latest.reportChannels.find(item => item.id === finding.channelId);
+          const reminderDays = normalizedSlaConfig(channel?.slaConfig).reminderDaysBefore;
+            return Math.max(0, ...reminderDays);
+          }, finding => normalizedSlaConfig(latest.reportChannels.find(item => item.id === finding.channelId)?.slaConfig));
+      }),
     restored => restoreDurableLocalState(restored, runtimeWorkflowEvents),
   );
   restoreDurableLocalState(saved, workflowEventLedger ? workflowEvents : undefined);
+  lastSuccessfulSlaRunAt = new Date().toISOString();
   return { evaluatedCount: saved.findings.length, ...result };
 }
 
@@ -2054,6 +2329,17 @@ function getCurrentUser(req: FastifyRequest): UserProfile {
   return user;
 }
 
+/** Sensitive admin mutations require a recent password/MFA confirmation for this exact session. */
+function requireRecentStepUp(req: FastifyRequest): void {
+  if (process.env.NODE_ENV === 'test' && process.env.ALLOW_TEST_USER_HEADER !== 'false' && typeof req.headers['x-user-id'] === 'string') return;
+  const token = cookieValue(req, 'audit_bgs_session');
+  const session = authSessionStore.resolve(token ?? '');
+  const steppedUpAt = session?.stepUpAt ? Date.parse(session.stepUpAt) : Number.NaN;
+  if (!session || !Number.isFinite(steppedUpAt) || Date.now() - steppedUpAt > STEP_UP_TTL_MS) {
+    throw new HttpProblem(403, 'STEP_UP_REQUIRED', 'Cần xác thực lại', 'Nhập lại mật khẩu hiện tại trước khi thay đổi cấu hình bảo mật.');
+  }
+}
+
 function recordSecurityEvent(event: Omit<SecurityEvent, 'id' | 'occurredAt'>): void {
   const recorded: SecurityEvent = {
     ...event,
@@ -2153,7 +2439,19 @@ function pruneLoginAttempts(nowMs: number): boolean {
 }
 
 /** Ném 429 khi tên đăng nhập đang bị khoá tạm thời. Trả về phút còn lại để thông báo cho người dùng. */
-function assertLoginNotLocked(usernameKey: string, nowMs: number): void {
+async function assertLoginNotLocked(usernameKey: string, nowMs: number): Promise<void> {
+  if (postgresAuthSecurityState) {
+    const lockedUntil = await postgresAuthSecurityState.lockedUntil(usernameKey, nowMs);
+    if (!lockedUntil) return;
+    const remainingMs = Date.parse(lockedUntil) - nowMs;
+    const minutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+    throw new HttpProblem(
+      429,
+      'LOGIN_TEMPORARILY_LOCKED',
+      'Tài khoản tạm khoá',
+      `Đã nhập sai mật khẩu quá ${LOGIN_FAILURE_LIMIT} lần. Hãy thử lại sau khoảng ${minutes} phút hoặc liên hệ quản trị viên để đặt lại mật khẩu.`,
+    );
+  }
   const record = loginAttempts.find(item => item.key === usernameKey);
   if (!record?.lockedUntil) return;
   const remainingMs = Date.parse(record.lockedUntil) - nowMs;
@@ -2167,7 +2465,16 @@ function assertLoginNotLocked(usernameKey: string, nowMs: number): void {
   );
 }
 
-function recordLoginFailure(usernameKey: string, nowMs: number): { locked: boolean } {
+async function recordLoginFailure(usernameKey: string, nowMs: number): Promise<{ locked: boolean }> {
+  if (postgresAuthSecurityState) {
+    return postgresAuthSecurityState.recordLoginFailure(
+      usernameKey,
+      nowMs,
+      LOGIN_FAILURE_LIMIT,
+      LOGIN_FAILURE_WINDOW_MS,
+      LOGIN_LOCKOUT_MS,
+    );
+  }
   const now = new Date(nowMs).toISOString();
   let record = loginAttempts.find(item => item.key === usernameKey);
   if (!record || nowMs - Date.parse(record.firstFailedAt) > LOGIN_FAILURE_WINDOW_MS) {
@@ -2182,7 +2489,11 @@ function recordLoginFailure(usernameKey: string, nowMs: number): { locked: boole
   return { locked: Boolean(record.lockedUntil) };
 }
 
-function clearLoginFailures(usernameKey: string): boolean {
+async function clearLoginFailures(usernameKey: string): Promise<boolean> {
+  if (postgresAuthSecurityState) {
+    await postgresAuthSecurityState.clearLoginFailures(usernameKey);
+    return true;
+  }
   const before = loginAttempts.length;
   loginAttempts = loginAttempts.filter(item => item.key !== usernameKey);
   return loginAttempts.length !== before;
@@ -2190,6 +2501,48 @@ function clearLoginFailures(usernameKey: string): boolean {
 
 function filterFindingsByScope(items: Finding[], user: UserProfile): Finding[] {
   return items.filter(finding => hasFindingAccess(user, finding));
+}
+
+const TOTP_REPLAY_RETENTION_STEPS = 3;
+
+async function consumeTotpCode(userId: string, secret: string, submittedCode: string, nowMs: number): Promise<boolean> {
+  const counter = matchingTotpCounter(secret, submittedCode, nowMs);
+  if (counter === undefined) return false;
+  if (postgresAuthSecurityState) {
+    return postgresAuthSecurityState.consumeTotpCounter(userId, counter, nowMs, TOTP_REPLAY_RETENTION_STEPS);
+  }
+  const oldestCounter = Math.floor(nowMs / 30_000) - TOTP_REPLAY_RETENTION_STEPS;
+  usedTotpCounters = usedTotpCounters.filter(record => record.counter >= oldestCounter);
+  if (usedTotpCounters.some(record => record.userId === userId && record.counter === counter)) return false;
+  usedTotpCounters.push({ userId, counter, usedAt: new Date(nowMs).toISOString() });
+  return true;
+}
+
+function formatRecoveryCode(): string {
+  return crypto.randomBytes(6).toString('hex').toUpperCase().match(/.{1,4}/g)!.join('-');
+}
+
+function normalizeRecoveryCode(code: string): string {
+  return code.replace(/-/g, '').toUpperCase();
+}
+
+async function consumeRecoveryCode(userId: string, submittedCode: string): Promise<boolean> {
+  const set = recoveryCodeSets.find(item => item.userId === userId);
+  if (!set) return false;
+  const normalized = normalizeRecoveryCode(submittedCode);
+  for (const hash of set.codeHashes) {
+    if (!await verifyPassword(normalized, hash)) continue;
+    set.codeHashes = set.codeHashes.filter(item => item !== hash);
+    if (set.codeHashes.length === 0) recoveryCodeSets = recoveryCodeSets.filter(item => item !== set);
+    return true;
+  }
+  return false;
+}
+
+async function consumeMfaCode(userId: string, secret: string, submittedCode: string, nowMs: number): Promise<boolean> {
+  return /^\d{6}$/.test(submittedCode)
+    ? await consumeTotpCode(userId, secret, submittedCode, nowMs)
+    : consumeRecoveryCode(userId, submittedCode);
 }
 
 async function readScopedFindingsForAnalytics(user: UserProfile, query: Record<string, string | undefined> = {}): Promise<Finding[]> {
@@ -2207,48 +2560,14 @@ function getScopedFindingOrThrow(id: string, user: UserProfile): Finding {
   return finding;
 }
 
-function approvalCandidatesForFinding(finding: Finding) {
-  const branchUsers = appUsers.filter(user => user.isActive && user.branchCode === finding.branchCode);
-  return {
-    branchControllers: branchUsers.filter(user => user.roles.includes('BRANCH_CONTROLLER')),
-    branchLeaders: branchUsers.filter(user => user.roles.includes('BRANCH_LEADER')),
-    internalApprovers: appUsers.filter(user => user.isActive && (user.roles.includes('INTERNAL_APPROVER') || user.roles.includes('SUPERVISOR'))),
-  };
-}
-
-/**
- * Suy tuyến duyệt tự động khi chi nhánh nộp hồ sơ: người kiểm soát và (khi cần) lãnh đạo chi nhánh
- * lấy theo vai trò trong phạm vi chi nhánh của hồ sơ; người duyệt Hội sở resolve theo phân quyền
- * nội bộ ở bước tiếp theo. `requiresBranchLeaderApproval` suy từ dấu sao (isSpecialCase) hoặc loại
- * báo cáo ba cấp. Nếu thiếu người bắt buộc, không tạo tuyến duyệt nửa vời mà trả lỗi để quản trị viên
- * bổ sung người phụ trách trước khi hồ sơ đi vào hàng đợi.
- */
-function resolveApprovalRoute(
-  finding: Finding,
-  workflowType: 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER',
-  actor: UserProfile,
-): FindingApprovalRoute {
-  const candidates = approvalCandidatesForFinding(finding);
-  const requiresBranchLeaderApproval = workflowType === 'THREE_TIER' || Boolean(finding.isSpecialCase);
-  const pick = (users: UserProfile[]): string | undefined =>
-    (users.find(user => user.id !== actor.id) ?? users[0])?.id;
-  const branchControllerUserId = pick(candidates.branchControllers);
-  const branchLeaderUserId = requiresBranchLeaderApproval ? pick(candidates.branchLeaders) : undefined;
-  if (!branchControllerUserId || (requiresBranchLeaderApproval && !branchLeaderUserId)) {
-    throw new HttpProblem(409, 'APPROVAL_ROUTE_UNRESOLVED', 'Chưa xác định được tuyến duyệt', 'Chi nhánh chưa có người kiểm soát hoặc lãnh đạo phù hợp để nhận hồ sơ. Hãy bổ sung người phụ trách trước khi nộp.');
-  }
-  return {
-    branchControllerUserId,
-    branchLeaderUserId,
-    internalApproverUserId: undefined,
-    requiresBranchLeaderApproval,
-    assignedByUserId: actor.id,
-    assignedAt: new Date().toISOString(),
-  };
-}
-
 function availableEvidencesForFinding(findingId: string): EvidenceObject[] {
   return evidences.filter(evidence => evidence.findingId === findingId && evidence.status === 'AVAILABLE');
+}
+
+/** Metadata for a pending scan stays visible to scoped users, while only AVAILABLE objects count
+ * toward workflow eligibility or can be streamed through the content proxy. */
+function visibleEvidencesForFinding(findingId: string): EvidenceObject[] {
+  return evidences.filter(evidence => evidence.findingId === findingId && evidence.status !== 'REVOKED');
 }
 
 function ensureFindingSubItems(finding: Finding): Finding {
@@ -2417,7 +2736,7 @@ function createFindingFromDto(dto: WebFormFindingDTO, user: UserProfile, id = `f
   validateDynamicPayload(channel, dto);
   const nowDate = new Date();
   const now = nowDate.toISOString();
-  const deadlineDate = dto.deadlineDate ?? addCalendarDays(dto.auditDate ?? toCalendarDateString(nowDate), channel.slaConfig!.defaultDays);
+  const deadlineDate = dto.deadlineDate ?? addSlaDays(dto.auditDate ?? toCalendarDateString(nowDate), channel.slaConfig!.defaultDays, channel.slaConfig);
   const newFinding: Finding = {
     id,
     campaignId: campaign?.id ?? 'campaign-regular-2026',
@@ -2475,7 +2794,7 @@ function createFindingFromDto(dto: WebFormFindingDTO, user: UserProfile, id = `f
     createdAt: now,
     updatedAt: now,
   };
-  const evaluation = slaWorker.evaluateFindingSla(newFinding, nowDate);
+  const evaluation = slaWorker.evaluateFindingSla(newFinding, nowDate, Math.max(0, ...channel.slaConfig!.reminderDaysBefore), channel.slaConfig);
   newFinding.slaStatus = evaluation.slaStatus;
   newFinding.isOverdue = evaluation.isOverdue;
   assertFindingCreationAccess(user, newFinding);
@@ -2846,6 +3165,7 @@ function applyReportFilters(items: Finding[], filters: ReportFilterQuery): Findi
 interface IdempotencyContext<T> {
   cacheKey?: string;
   requestHash?: string;
+  claimToken?: string;
   method: string;
   path: string;
   replay?: T;
@@ -2885,20 +3205,20 @@ async function idempotencyContext<T = Finding>(
       replay: structuredClone(claim.record.response) as T,
     };
   }
-  const context = { cacheKey, requestHash, method: request.method, path, claimed: true };
+  const context = { cacheKey, requestHash, claimToken: claim.claimToken, method: request.method, path, claimed: true };
   idempotencyRequests.set(request, context);
   return context;
 }
 
 async function rememberIdempotentResponse<T>(
-  context: { cacheKey?: string; requestHash?: string; method?: string; path?: string; claimed?: boolean },
+  context: { cacheKey?: string; requestHash?: string; claimToken?: string; method?: string; path?: string; claimed?: boolean },
   response: T,
   status = 200,
 ): Promise<void> {
   if (!context.cacheKey || !context.requestHash) return;
   await idempotencyStore.put(
     context.cacheKey,
-    { requestHash: context.requestHash, response: structuredClone(response) },
+    { requestHash: context.requestHash, claimToken: context.claimToken, response: structuredClone(response) },
     { method: context.method ?? 'POST', path: context.path ?? '', status },
   );
   context.claimed = false;
@@ -3007,14 +3327,29 @@ app.route({
     if ('ready' in dataStore && !dataStore.ready) {
       throw new HttpProblem(503, 'CRON_DATABASE_UNAVAILABLE', 'Database chưa sẵn sàng', dataStore.warning ?? 'Cron không thể kết nối PostgreSQL.');
     }
+    const orphanEvidenceUploads = await cleanupExpiredEvidenceUploads();
     return {
       success: true,
       maintenance: {
         databaseActivity: true,
         dataStore: { mode: dataStore.mode, durable: dataStore.durable },
+        orphanEvidenceUploads,
       },
       ...(await evaluateCurrentSlaState()),
     };
+  },
+});
+
+app.route({
+  method: ['GET', 'POST'],
+  url: internalOutboxPath,
+  handler: async (request) => {
+    requireCronAuthorization(request);
+    if (!postgresOutbox) {
+      throw new HttpProblem(503, 'OUTBOX_NOT_DURABLE', 'Outbox chưa sẵn sàng', 'Worker chỉ được chạy trên PostgreSQL outbox bền vững.');
+    }
+    const { runOutboxOnce } = await import('./worker/outbox-runner');
+    return { success: true, outbox: await runOutboxOnce() };
   },
 });
 
@@ -3118,15 +3453,50 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   }
   if (process.env.AUTH_MODE === 'supabase') {
     if (!supabaseAuthAdapter) throw new HttpProblem(503, 'SUPABASE_AUTH_NOT_CONFIGURED', 'Supabase Auth chưa sẵn sàng', 'Quản trị viên cần cấu hình SUPABASE_URL và SUPABASE_PUBLISHABLE_KEY.');
-    assertLoginBurstAllowed(Date.now());
+    const nowMs = Date.now();
+    assertLoginBurstAllowed(nowMs);
     const credentials = LoginSchema.parse(req.body);
     const email = credentials.username.trim().toLocaleLowerCase('en-US');
+    if (!postgresAuthSecurityState) pruneLoginAttempts(nowMs);
+    try {
+      await assertLoginNotLocked(email, nowMs);
+    } catch (error) {
+      recordSecurityEvent({
+        type: 'AUTH_LOGIN_THROTTLED',
+        outcome: 'FAILURE',
+        subject: email,
+        detail: 'Từ chối đăng nhập Supabase vì tên đăng nhập đang bị khoá tạm thời.',
+        ipAddress: req.ip,
+      });
+      await persistLocalState();
+      throw error;
+    }
     const user = appUsers.find(item => item.isActive && item.email.toLocaleLowerCase('en-US') === email);
-    if (!user) throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
+    if (!user) {
+      const { locked } = await recordLoginFailure(email, nowMs);
+      recordSecurityEvent({
+        type: 'AUTH_LOGIN_FAILED',
+        outcome: 'FAILURE',
+        subject: email,
+        detail: locked ? 'Sai thông tin đăng nhập; đã khoá tạm thời.' : 'Tài khoản hoặc mật khẩu không đúng.',
+        ipAddress: req.ip,
+      });
+      await persistLocalState();
+      throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
+    }
     let session: Awaited<ReturnType<SupabaseAuthAdapter['signInWithPassword']>>;
     try {
       session = await supabaseAuthAdapter.signInWithPassword(email, credentials.password);
     } catch {
+      const { locked } = await recordLoginFailure(email, nowMs);
+      recordSecurityEvent({
+        type: 'AUTH_LOGIN_FAILED',
+        outcome: 'FAILURE',
+        subject: email,
+        detail: locked ? 'Sai thông tin đăng nhập; đã khoá tạm thời.' : 'Tài khoản hoặc mật khẩu không đúng.',
+        ipAddress: req.ip,
+      });
+      await persistLocalState();
       throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
     }
     if (session.user.id !== user.authUserId) {
@@ -3134,16 +3504,17 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
       await persistLocalState();
     }
     if (mfaRequiredFor(user)) {
-      const credential = authenticatorCredentials.find(item => item.userId === user.id);
-      const valid = credential && credentials.mfaCode
-        ? (() => {
-          try { return verifyTotpCode(decryptTotpSecret(credential.encryptedSecret, authenticatorEncryptionKey()), credentials.mfaCode, Date.now()); }
-          catch { return false; }
-        })()
-        : false;
+      const credential = authenticatorCredentials.find(item => item.userId === user.id && isAuthenticatorConfirmed(item));
+      let valid = false;
+      if (credential && credentials.mfaCode) {
+        try { valid = await consumeMfaCode(user.id, decryptTotpSecret(credential.encryptedSecret, authenticatorEncryptionKey()), credentials.mfaCode, Date.now()); }
+        catch { valid = false; }
+      }
       await supabaseAuthAdapter.signOut(session.accessToken).catch(() => undefined);
       if (!valid) throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator.');
+      await persistLocalState();
     }
+    await clearLoginFailures(email);
     recordUserSecurityEvent(req, user, {
       type: 'AUTH_LOGIN_SUCCEEDED',
       outcome: 'SUCCESS',
@@ -3160,9 +3531,9 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
 
   // Khoá được tra cứu trước khi chạm tới credentialDirectory, và đếm cho mọi tên đăng nhập kể cả
   // tên không tồn tại — nếu chỉ khoá tài khoản có thật thì 429 sẽ tố cáo tài khoản nào tồn tại.
-  pruneLoginAttempts(nowMs);
+  if (!postgresAuthSecurityState) pruneLoginAttempts(nowMs);
   try {
-    assertLoginNotLocked(normalizedUsername, nowMs);
+    await assertLoginNotLocked(normalizedUsername, nowMs);
   } catch (error) {
     recordSecurityEvent({
       type: 'AUTH_LOGIN_THROTTLED',
@@ -3181,7 +3552,7 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? unknownUserPasswordHash);
   const user = directoryEntry ? appUsers.find(item => item.id === directoryEntry.userId && item.isActive) : undefined;
   if (!passwordValid || !user) {
-    const { locked } = recordLoginFailure(normalizedUsername, nowMs);
+    const { locked } = await recordLoginFailure(normalizedUsername, nowMs);
     recordSecurityEvent({
       type: 'AUTH_LOGIN_FAILED',
       outcome: 'FAILURE',
@@ -3196,7 +3567,7 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   }
 
   if (mfaRequiredFor(user)) {
-    const credential = authenticatorCredentials.find(item => item.userId === user.id);
+    const credential = authenticatorCredentials.find(item => item.userId === user.id && isAuthenticatorConfirmed(item));
     if (!credential) {
       throw new HttpProblem(503, 'MFA_SETUP_REQUIRED', 'Chưa hoàn tất Authenticator', 'Quản trị viên cần cấp mã thiết lập Google Authenticator cho tài khoản này.');
     }
@@ -3206,7 +3577,7 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
     } catch {
       throw new HttpProblem(503, 'MFA_CREDENTIAL_INVALID', 'Authenticator chưa sẵn sàng', 'Không thể đọc cấu hình Google Authenticator của tài khoản.');
     }
-    if (!credentials.mfaCode || !verifyTotpCode(secret, credentials.mfaCode, nowMs)) {
+    if (!credentials.mfaCode || !await consumeMfaCode(user.id, secret, credentials.mfaCode, nowMs)) {
       recordSecurityEvent({
         type: 'AUTH_MFA_FAILED',
         outcome: 'FAILURE',
@@ -3230,7 +3601,7 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   }
 
   // Đăng nhập đúng xoá bộ đếm sai; createAuthenticatedSession bên dưới ghi state ngay sau đó.
-  clearLoginFailures(normalizedUsername);
+  await clearLoginFailures(normalizedUsername);
   recordSecurityEvent({
     type: 'AUTH_LOGIN_SUCCEEDED',
     outcome: 'SUCCESS',
@@ -3271,7 +3642,36 @@ app.post('/api/v1/auth/logout', async (req, reply) => {
   authSessions = authSessionStore.records();
   await persistLocalState();
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
-  reply.header('set-cookie', `audit_bgs_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`);
+  reply.header('set-cookie', [
+    `audit_bgs_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${secure}`,
+    csrfCookie('', 0),
+  ]);
+  return reply.code(204).send();
+});
+
+/** Re-authenticate a browser session before an administrator performs a sensitive change. */
+app.post('/api/v1/auth/step-up', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
+  const user = getCurrentUser(req);
+  const body = StepUpSchema.parse(req.body);
+  const token = cookieValue(req, 'audit_bgs_session');
+  const session = authSessionStore.resolve(token ?? '');
+  if (!session || session.userId !== user.id) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Vui lòng đăng nhập lại để xác thực lại.');
+  if (process.env.AUTH_MODE === 'supabase') throw new HttpProblem(501, 'STEP_UP_NOT_SUPPORTED', 'Chưa hỗ trợ xác thực lại', 'Cấu hình Supabase cần luồng xác thực lại riêng trước khi cho phép thay đổi bảo mật.');
+
+  const credential = credentialDirectory.find(item => item.userId === user.id);
+  const passwordValid = await verifyPassword(body.password, credential?.passwordHash ?? unknownUserPasswordHash);
+  if (!credential || !passwordValid) throw new HttpProblem(401, 'STEP_UP_INVALID', 'Xác thực lại không thành công', 'Mật khẩu hiện tại không đúng.');
+  if (mfaRequiredFor(user)) {
+    const authenticator = authenticatorCredentials.find(item => item.userId === user.id && isAuthenticatorConfirmed(item));
+    const validMfa = authenticator && body.mfaCode
+      ? await consumeTotpCode(user.id, decryptTotpSecret(authenticator.encryptedSecret, authenticatorEncryptionKey()), body.mfaCode, Date.now())
+      : false;
+    if (!validMfa) throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator để xác thực lại.');
+  }
+  if (!authSessionStore.markStepUp(token ?? '')) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Phiên đăng nhập đã hết hạn.');
+  authSessions = authSessionStore.records();
+  recordUserSecurityEvent(req, user, { type: 'AUTH_STEP_UP_SUCCEEDED', outcome: 'SUCCESS', detail: 'Xác thực lại phiên trước thao tác nhạy cảm.' });
+  await persistLocalState();
   return reply.code(204).send();
 });
 
@@ -3929,6 +4329,23 @@ function adminUsersResponse(): UserProfile[] {
   });
 }
 
+/**
+ * A bulk import may contain hundreds of findings. Do not fan out one Drive/App Script call per row
+ * at once: that can exhaust a remote quota before the batch reaches its state-write boundary.
+ */
+async function ensureFindingDriveFolders(findingsToProvision: readonly Finding[]): Promise<void> {
+  const concurrency = Math.min(8, findingsToProvision.length);
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextIndex < findingsToProvision.length) {
+      const finding = findingsToProvision[nextIndex];
+      nextIndex += 1;
+      await ensureFindingDriveFolder(finding);
+    }
+  };
+  await Promise.all(Array.from({ length: concurrency }, worker));
+}
+
 app.get('/api/v1/admin/users', async (req) => {
   requireCatalogManager(getCurrentUser(req));
   return adminUsersResponse();
@@ -4016,6 +4433,7 @@ async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Prom
 
 app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: unknown }>) => {
   requireAdmin(getCurrentUser(req));
+  requireRecentStepUp(req);
   const response = await createUserAccount(req, CreateUserSchema.parse(req.body));
   await persistLocalState();
   return response;
@@ -4024,6 +4442,7 @@ app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: unknown }>) =
 app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
+  requireRecentStepUp(req);
   const body = BulkUserImportSchema.parse(req.body);
   const idempotency = await idempotencyContext<BulkUserImportResult>(req, actor, body);
   if (idempotency.replay) return reply.code(201).send(idempotency.replay);
@@ -4047,14 +4466,16 @@ app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body
     subject: batchId,
     detail: `Nhập theo lô: tạo ${result.created.length} tài khoản, ${result.failed.length} dòng không tạo.`,
   });
-  await rememberIdempotentResponse(idempotency, result, 201);
-  await persistLocalState();
+  await persistLocalState({
+    completeIdempotency: { context: idempotency, response: result, status: 201 },
+  });
   return reply.code(201).send(result);
 });
 
 app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
+  requireRecentStepUp(req);
   const body: UpdateUserDTO = UpdateUserSchema.parse(req.body);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
@@ -4125,6 +4546,7 @@ app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: 
 app.delete('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
+  requireRecentStepUp(req);
   const index = appUsers.findIndex(item => item.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
   const user = appUsers[index];
@@ -4142,7 +4564,7 @@ app.delete('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id:
 
 /** Chính sách bảo mật chung: quyết định ai phải nhập mã Google Authenticator khi đăng nhập. */
 function securitySettingsResponse(): SecuritySettingsResponse {
-  const configured = new Set(authenticatorCredentials.map(item => item.userId));
+  const configured = new Set(authenticatorCredentials.filter(isAuthenticatorConfirmed).map(item => item.userId));
   const covered = appUsers.filter(user => user.isActive && mfaPolicyCovers(securitySettings.mfaPolicy, user.portal));
   return {
     settings: securitySettings,
@@ -4172,8 +4594,14 @@ app.get('/api/v1/admin/security-settings', async (req) => {
 app.put('/api/v1/admin/security-settings', async (req: FastifyRequest<{ Body: unknown }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
+  requireRecentStepUp(req);
   const body = SecuritySettingsSchema.parse(req.body);
   const previous = securitySettings.mfaPolicy;
+  const configured = new Set(authenticatorCredentials.filter(isAuthenticatorConfirmed).map(item => item.userId));
+  const pendingEnrolment = appUsers.filter(user => user.isActive && mfaPolicyCovers(body.mfaPolicy, user.portal) && !configured.has(user.id));
+  if (pendingEnrolment.length > 0) {
+    throw new HttpProblem(409, 'MFA_ENROLMENT_INCOMPLETE', 'Chưa hoàn tất ghi danh Authenticator', `Không thể áp chính sách khi còn ${pendingEnrolment.length} tài khoản chưa xác nhận Google Authenticator.`);
+  }
   securitySettings = {
     mfaPolicy: body.mfaPolicy,
     updatedAt: new Date().toISOString(),
@@ -4194,11 +4622,13 @@ app.put('/api/v1/admin/security-settings', async (req: FastifyRequest<{ Body: un
 /**
  * Cấp hoặc thu hồi mã thiết lập Google Authenticator cho một tài khoản.
  * Việc *bắt buộc* nhập mã do chính sách chung quyết định; endpoint này chỉ lo phần ghi danh,
- * vì mỗi người cần một secret riêng để quét QR. Secret chỉ trả về đúng một lần.
+ * vì mỗi người cần một secret riêng để quét QR. Secret chỉ trả về đúng một lần và phải được
+ * xác nhận bằng một mã TOTP trước khi có hiệu lực.
  */
 app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
+  requireRecentStepUp(req);
   const body = UpdateAuthenticatorSchema.parse(req.body);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
@@ -4216,13 +4646,15 @@ app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Pa
       authenticatorCredentials.push({
         userId: user.id,
         encryptedSecret: encryptTotpSecret(secret, authenticatorEncryptionKey()),
-        configuredAt: new Date().toISOString(),
+        issuedAt: new Date().toISOString(),
       });
+      usedTotpCounters = usedTotpCounters.filter(record => record.userId !== user.id);
       setup = { secret, otpauthUri: buildOtpAuthUri(secret, user.email) };
     }
-    user.authenticatorConfigured = true;
   } else {
     authenticatorCredentials = authenticatorCredentials.filter(item => item.userId !== user.id);
+    usedTotpCounters = usedTotpCounters.filter(record => record.userId !== user.id);
+    recoveryCodeSets = recoveryCodeSets.filter(record => record.userId !== user.id);
     user.authenticatorConfigured = false;
     const revokedSessions = authSessionStore.revokeAllForUser(user.id);
     authSessions = authSessionStore.records();
@@ -4240,15 +4672,77 @@ app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Pa
     type: 'ADMIN_AUTHENTICATOR_TOGGLED',
     outcome: 'SUCCESS',
     subject: user.username,
-    detail: `Cấp mã thiết lập Google Authenticator cho ${user.fullName}.`,
+    detail: setup
+      ? `Cấp mã thiết lập Google Authenticator cho ${user.fullName}; đang chờ xác nhận mã TOTP.`
+      : `Giữ nguyên cấu hình Google Authenticator hiện có của ${user.fullName}.`,
   });
+  applyAuthenticatorProjection();
   await persistLocalState();
   return { user, ...(setup ? { setup } : {}) } satisfies UpdateAuthenticatorResponse;
+});
+
+/** Xác nhận thiết bị vừa quét secret trước khi credential có thể được dùng khi đăng nhập. */
+app.post('/api/v1/admin/users/:id/authenticator/confirm', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  requireRecentStepUp(req);
+  const body = ConfirmAuthenticatorEnrollmentSchema.parse(req.body);
+  const user = appUsers.find(item => item.id === req.params.id);
+  if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
+  const credential = authenticatorCredentials.find(item => item.userId === user.id);
+  if (!credential) throw new HttpProblem(409, 'MFA_ENROLMENT_NOT_STARTED', 'Chưa cấp mã Authenticator', 'Hãy cấp mã Google Authenticator trước khi xác nhận.');
+  if (isAuthenticatorConfirmed(credential)) throw new HttpProblem(409, 'MFA_ALREADY_CONFIGURED', 'Authenticator đã được xác nhận', 'Tài khoản này đã hoàn tất ghi danh Google Authenticator.');
+
+  let valid = false;
+  try {
+    valid = verifyTotpCode(decryptTotpSecret(credential.encryptedSecret, authenticatorEncryptionKey()), body.code, Date.now());
+  } catch {
+    throw new HttpProblem(503, 'MFA_CREDENTIAL_INVALID', 'Authenticator chưa sẵn sàng', 'Không thể đọc cấu hình Google Authenticator của tài khoản.');
+  }
+  if (!valid) throw new HttpProblem(401, 'MFA_INVALID_CODE', 'Mã Authenticator không hợp lệ', 'Nhập lại mã 6 chữ số đang hiển thị trong Google Authenticator.');
+
+  credential.confirmedAt = new Date().toISOString();
+  applyAuthenticatorProjection();
+  const confirmedUser = appUsers.find(item => item.id === user.id)!;
+  recordUserSecurityEvent(req, actor, {
+    type: 'ADMIN_AUTHENTICATOR_ENROLLED',
+    outcome: 'SUCCESS',
+    subject: user.username,
+    detail: `Xác nhận thiết bị Google Authenticator cho ${user.fullName}.`,
+  });
+  await persistLocalState();
+  return { user: confirmedUser } satisfies ConfirmAuthenticatorEnrollmentResponse;
+});
+
+/** Replaces the one-time recovery codes for a confirmed Authenticator credential. */
+app.post('/api/v1/admin/users/:id/authenticator/recovery-codes', async (req: FastifyRequest<{ Params: { id: string } }>) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  requireRecentStepUp(req);
+  const user = appUsers.find(item => item.id === req.params.id);
+  if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
+  if (!authenticatorCredentials.some(item => item.userId === user.id && isAuthenticatorConfirmed(item))) {
+    throw new HttpProblem(409, 'MFA_ENROLMENT_INCOMPLETE', 'Chưa hoàn tất Authenticator', 'Chỉ tạo mã dự phòng sau khi thiết bị Google Authenticator đã được xác nhận.');
+  }
+  const codes = Array.from({ length: 10 }, formatRecoveryCode);
+  recoveryCodeSets = [
+    ...recoveryCodeSets.filter(item => item.userId !== user.id),
+    { userId: user.id, codeHashes: await Promise.all(codes.map(code => hashPassword(normalizeRecoveryCode(code)))), issuedAt: new Date().toISOString() },
+  ];
+  recordUserSecurityEvent(req, actor, {
+    type: 'ADMIN_AUTHENTICATOR_RECOVERY_CODES_ISSUED',
+    outcome: 'SUCCESS',
+    subject: user.username,
+    detail: `Cấp lại 10 mã dự phòng Google Authenticator cho ${user.fullName}.`,
+  });
+  await persistLocalState();
+  return { codes };
 });
 
 /** Đặt lại mật khẩu cho một tài khoản. Trả mật khẩu tạm khi quản trị viên không tự đặt. */
 app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   requireAdmin(getCurrentUser(req));
+  requireRecentStepUp(req);
   const body = ResetUserPasswordSchema.parse(req.body ?? {});
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) {
@@ -4268,7 +4762,7 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
 
   // Đổi mật khẩu phải đá mọi phiên đang mở, nếu không người bị thu hồi vẫn dùng tiếp được.
   const revokedSessions = authSessionStore.revokeAllForUser(user.id);
-  clearLoginFailures(user.username.toLocaleLowerCase('vi-VN'));
+  await clearLoginFailures(user.username.toLocaleLowerCase('vi-VN'));
   recordUserSecurityEvent(req, getCurrentUser(req), {
     type: 'ADMIN_USER_PASSWORD_RESET',
     outcome: 'SUCCESS',
@@ -4284,6 +4778,7 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
 app.post('/api/v1/admin/users/:id/password-reset-email', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
+  requireRecentStepUp(req);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
   if (process.env.AUTH_MODE !== 'supabase' || !supabaseAuthAdapter) {
@@ -4721,22 +5216,35 @@ function applyFindingQueryFilters(items: Finding[], query: Record<string, string
 // Findings: List with scope filter & search
 app.get('/api/v1/findings', async (req: FastifyRequest<{ Querystring: any }>) => {
   const user = getCurrentUser(req);
-  const { page, limit } = PaginationQuerySchema.parse(req.query);
+  const { page, limit, cursor: rawCursor } = PaginationQuerySchema.parse(req.query);
   // Query strings are always strings or absent; read them as such instead of trusting `any`.
   const query = (req.query ?? {}) as Record<string, string | undefined>;
   const offset = (page - 1) * limit;
+  let cursor: ReturnType<typeof decodeFindingListCursor> | undefined;
+  if (rawCursor) {
+    try {
+      cursor = decodeFindingListCursor(rawCursor);
+    } catch {
+      throw new HttpProblem(400, 'INVALID_FINDING_CURSOR', 'Cursor không hợp lệ', 'Hãy tải lại danh sách rồi thử lại.');
+    }
+  }
 
   if (findingsReadPath === 'sql' && findingRecords) {
     // Phạm vi và bộ lọc đi thẳng xuống WHERE: một cán bộ chi nhánh chỉ chạm đúng số dòng được xem,
     // thay vì nạp hồ sơ của cả 200 đơn vị vào RAM rồi lọc để hiển thị 20 dòng.
-    const page1 = await findingRecords.list({ user, query, page, limit });
+    const page1 = await findingRecords.list({ user, query, page, limit, cursor });
     return {
       items: page1.items.map(withEvidenceProjection),
       total: page1.total,
       page,
       limit,
-      hasMore: offset + page1.items.length < page1.total,
+      hasMore: page1.hasMore,
+      ...(page1.nextCursor ? { nextCursor: encodeFindingListCursor(page1.nextCursor) } : {}),
     };
+  }
+
+  if (cursor) {
+    throw new HttpProblem(409, 'FINDING_CURSOR_REQUIRES_SQL_READ', 'Cursor chưa sẵn sàng', 'Cursor chỉ dùng khi đường đọc PostgreSQL đã được nghiệm thu và bật FINDINGS_READ_PATH=sql.');
   }
 
   const result = applyFindingQueryFilters(filterFindingsByScope(findings, user), query);
@@ -4756,13 +5264,13 @@ app.get('/api/v1/findings/:id', async (req: FastifyRequest<{ Params: { id: strin
   const user = getCurrentUser(req);
   const found = getScopedFindingOrThrow(req.params.id, user);
   
-  const findingEvidences = availableEvidencesForFinding(found.id);
+  const findingEvidences = visibleEvidencesForFinding(found.id);
   const findingHistory = workflowEvents.filter(w => w.findingId === found.id);
 
   return {
     ...found,
     ...reportPresentationForFinding(found),
-    evidenceCount: findingEvidences.length,
+    evidenceCount: availableEvidencesForFinding(found.id).length,
     evidences: findingEvidences,
     history: findingHistory,
   };
@@ -4795,7 +5303,7 @@ app.post('/api/v1/findings/:id/sub-items', async (req: FastifyRequest<{ Params: 
   return reply.code(201).send({
     ...finding,
     evidenceCount: availableEvidencesForFinding(finding.id).length,
-    evidences: availableEvidencesForFinding(finding.id),
+    evidences: visibleEvidencesForFinding(finding.id),
     history: workflowEvents.filter(event => event.findingId === finding.id),
   });
 });
@@ -4845,7 +5353,7 @@ app.post('/api/v1/findings/:id/sub-items/review', async (req: FastifyRequest<{ P
   return {
     ...finding,
     evidenceCount: availableEvidencesForFinding(finding.id).length,
-    evidences: availableEvidencesForFinding(finding.id),
+    evidences: visibleEvidencesForFinding(finding.id),
     history: workflowEvents.filter(event => event.findingId === finding.id),
   };
 });
@@ -4864,7 +5372,7 @@ app.get('/api/v1/customers/:cif/case', async (req: FastifyRequest<{ Params: { ci
       ...item,
       ...reportPresentationForFinding(item),
       evidenceCount: availableEvidencesForFinding(item.id).length,
-      evidences: availableEvidencesForFinding(item.id),
+      evidences: visibleEvidencesForFinding(item.id),
       history: workflowEvents.filter(event => event.findingId === item.id),
     }))
     .sort((a, b) => a.errorCode.localeCompare(b.errorCode));
@@ -4902,6 +5410,275 @@ app.post('/api/v1/findings', async (req: FastifyRequest<{ Body: any }>) => {
   return newFinding;
 });
 
+function stagedRowForFindingImport(rawData: Record<string, unknown>, batchId: string, rowNumber: number): StagingRow {
+  const parsed = WebFormFindingSchema.safeParse(rawData);
+  if (parsed.success) {
+    return {
+      id: `stage-${crypto.randomUUID()}`,
+      batchId,
+      rowNumber,
+      rawData,
+      parsedData: parsed.data,
+      isValid: true,
+      errors: [],
+      commitStatus: 'PENDING',
+    };
+  }
+  return {
+    id: `stage-${crypto.randomUUID()}`,
+    batchId,
+    rowNumber,
+    rawData,
+    parsedData: {},
+    isValid: false,
+    errors: parsed.error.issues.map(issue => ({
+      rowNumber,
+      fieldKey: issue.path.map(String).join('.') || 'row',
+      fieldLabel: issue.path.map(String).join('.') || 'Dòng dữ liệu',
+      rawValue: issue.path.length === 1 ? rawData[String(issue.path[0])] : rawData,
+      errorCode: issue.code,
+      errorMessage: issue.message,
+      isBlocking: true,
+    })),
+  };
+}
+
+function stagedImportBatchOrThrow(batchId: string, user: UserProfile): ImportBatch {
+  const batch = importBatches.find(item => item.id === batchId);
+  if (!batch) throw new HttpProblem(404, 'IMPORT_BATCH_NOT_FOUND', 'Không tìm thấy lô nhập', 'Lô nhập staging không tồn tại.');
+  const campaign = batch.campaignId ? auditCampaigns.find(item => item.id === batch.campaignId) : undefined;
+  if (campaign && !canAccessCampaign(user, campaign)) {
+    throw new HttpProblem(403, 'SCOPE_FORBIDDEN', 'Không thuộc phạm vi dữ liệu', 'Bạn không có quyền xử lý lô nhập của chuyên đề này.');
+  }
+  return batch;
+}
+
+app.post('/api/v1/imports/findings/stage', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
+  const user = getCurrentUser(req);
+  requireAppCapability(user, 'IMPORT_FINDINGS');
+  const dto = StageFindingImportSchema.parse(req.body);
+  const idempotency = await idempotencyContext<ImportBatch>(req, user, dto);
+  if (idempotency.replay) return reply.code(201).send(idempotency.replay);
+  const candidateChannelId = dto.rows.map(row => String(row.channelId ?? '')).find(Boolean);
+  const channel = reportChannels.find(item => item.id === candidateChannelId);
+  if (!channel) throw new HttpProblem(422, 'IMPORT_CHANNEL_INVALID', 'Loại báo cáo không hợp lệ', 'Mỗi lô staging phải chứa mã loại báo cáo hợp lệ.');
+  const candidateCampaignId = dto.rows.map(row => String(row.campaignId ?? '')).find(Boolean) || undefined;
+  const campaign = candidateCampaignId ? auditCampaigns.find(item => item.id === candidateCampaignId) : undefined;
+  if (candidateCampaignId && !campaign) throw new HttpProblem(422, 'IMPORT_CAMPAIGN_INVALID', 'Chuyên đề không hợp lệ', 'Chuyên đề của lô staging không tồn tại.');
+  if (campaign && !canAccessCampaign(user, campaign)) throw new HttpProblem(403, 'SCOPE_FORBIDDEN', 'Không thuộc phạm vi dữ liệu', 'Bạn không có quyền nhập dữ liệu cho chuyên đề này.');
+
+  const now = new Date().toISOString();
+  const batchId = `batch-${crypto.randomUUID()}`;
+  const rows = dto.rows.map((row, index) => stagedRowForFindingImport(row, batchId, index + 1));
+  const invalidRows = rows.filter(row => !row.isValid);
+  const batch: ImportBatch = {
+    id: batchId,
+    channelId: channel.id,
+    channelName: channel.name,
+    campaignId: candidateCampaignId,
+    channelVersionId: channel.currentVersionId || 'v1',
+    fileName: dto.sourceFileName,
+    sourceType: dto.sourceType,
+    totalRows: rows.length,
+    validRowsCount: rows.length - invalidRows.length,
+    errorRowsCount: invalidRows.length,
+    status: invalidRows.length > 0 ? 'VALIDATED_WITH_ERRORS' : 'READY_TO_COMMIT',
+    uploadedByUserId: user.id,
+    uploadedByName: user.fullName,
+    createdAt: now,
+    checkpointRowNumber: 0,
+    committedFindingsCount: 0,
+    committedDuplicateCount: 0,
+  };
+  stagingRows.push(...rows);
+  importBatches.unshift(batch);
+  await persistLocalState({
+    completeIdempotency: { context: idempotency, response: batch, status: 201 },
+  });
+  return reply.code(201).send(batch);
+});
+
+app.get('/api/v1/imports/findings/:batchId/staging', async (req: FastifyRequest<{ Params: { batchId: string } }>) => {
+  const user = getCurrentUser(req);
+  requireAppCapability(user, 'IMPORT_FINDINGS');
+  const batch = stagedImportBatchOrThrow(req.params.batchId, user);
+  const items = stagingRows.filter(row => row.batchId === batch.id).sort((left, right) => left.rowNumber - right.rowNumber);
+  return { batch, items, total: items.length };
+});
+
+type StagedFindingImportCheckpointResponse = ImportBatch & {
+  remainingRows: number;
+  committedThisCheckpoint?: number;
+  duplicateThisCheckpoint?: number;
+  idempotentReplay?: boolean;
+};
+
+interface BackgroundImportCheckpointPayload {
+  batchId: string;
+  userId: string;
+  maxRows: number;
+  checkpointRowNumber: number;
+}
+
+function stagedImportRemainingRows(batchId: string): number {
+  return stagingRows.filter(row => row.batchId === batchId && row.isValid && row.commitStatus === 'PENDING').length;
+}
+
+async function commitStagedFindingImport(
+  batchId: string,
+  user: UserProfile,
+  dto: { maxRows: number; allowPartial: boolean },
+  options: { idempotency?: IdempotencyContext<StagedFindingImportCheckpointResponse>; expectedCheckpointRowNumber?: number } = {},
+): Promise<StagedFindingImportCheckpointResponse> {
+  const batch = stagedImportBatchOrThrow(batchId, user);
+  if (batch.status === 'COMMITTED') {
+    return { ...batch, remainingRows: 0, idempotentReplay: true };
+  }
+  const isBackgroundCheckpoint = options.expectedCheckpointRowNumber !== undefined;
+  if (isBackgroundCheckpoint) {
+    if (!batch.backgroundProcessing) {
+      throw new HttpProblem(409, 'IMPORT_BACKGROUND_NOT_ACTIVE', 'Lô nhập nền không còn hoạt động', 'Sự kiện nền không còn phù hợp với trạng thái hiện tại của lô nhập.');
+    }
+    const currentCheckpoint = batch.checkpointRowNumber ?? 0;
+    if (currentCheckpoint > options.expectedCheckpointRowNumber!) {
+      return { ...batch, remainingRows: stagedImportRemainingRows(batch.id), idempotentReplay: true };
+    }
+    if (currentCheckpoint < options.expectedCheckpointRowNumber!) {
+      throw new HttpProblem(409, 'IMPORT_BACKGROUND_CHECKPOINT_STALE', 'Checkpoint nền không hợp lệ', 'Sự kiện nền không được bỏ qua checkpoint chưa hoàn tất.');
+    }
+  } else if (batch.backgroundProcessing) {
+    throw new HttpProblem(409, 'IMPORT_BACKGROUND_IN_PROGRESS', 'Lô nhập đang chạy nền', 'Không thể chạy đồng thời checkpoint thủ công và worker nền.');
+  }
+  const rows = stagingRows.filter(row => row.batchId === batch.id).sort((left, right) => left.rowNumber - right.rowNumber);
+  if (batch.errorRowsCount > 0 && !dto.allowPartial) {
+    throw new HttpProblem(409, 'IMPORT_STAGING_HAS_ERRORS', 'Lô staging còn lỗi', 'Sửa các dòng lỗi hoặc xác nhận chỉ commit các dòng hợp lệ.');
+  }
+  const candidates = rows.filter(row => row.isValid && row.commitStatus === 'PENDING').slice(0, dto.maxRows);
+  const now = new Date().toISOString();
+  const seenKeys = new Set(findings.map(item => buildFindingBusinessKey(item)));
+  const imported: Finding[] = [];
+  let duplicates = 0;
+  for (const row of candidates) {
+    const parsed = row.parsedData as WebFormFindingDTO;
+    const key = buildFindingBusinessKey(parsed);
+    if (seenKeys.has(key)) {
+      row.commitStatus = 'DUPLICATE';
+      row.errors.push({ rowNumber: row.rowNumber, fieldKey: 'row', fieldLabel: 'Dòng dữ liệu', rawValue: row.rawData, errorCode: 'IMPORT_DUPLICATE', errorMessage: 'Dòng trùng với hồ sơ đã tồn tại tại thời điểm commit.', isBlocking: false });
+      duplicates += 1;
+      continue;
+    }
+    seenKeys.add(key);
+    imported.push(ensureFindingSubItems(normalizeFindingSpecialCase({
+      ...createFindingFromDto(parsed, user),
+      importBatchId: batch.id,
+      importedByUserId: user.id,
+      importedByName: user.fullName,
+      importedAt: now,
+      importSourceType: batch.sourceType,
+      importSourceFileName: batch.fileName,
+    })));
+  }
+  await ensureFindingDriveFolders(imported);
+  findings.unshift(...imported);
+  for (const row of candidates) {
+    if (row.commitStatus === 'PENDING') {
+      row.commitStatus = 'COMMITTED';
+      row.committedAt = now;
+    }
+  }
+  const remainingRows = stagedImportRemainingRows(batch.id);
+  batch.committedFindingsCount = (batch.committedFindingsCount ?? 0) + imported.length;
+  batch.committedDuplicateCount = (batch.committedDuplicateCount ?? 0) + duplicates;
+  batch.checkpointRowNumber = candidates.at(-1)?.rowNumber ?? batch.checkpointRowNumber;
+  batch.status = remainingRows === 0 ? 'COMMITTED' : 'COMMITTING';
+  if (batch.status === 'COMMITTED') batch.committedAt = now;
+  let nextBackgroundEvent: EnqueueOutboxEvent | null = null;
+  if (isBackgroundCheckpoint) {
+    if (remainingRows === 0) {
+      delete batch.backgroundProcessing;
+      delete batch.backgroundCheckpointSize;
+    } else {
+      nextBackgroundEvent = createStagedImportCheckpointEvent({
+        batchId: batch.id,
+        userId: batch.uploadedByUserId,
+        checkpointRowNumber: batch.checkpointRowNumber ?? 0,
+        maxRows: batch.backgroundCheckpointSize ?? dto.maxRows,
+        remainingRows,
+      });
+    }
+  }
+  const response = { ...batch, remainingRows, committedThisCheckpoint: imported.length, duplicateThisCheckpoint: duplicates };
+  await persistLocalState({
+    ...(options.idempotency ? { completeIdempotency: { context: options.idempotency, response } } : {}),
+    ...(nextBackgroundEvent ? { outboxEvents: [nextBackgroundEvent] } : {}),
+  });
+  return response;
+}
+
+app.post('/api/v1/imports/findings/:batchId/background', async (req: FastifyRequest<{ Params: { batchId: string; }; Body: unknown }>, reply) => {
+  const user = getCurrentUser(req);
+  requireAppCapability(user, 'IMPORT_FINDINGS');
+  if (!postgresOutbox) {
+    throw new HttpProblem(503, 'BACKGROUND_IMPORT_REQUIRES_POSTGRES', 'Nhập nền chưa sẵn sàng', 'Chức năng này chỉ chạy khi PostgreSQL outbox bền vững đã được cấu hình.');
+  }
+  const dto = ScheduleStagedFindingImportSchema.parse(req.body);
+  const idempotency = await idempotencyContext<StagedFindingImportCheckpointResponse>(req, user, dto);
+  if (idempotency.replay) return reply.code(202).send(idempotency.replay);
+  const batch = stagedImportBatchOrThrow(req.params.batchId, user);
+  if (batch.status === 'COMMITTED') {
+    const response = { ...batch, remainingRows: 0, idempotentReplay: true };
+    await persistLocalState({ completeIdempotency: { context: idempotency, response, status: 202 } });
+    return reply.code(202).send(response);
+  }
+  if (batch.backgroundProcessing) {
+    throw new HttpProblem(409, 'IMPORT_BACKGROUND_IN_PROGRESS', 'Lô nhập đang chạy nền', 'Lô nhập này đã có worker nền đang xử lý.');
+  }
+  if (batch.errorRowsCount > 0) {
+    throw new HttpProblem(409, 'IMPORT_STAGING_HAS_ERRORS', 'Lô staging còn lỗi', 'Sửa các dòng lỗi trước khi chuyển lô sang chạy nền.');
+  }
+  const remainingRows = stagedImportRemainingRows(batch.id);
+  const event = createStagedImportCheckpointEvent({
+    batchId: batch.id,
+    userId: batch.uploadedByUserId,
+    checkpointRowNumber: batch.checkpointRowNumber ?? 0,
+    maxRows: dto.maxRows,
+    remainingRows,
+  });
+  batch.backgroundProcessing = remainingRows > 0;
+  batch.backgroundCheckpointSize = dto.maxRows;
+  batch.status = remainingRows === 0 ? 'COMMITTED' : 'COMMITTING';
+  const response = { ...batch, remainingRows };
+  await persistLocalState({
+    completeIdempotency: { context: idempotency, response, status: 202 },
+    ...(event ? { outboxEvents: [event] } : {}),
+  });
+  return reply.code(202).send(response);
+});
+
+app.post('/api/v1/imports/findings/:batchId/commit', async (req: FastifyRequest<{ Params: { batchId: string; }; Body: unknown }>, reply) => {
+  const user = getCurrentUser(req);
+  requireAppCapability(user, 'IMPORT_FINDINGS');
+  const dto = CommitStagedFindingImportSchema.parse(req.body);
+  const idempotency = await idempotencyContext<StagedFindingImportCheckpointResponse>(req, user, dto);
+  if (idempotency.replay) return reply.send(idempotency.replay);
+  return commitStagedFindingImport(req.params.batchId, user, dto, { idempotency });
+});
+
+export async function runStagedImportBackgroundCheckpoint(payload: Record<string, unknown>): Promise<StagedFindingImportCheckpointResponse> {
+  const parsed = z.object({
+    batchId: z.string().min(1),
+    userId: z.string().min(1),
+    maxRows: z.number().int().min(1).max(1_000),
+    checkpointRowNumber: z.number().int().nonnegative(),
+  }).parse(payload) as BackgroundImportCheckpointPayload;
+  const user = appUsers.find(item => item.id === parsed.userId);
+  if (!user) throw new HttpProblem(409, 'IMPORT_BACKGROUND_USER_NOT_FOUND', 'Không tìm thấy người nhập', 'Worker không thể xử lý lô khi tài khoản người nhập không còn tồn tại.');
+  requireAppCapability(user, 'IMPORT_FINDINGS');
+  return commitStagedFindingImport(parsed.batchId, user, { maxRows: parsed.maxRows, allowPartial: false }, {
+    expectedCheckpointRowNumber: parsed.checkpointRowNumber,
+  });
+}
+
 app.get('/api/v1/imports/batches', async (req: FastifyRequest<{ Querystring: { campaignId?: string; channelId?: string } }>) => {
   const user = getCurrentUser(req);
   requireRoles(user, ['ADMIN', 'INTERNAL_OFFICER', 'SUPERVISOR']);
@@ -4913,6 +5690,50 @@ app.get('/api/v1/imports/batches', async (req: FastifyRequest<{ Querystring: { c
     return !campaign || canAccessCampaign(user, campaign);
   });
   return { items, total: items.length };
+});
+
+app.get('/api/v1/admin/outbox', async (req: FastifyRequest<{ Querystring: { limit?: string } }>) => {
+  requireAdmin(getCurrentUser(req));
+  if (!postgresOutbox) throw new HttpProblem(503, 'OUTBOX_NOT_DURABLE', 'Outbox chưa sẵn sàng', 'Chức năng này yêu cầu kho PostgreSQL bền vững.');
+  const limit = Math.min(100, Math.max(1, Number(req.query.limit ?? 50)) || 50);
+  return { items: await postgresOutbox.list(limit) };
+});
+
+app.get('/api/v1/admin/operational-metrics', async req => {
+  requireAdmin(getCurrentUser(req));
+  const durations = requestMeasurements.map(item => item.durationMs);
+  const statusCount = (predicate: (statusCode: number) => boolean) => requestMeasurements.filter(item => predicate(item.statusCode)).length;
+  let outbox: { durable: boolean; pendingCount?: number; processingCount?: number; deadLetterCount?: number; oldestPendingAgeMs?: number | null } = { durable: false };
+  try {
+    const dataStoreStatus = await stateRepository.getStatus();
+    const durablePostgresOutbox = postgresOutbox
+      && dataStoreStatus.mode === 'postgres'
+      && dataStoreStatus.durable
+      && dataStoreStatus.ready;
+    if (durablePostgresOutbox) outbox = { durable: true, ...(await postgresOutbox.metrics()) };
+  } catch (error) {
+    app.log.warn({ err: error }, 'Không lấy được chỉ số outbox; trả về metrics lõi.');
+  }
+  return {
+    windowSize: requestMeasurements.length,
+    latencyMs: { p50: percentile(durations, 0.5), p95: percentile(durations, 0.95) },
+    statusCounts: {
+      conflict409: statusCount(statusCode => statusCode === 409),
+      throttled429: statusCount(statusCode => statusCode === 429),
+      serverError5xx: statusCount(statusCode => statusCode >= 500),
+    },
+    outbox,
+    sla: { lastSuccessfulRunAt: lastSuccessfulSlaRunAt },
+  };
+});
+
+app.post('/api/v1/admin/outbox/:id/retry', async (req: FastifyRequest<{ Params: { id: string } }>) => {
+  requireAdmin(getCurrentUser(req));
+  if (!postgresOutbox) throw new HttpProblem(503, 'OUTBOX_NOT_DURABLE', 'Outbox chưa sẵn sàng', 'Chức năng này yêu cầu kho PostgreSQL bền vững.');
+  if (!await postgresOutbox.retryDeadLetter(req.params.id)) {
+    throw new HttpProblem(404, 'OUTBOX_DEAD_LETTER_NOT_FOUND', 'Không tìm thấy delivery cần gửi lại', 'Chỉ có thể gửi lại delivery đang ở dead-letter.');
+  }
+  return { id: req.params.id, status: 'PENDING' };
 });
 
 app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, reply) => {
@@ -4963,7 +5784,11 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
       importSourceFileName: batch.sourceFileName,
     })));
   }
+  if (batch.atomic && duplicateCount > 0) {
+    throw new HttpProblem(409, 'IMPORT_BATCH_DUPLICATE', 'Lô nhập có dữ liệu trùng', `Phát hiện ${duplicateCount} dòng trùng với dữ liệu hiện có. Lô nguyên tử chưa ghi dữ liệu nào.`);
+  }
   const channel = reportChannels.find(item => item.id === batch.rows[0].channelId)!;
+  await ensureFindingDriveFolders(imported);
   findings.unshift(...imported);
   importBatches.unshift({
     id: batchId,
@@ -4994,10 +5819,11 @@ app.post('/api/v1/imports/findings', async (req: FastifyRequest<{ Body: any }>, 
   // Không lưu mảng hồ sơ vào bộ nhớ chống lặp. Một lần nhập 5.000 dòng để lại khoảng 8,5 MB nằm
   // vĩnh viễn trong snapshot mà mọi request sau đó đều phải đọc và ghi; phần tóm tắt cộng batchId
   // là đủ để dựng lại nguyên phản hồi khi có lần gọi lặp.
-  if (idempotency) await rememberIdempotentResponse(idempotency, { ...response, findings: [] }, 201);
   // Một lần ghi là đủ. Bản trước gọi persistLocalState() hai lần liền nhau trong cùng handler, tức
   // nhân đôi đúng thao tác đắt nhất của hệ thống mà không đổi lấy gì.
-  await persistLocalState();
+  await persistLocalState(idempotency
+    ? { completeIdempotency: { context: idempotency, response: { ...response, findings: [] }, status: 201 } }
+    : undefined);
   return reply.code(201).send(response);
 });
 
@@ -5041,7 +5867,7 @@ app.post('/api/v1/imports/findings/document-preview', async (req, reply) => {
 app.get('/api/v1/findings/:id/approval-candidates', async (req: FastifyRequest<{ Params: { id: string } }>) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
-  return approvalCandidatesForFinding(finding);
+  return approvalCandidatesForFinding(finding, appUsers);
 });
 
 // Dấu sao thuộc về khách hàng trong một chi nhánh, không thuộc riêng từng mã lỗi.
@@ -5088,7 +5914,7 @@ app.put('/api/v1/findings/:id/special-case', async (req: FastifyRequest<{ Params
   return {
     ...finding,
     evidenceCount: availableEvidencesForFinding(finding.id).length,
-    evidences: availableEvidencesForFinding(finding.id),
+    evidences: visibleEvidencesForFinding(finding.id),
     history: workflowEvents.filter(event => event.findingId === finding.id),
   };
 });
@@ -5179,6 +6005,89 @@ app.get('/api/v1/findings/:id/approval-route', async (req: FastifyRequest<{ Para
   return buildFindingApprovalRoute(getScopedFindingOrThrow(req.params.id, user));
 });
 
+/**
+ * Giao lại đúng bước đang chờ phê duyệt. Tuyến không được sửa lặng lẽ qua DTO finding chung:
+ * thay đổi phải có version, lý do và event kiểm toán, đồng thời không thể giao lại cho người nộp.
+ */
+app.post('/api/v1/findings/:id/approval-route/reassign', async (req: FastifyRequest<{
+  Params: { id: string };
+  Body: unknown;
+}>) => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const dto = ReassignApprovalRouteSchema.parse(req.body);
+  const finding = getScopedFindingOrThrow(req.params.id, actor);
+  const route = finding.approvalRoute;
+  if (!route) {
+    throw new HttpProblem(409, 'APPROVAL_ROUTE_NOT_ASSIGNED', 'Chưa có tuyến duyệt', 'Chỉ giao lại hồ sơ đã được nộp và có tuyến duyệt cố định.');
+  }
+  if (finding.workflowStatus === 'WAIVED_RESOLVED') {
+    throw new HttpProblem(409, 'FINDING_IS_TERMINAL', 'Hồ sơ đã kết thúc', 'Không thể giao lại tuyến duyệt của hồ sơ đã kết thúc.');
+  }
+  if (finding.version !== dto.expectedVersion) {
+    throw new HttpProblem(409, 'VERSION_CONFLICT', 'Dữ liệu đã thay đổi', 'Hồ sơ vừa được cập nhật. Hãy tải lại rồi giao lại theo phiên bản mới.');
+  }
+
+  const activeStageByStatus: Partial<Record<WorkflowStatus, ApprovalAssignmentStage>> = {
+    SUBMITTED_BRANCH: 'BRANCH_CONTROLLER',
+    SUBMITTED_BRANCH_LEADER: 'BRANCH_LEADER',
+    SUBMITTED_INTERNAL: 'INTERNAL_APPROVER',
+  };
+  const activeStage = activeStageByStatus[finding.workflowStatus];
+  if (!activeStage || activeStage !== dto.stage) {
+    throw new HttpProblem(409, 'APPROVAL_REASSIGNMENT_STAGE_INVALID', 'Bước giao lại không hợp lệ', 'Chỉ được giao lại đúng bước phê duyệt đang chờ xử lý.');
+  }
+  if (dto.stage === 'BRANCH_LEADER' && !route.requiresBranchLeaderApproval) {
+    throw new HttpProblem(409, 'APPROVAL_REASSIGNMENT_STAGE_INVALID', 'Bước giao lại không hợp lệ', 'Hồ sơ này không có bước Lãnh đạo chi nhánh.');
+  }
+
+  const candidates = approvalCandidatesForFinding(finding, appUsers);
+  const eligible = dto.stage === 'BRANCH_CONTROLLER'
+    ? candidates.branchControllers
+    : dto.stage === 'BRANCH_LEADER'
+      ? candidates.branchLeaders
+      : candidates.internalApprovers;
+  const assignee = eligible.find(candidate => candidate.id === dto.assigneeUserId);
+  if (!assignee) {
+    throw new HttpProblem(422, 'APPROVAL_ASSIGNEE_INELIGIBLE', 'Người nhận không phù hợp', 'Người nhận phải đang hoạt động, đúng vai trò và đúng phạm vi của bước phê duyệt.');
+  }
+  if (assignee.id === route.assignedByUserId) {
+    throw new HttpProblem(409, 'APPROVAL_SELF_ASSIGNMENT_FORBIDDEN', 'Không thể tự duyệt', 'Không thể giao bước duyệt cho chính người đã nộp hồ sơ.');
+  }
+
+  const now = new Date().toISOString();
+  if (dto.validUntil && Date.parse(dto.validUntil) <= Date.parse(now)) {
+    throw new HttpProblem(422, 'APPROVAL_ASSIGNMENT_EXPIRY_INVALID', 'Thời hạn giao việc không hợp lệ', 'Thời hạn giao việc phải nằm sau thời điểm giao lại tuyến duyệt.');
+  }
+  finding.approvalRoute = reassignApprovalStage(route, dto.stage, assignee.id, {
+    actorUserId: actor.id,
+    reason: dto.reason,
+    assignedAt: now,
+    validUntil: dto.validUntil,
+  });
+  finding.version += 1;
+  finding.updatedAt = now;
+  const assignmentEventId = `evt-${crypto.randomUUID()}`;
+  const assignment = finding.approvalRoute.assignmentHistory?.at(-1);
+  if (!assignment) throw new Error('APPROVAL_ASSIGNMENT_HISTORY_MISSING');
+  recordWorkflowEvent({
+    id: assignmentEventId,
+    findingId: finding.id,
+    command: 'SET_APPROVAL_ROUTE',
+    fromStatus: finding.workflowStatus,
+    toStatus: finding.workflowStatus,
+    actorUserId: actor.id,
+    actorName: actor.fullName,
+    actorRole: actor.primaryRole,
+    notes: `Giao lại ${dto.stage} cho ${assignee.fullName}: ${dto.reason}`,
+    createdAt: now,
+  });
+  await persistLocalState({
+    approvalAssignmentHistory: [{ eventId: assignmentEventId, findingId: finding.id, assignment }],
+  });
+  return finding;
+});
+
 app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>, reply) => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
@@ -5200,7 +6109,11 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
     // Tuyến duyệt suy tự động theo cấu hình loại báo cáo + phân quyền vai trò trong chi nhánh;
     // dấu sao (isSpecialCase) là thứ quyết định có chèn bước Lãnh đạo chi nhánh hay không.
     if (workflowType !== 'ONE_TIER') {
-      finding.approvalRoute = resolveApprovalRoute(finding, workflowType, user);
+      const approvalRoute = resolveApprovalRoute(finding, workflowType, user, appUsers, new Date().toISOString());
+      if (!approvalRoute) {
+        throw new HttpProblem(409, 'APPROVAL_ROUTE_UNRESOLVED', 'Chưa xác định được tuyến duyệt', 'Chi nhánh chưa có người kiểm soát hoặc lãnh đạo phù hợp để nhận hồ sơ. Hãy bổ sung người phụ trách trước khi nộp.');
+      }
+      finding.approvalRoute = approvalRoute;
     }
     const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     Object.assign(finding, updated);
@@ -5218,8 +6131,7 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
       createdAt: new Date().toISOString(),
     });
 
-    await rememberIdempotentResponse(idempotency, finding);
-    await persistLocalState();
+    await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
     return finding;
   } catch (err) {
     throw workflowErrorToProblem(err);
@@ -5253,8 +6165,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-approve', async (req: Fast
       createdAt: new Date().toISOString(),
     });
 
-    await rememberIdempotentResponse(idempotency, finding);
-    await persistLocalState();
+    await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
     return finding;
   } catch (err) {
     throw workflowErrorToProblem(err);
@@ -5288,8 +6199,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-reject', async (req: Fasti
       createdAt: new Date().toISOString(),
     });
 
-    await rememberIdempotentResponse(idempotency, finding);
-    await persistLocalState();
+    await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
     return finding;
   } catch (err) {
     throw workflowErrorToProblem(err);
@@ -5320,8 +6230,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-approve', async (req: Fasti
       notes: dto.notes || 'Lãnh đạo chi nhánh đồng ý chuyển hồ sơ lên Khối Nội Bộ.',
       createdAt: new Date().toISOString(),
     });
-    await rememberIdempotentResponse(idempotency, finding);
-    await persistLocalState();
+    await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
     return finding;
   } catch (err) {
     throw workflowErrorToProblem(err);
@@ -5351,8 +6260,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-reject', async (req: Fastif
       rejectedFromStage: 'BRANCH_LEADER_REVIEW',
       createdAt: new Date().toISOString(),
     });
-    await rememberIdempotentResponse(idempotency, finding);
-    await persistLocalState();
+    await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
     return finding;
   } catch (err) {
     throw workflowErrorToProblem(err);
@@ -5386,8 +6294,7 @@ app.post('/api/v1/findings/:id/actions/internal-waive', async (req: FastifyReque
       createdAt: new Date().toISOString(),
     });
 
-    await rememberIdempotentResponse(idempotency, finding);
-    await persistLocalState();
+    await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
     return finding;
   } catch (err) {
     throw workflowErrorToProblem(err);
@@ -5421,8 +6328,7 @@ app.post('/api/v1/findings/:id/actions/internal-reject', async (req: FastifyRequ
       createdAt: new Date().toISOString(),
     });
 
-    await rememberIdempotentResponse(idempotency, finding);
-    await persistLocalState();
+    await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
     return finding;
   } catch (err) {
     throw workflowErrorToProblem(err);
@@ -5471,35 +6377,153 @@ function requireEvidenceUploadAccess(req: FastifyRequest, findingId: string): { 
 }
 
 function registerEvidence(finding: Finding, user: UserProfile, uploadResult: { driveFileId: string; driveUrl: string; sha256Checksum: string; fileSize: number; mimeType: string }, fileName: string): EvidenceObject {
-  const duplicate = evidences.find(item => item.findingId === finding.id && item.driveFileId === uploadResult.driveFileId && item.status === 'AVAILABLE');
+  const duplicate = evidences.find(item => item.findingId === finding.id && item.driveFileId === uploadResult.driveFileId && item.status !== 'REVOKED');
   if (duplicate) return duplicate;
   const now = new Date().toISOString();
+  const scan = initialEvidenceScanDisposition();
   const evidence: EvidenceObject = {
     id: `evi-${crypto.randomUUID()}`, findingId: finding.id, fileName, fileSize: uploadResult.fileSize, mimeType: uploadResult.mimeType,
     driveFileId: uploadResult.driveFileId, driveUrl: uploadResult.driveUrl, sha256Checksum: uploadResult.sha256Checksum,
-    status: 'AVAILABLE', uploadedByUserId: user.id, uploadedByName: user.fullName, uploadedByRole: user.primaryRole, versionNumber: 1, createdAt: now, updatedAt: now,
+    status: scan.status, uploadedByUserId: user.id, uploadedByName: user.fullName, uploadedByRole: user.primaryRole,
+    versionNumber: 1, createdAt: now, updatedAt: now, ...(scan.notes ? { notes: scan.notes } : {}),
   };
   evidences.push(evidence);
   finding.evidenceCount = availableEvidencesForFinding(finding.id).length;
   return evidence;
 }
 
+function evidenceScanOutboxEvent(evidence: EvidenceObject): EnqueueOutboxEvent | undefined {
+  if (evidence.status !== 'QUARANTINED') return undefined;
+  return {
+    eventType: 'EVIDENCE_SCAN_REQUEST',
+    aggregateType: 'EVIDENCE',
+    aggregateId: evidence.id,
+    payload: {
+      evidenceId: evidence.id,
+      driveFileId: evidence.driveFileId,
+      sha256Checksum: evidence.sha256Checksum,
+      fileName: evidence.fileName,
+      mimeType: evidence.mimeType,
+    },
+    dedupeKey: `evidence-scan:${evidence.id}:${evidence.sha256Checksum}`,
+  };
+}
+
+function scannerCallbackToken(): string | undefined {
+  return process.env.EVIDENCE_SCANNER_CALLBACK_TOKEN
+    ?? (process.env.NODE_ENV === 'test' ? 'test-evidence-scanner-callback-token' : undefined);
+}
+
+function requireEvidenceScannerCallback(request: FastifyRequest): void {
+  const expectedValue = scannerCallbackToken();
+  if (!expectedValue) {
+    throw new HttpProblem(503, 'EVIDENCE_SCANNER_NOT_CONFIGURED', 'Dịch vụ quét chưa sẵn sàng', 'Máy chủ chưa có EVIDENCE_SCANNER_CALLBACK_TOKEN.');
+  }
+  const expected = Buffer.from(expectedValue, 'utf8');
+  const received = Buffer.from(String(request.headers['x-evidence-scanner-token'] ?? ''), 'utf8');
+  if (expected.length === 0 || expected.length !== received.length || !crypto.timingSafeEqual(expected, received)) {
+    throw new HttpProblem(401, 'EVIDENCE_SCANNER_CALLBACK_UNAUTHORIZED', 'Không thể xác thực scanner', 'Callback scanner không có mã xác thực hợp lệ.');
+  }
+}
+
+function evidenceOrphanRetentionMs(): number {
+  const configuredHours = Number(process.env.EVIDENCE_ORPHAN_RETENTION_HOURS ?? '24');
+  const hours = Number.isFinite(configuredHours)
+    ? Math.min(168, Math.max(1, Math.floor(configuredHours)))
+    : 24;
+  return hours * 60 * 60 * 1_000;
+}
+
+async function cleanupExpiredEvidenceUploads(asOf = new Date()): Promise<{ expiredCount: number; deletedCount: number; alreadyRegisteredCount: number; failedCount: number }> {
+  const expired = pendingEvidenceUploads.filter(upload => {
+    const expiresAt = Date.parse(upload.expiresAt);
+    return !Number.isFinite(expiresAt) || expiresAt <= asOf.getTime();
+  });
+  let deletedCount = 0;
+  let alreadyRegisteredCount = 0;
+  let failedCount = 0;
+
+  for (const upload of expired) {
+    if (evidences.some(evidence => evidence.driveFileId === upload.driveFileId)) {
+      pendingEvidenceUploads = pendingEvidenceUploads.filter(candidate => candidate.id !== upload.id);
+      alreadyRegisteredCount += 1;
+      continue;
+    }
+    try {
+      await googleDriveService.deleteEvidenceFile(upload.driveFileId);
+      pendingEvidenceUploads = pendingEvidenceUploads.filter(candidate => candidate.id !== upload.id);
+      deletedCount += 1;
+    } catch (error) {
+      failedCount += 1;
+      app.log.warn({ error, uploadId: upload.id, findingId: upload.findingId }, 'Không thể dọn tệp Drive tải dở; sẽ thử lại ở lượt cron sau.');
+    }
+  }
+  if (deletedCount > 0 || alreadyRegisteredCount > 0) await persistLocalState();
+  return { expiredCount: expired.length, deletedCount, alreadyRegisteredCount, failedCount };
+}
+
 app.post('/api/v1/findings/:id/evidence/upload-session', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
-  const { finding } = requireEvidenceUploadAccess(req, req.params.id);
+  const { user, finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CreateEvidenceUploadSessionSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
   const storageStatus = await googleDriveService.getStorageStatus();
   if (storageStatus.mode !== 'google-drive') return { uploadMode: 'local' as const };
-  return googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
+  const session = await googleDriveService.createResumableUploadSession({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
+  const createdAt = new Date();
+  const pendingUpload: PendingEvidenceUpload = {
+    id: crypto.randomUUID(),
+    findingId: finding.id,
+    driveFileId: session.driveFileId,
+    fileName,
+    mimeType: dto.mimeType,
+    fileSize: dto.fileSize,
+    sha256Checksum: dto.sha256Checksum,
+    uploadedByUserId: user.id,
+    createdAt: createdAt.toISOString(),
+    expiresAt: new Date(createdAt.getTime() + evidenceOrphanRetentionMs()).toISOString(),
+  };
+  pendingEvidenceUploads.push(pendingUpload);
+  try {
+    await persistLocalState();
+  } catch (error) {
+    pendingEvidenceUploads = pendingEvidenceUploads.filter(upload => upload.id !== pendingUpload.id);
+    await googleDriveService.deleteEvidenceFile(session.driveFileId).catch(() => undefined);
+    throw error;
+  }
+  return { ...session, expiresAt: pendingUpload.expiresAt };
 });
 
 app.post('/api/v1/findings/:id/evidence/complete', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const { user, finding } = requireEvidenceUploadAccess(req, req.params.id);
   const dto = CompleteEvidenceDirectUploadSchema.parse(req.body);
   const fileName = googleDriveService.validateUploadMetadata(dto.fileName, dto.mimeType, dto.fileSize);
+  const pendingUpload = pendingEvidenceUploads.find(upload => (
+    upload.findingId === finding.id
+    && upload.driveFileId === dto.driveFileId
+    && upload.fileName === fileName
+    && upload.mimeType === dto.mimeType
+    && upload.fileSize === dto.fileSize
+    && upload.sha256Checksum === dto.sha256Checksum
+    && upload.uploadedByUserId === user.id
+  ));
+  if (!pendingUpload) {
+    throw new HttpProblem(409, 'EVIDENCE_UPLOAD_SESSION_INVALID', 'Phiên tải minh chứng không hợp lệ', 'Tệp phải được hoàn tất bởi đúng người đã tạo phiên tải cho hồ sơ này.');
+  }
+  const expiresAt = Date.parse(pendingUpload.expiresAt);
+  if (!Number.isFinite(expiresAt) || expiresAt <= Date.now()) {
+    throw new HttpProblem(409, 'EVIDENCE_UPLOAD_SESSION_EXPIRED', 'Phiên tải minh chứng đã hết hạn', 'Hãy tạo phiên tải mới; tệp tải dở sẽ được cron dọn theo chính sách lưu giữ.');
+  }
   const uploadResult = await googleDriveService.completeResumableUpload({ ...dto, fileName, folderPath: evidenceFolderPath(finding), rootFolderId: requireProvisionedCampaignDriveRootFolderId(finding), findingId: finding.id });
+  await googleDriveService.verifyCompletedEvidenceContent({
+    driveFileId: uploadResult.driveFileId,
+    fileName,
+    mimeType: dto.mimeType,
+    sha256Checksum: dto.sha256Checksum,
+  });
   const evidence = registerEvidence(finding, user, uploadResult, fileName);
-  await persistLocalState();
+  pendingEvidenceUploads = pendingEvidenceUploads.filter(upload => upload.id !== pendingUpload.id);
+  const scanEvent = evidenceScanOutboxEvent(evidence);
+  await persistLocalState({ ...(scanEvent ? { outboxEvents: [scanEvent] } : {}) });
   return evidence;
 });
 
@@ -5513,6 +6537,7 @@ app.post('/api/v1/findings/:id/evidence', async (req: FastifyRequest<{ Params: {
 
   const buffer = await data.toBuffer();
   const safeFileName = googleDriveService.validateUploadMetadata(data.filename, data.mimetype, buffer.length);
+  validateEvidenceContent(buffer, safeFileName, data.mimetype);
   const folderPath = evidenceFolderPath(finding);
 
   const uploadResult = await googleDriveService.uploadEvidenceFile({
@@ -5524,9 +6549,43 @@ app.post('/api/v1/findings/:id/evidence', async (req: FastifyRequest<{ Params: {
   });
 
   const newEvidence = registerEvidence(finding, user, uploadResult, safeFileName);
-  await persistLocalState();
+  const scanEvent = evidenceScanOutboxEvent(newEvidence);
+  await persistLocalState({ ...(scanEvent ? { outboxEvents: [scanEvent] } : {}) });
 
   return newEvidence;
+});
+
+app.post('/api/v1/internal/evidence-scans/:id/complete', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  requireEvidenceScannerCallback(req);
+  const dto = CompleteEvidenceScanSchema.parse(req.body);
+  const evidence = evidences.find(item => item.id === req.params.id);
+  if (!evidence) throw new HttpProblem(404, 'EVIDENCE_NOT_FOUND', 'Không tìm thấy minh chứng', 'Scanner gửi kết quả cho minh chứng không tồn tại.');
+  if (evidence.sha256Checksum !== dto.sha256Checksum) {
+    throw new HttpProblem(409, 'EVIDENCE_SCAN_CHECKSUM_MISMATCH', 'Kết quả quét không khớp', 'Checksum scanner trả về không khớp phiên bản minh chứng đang chờ.');
+  }
+  const targetStatus = dto.verdict === 'CLEAN' ? 'AVAILABLE' : 'REJECTED';
+  if (evidence.status !== 'QUARANTINED' && evidence.status !== 'SCANNING') {
+    if (evidence.status === targetStatus) return { id: evidence.id, status: evidence.status };
+    throw new HttpProblem(409, 'EVIDENCE_SCAN_STATE_CONFLICT', 'Minh chứng không còn chờ quét', 'Kết quả scanner trễ không được phép ghi đè trạng thái hiện tại.');
+  }
+  const completedAt = new Date().toISOString();
+  evidence.status = targetStatus;
+  evidence.notes = dto.detail ?? (targetStatus === 'AVAILABLE' ? 'Scanner đã xác nhận tệp an toàn.' : 'Scanner từ chối tệp minh chứng.');
+  evidence.scanResult = {
+    verdict: dto.verdict,
+    scannedAt: completedAt,
+    ...(dto.provider ? { provider: dto.provider } : {}),
+    ...(dto.scanReference ? { scanReference: dto.scanReference } : {}),
+    ...(dto.detail ? { detail: dto.detail } : {}),
+  };
+  evidence.updatedAt = completedAt;
+  const finding = findings.find(item => item.id === evidence.findingId);
+  if (finding) {
+    finding.evidenceCount = availableEvidencesForFinding(finding.id).length;
+    finding.updatedAt = completedAt;
+  }
+  await persistLocalState();
+  return { id: evidence.id, status: evidence.status };
 });
 
 app.delete('/api/v1/findings/:findingId/evidence/:evidenceId', async (req: FastifyRequest<{
@@ -5544,7 +6603,7 @@ app.delete('/api/v1/findings/:findingId/evidence/:evidenceId', async (req: Fasti
   const evidence = evidences.find(item => (
     item.id === req.params.evidenceId
     && item.findingId === finding.id
-    && item.status === 'AVAILABLE'
+    && item.status !== 'REVOKED'
   ));
   if (!evidence) {
     throw new HttpProblem(404, 'EVIDENCE_NOT_FOUND', 'Không tìm thấy tài liệu', 'Tài liệu không tồn tại hoặc đã được thu hồi.');
@@ -5571,6 +6630,30 @@ app.get('/api/v1/evidence/:driveFileId/content', async (req: FastifyRequest<{ Pa
     throw new HttpProblem(404, 'EVIDENCE_NOT_FOUND', 'Không tìm thấy minh chứng', 'Minh chứng không tồn tại hoặc đã bị thu hồi.');
   }
   getScopedFindingOrThrow(evidence.findingId, user);
+  if (googleDriveService.usesGoogleDriveStorage()) {
+    try {
+      await googleDriveService.verifyCompletedEvidenceContent({
+        driveFileId: evidence.driveFileId,
+        fileName: evidence.fileName,
+        mimeType: evidence.mimeType,
+        sha256Checksum: evidence.sha256Checksum,
+      });
+    } catch (error) {
+      if (error instanceof HttpProblem && ['EVIDENCE_CHECKSUM_MISMATCH', 'EVIDENCE_SIGNATURE_INVALID'].includes(error.code ?? '')) {
+        const rejectedAt = new Date().toISOString();
+        evidence.status = 'REJECTED';
+        evidence.notes = 'Nội dung nguồn không còn khớp bản minh chứng đã được xác minh.';
+        evidence.updatedAt = rejectedAt;
+        const finding = findings.find(item => item.id === evidence.findingId);
+        if (finding) {
+          finding.evidenceCount = availableEvidencesForFinding(finding.id).length;
+          finding.updatedAt = rejectedAt;
+        }
+        await persistLocalState();
+      }
+      throw error;
+    }
+  }
   const result = await googleDriveService.getFileContentStream(req.params.driveFileId);
   if (!result) {
     throw new HttpProblem(404, 'EVIDENCE_CONTENT_NOT_FOUND', 'Không tìm thấy nội dung minh chứng', 'Metadata tồn tại nhưng nội dung tệp hiện không khả dụng.');
@@ -6002,6 +7085,25 @@ app.get('/api/v1/reports/findings.csv', async (req: FastifyRequest<{ Querystring
 
 // Start listening if run directly
 const PORT = Number(process.env.PORT) || 3001;
+
+function isProductionScannerEndpoint(value: string | undefined): boolean {
+  if (!value) return false;
+  try {
+    const endpoint = new URL(value);
+    return endpoint.protocol === 'https:'
+      && !endpoint.username
+      && !endpoint.password
+      && !endpoint.search
+      && !endpoint.hash;
+  } catch {
+    return false;
+  }
+}
+
+function hasProductionScannerToken(value: string | undefined): boolean {
+  return Boolean(value?.trim()) && Buffer.byteLength(value!, 'utf8') >= 32;
+}
+
 export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.env): void {
   if (env.NODE_ENV !== 'production') return;
 
@@ -6032,6 +7134,13 @@ export function assertSafeRuntimeConfiguration(env: NodeJS.ProcessEnv = process.
   if (env.DATA_STORE_MODE !== 'postgres' || !env.DATABASE_URL) violations.push('DATA_STORE_MODE=postgres và DATABASE_URL là bắt buộc');
   if (!env.CRON_SECRET) violations.push('thiếu CRON_SECRET');
   if (env.EVIDENCE_STORAGE_MODE !== 'google-drive') violations.push('EVIDENCE_STORAGE_MODE phải là google-drive');
+  const scannerConfigured = isProductionScannerEndpoint(env.EVIDENCE_SCANNER_WEBHOOK_URL)
+    && isProductionScannerEndpoint(env.EVIDENCE_SCANNER_CALLBACK_BASE_URL)
+    && hasProductionScannerToken(env.EVIDENCE_SCANNER_WEBHOOK_TOKEN)
+    && hasProductionScannerToken(env.EVIDENCE_SCANNER_CALLBACK_TOKEN);
+  if (!scannerConfigured) {
+    violations.push('cấu hình scanner minh chứng phải có webhook/callback HTTPS không kèm credential hoặc query và hai token tối thiểu 32 byte');
+  }
   const oauthUserDrive = env.GOOGLE_DRIVE_AUTH_MODE === 'oauth-user';
   const googleDriveConfigured = oauthUserDrive
     ? Boolean(env.GOOGLE_OAUTH_CLIENT_ID && env.GOOGLE_OAUTH_CLIENT_SECRET && env.GOOGLE_OAUTH_REDIRECT_URI && env.GOOGLE_OAUTH_STATE_SECRET && env.GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY)

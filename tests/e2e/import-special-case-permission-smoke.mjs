@@ -19,14 +19,15 @@ try {
   if (await page.locator('#docx-finding-input').isDisabled()) throw new Error('Bộ chọn DOCX vẫn bị khóa khi chưa chọn chuyên đề.');
 
   await page.getByRole('button', { name: 'Hồ sơ khách hàng' }).click();
-  await page.getByRole('button', { name: /Mở hồ sơ Công ty TNHH Cà Phê Tây Nguyên Xanh/ }).click();
+  await page.getByRole('button', { name: 'Kiểm toán Tín dụng & Sai sót BGS Thường xuyên', exact: true }).click();
+  await page.getByRole('button', { name: 'Tìm kiếm', exact: true }).click();
+  const customerRow = page.locator('tbody tr', { hasText: 'Công ty TNHH Cà Phê Tây Nguyên Xanh' });
+  await customerRow.waitFor();
+  await customerRow.getByRole('button', { name: 'Mở hồ sơ' }).click();
   await page.getByRole('button', { name: 'Đánh dấu khách hàng là trường hợp đặc biệt' }).waitFor();
   if (await page.getByText('Dấu sao', { exact: true }).count()) throw new Error('Điều khiển dấu sao vẫn còn trong nội dung từng mã lỗi.');
 
-  await page.request.post('http://localhost:3000/api/v1/auth/logout');
-  const officerLogin = await page.request.post('http://localhost:3000/api/v1/auth/login', { data: { username: 'bachtd', password: 'AuditOfficer@2026' } });
-  if (!officerLogin.ok()) throw new Error(`Không thể đăng nhập cán bộ Hội sở: HTTP ${officerLogin.status()}`);
-  await page.goto('http://localhost:3000', { waitUntil: 'networkidle' });
+  await loginAs(page, 'internalOfficer');
   await page.getByRole('button', { name: 'Cấu hình' }).click();
   await page.getByRole('button', { name: 'Chuyên đề', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Loại báo cáo', exact: true }).waitFor();

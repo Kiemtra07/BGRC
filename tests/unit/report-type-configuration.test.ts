@@ -39,6 +39,18 @@ describe('report type configuration contract', () => {
     expect(CreateReportChannelSchema.safeParse(validConfig).success).toBe(true);
   });
 
+  it('defaults calendar-day SLA safely and validates a configured working-day calendar', () => {
+    expect(CreateReportChannelSchema.parse(validConfig).slaConfig).toMatchObject({ businessDaysOnly: false, holidayDates: [] });
+    expect(CreateReportChannelSchema.safeParse({
+      ...validConfig,
+      slaConfig: { ...validConfig.slaConfig, businessDaysOnly: true, holidayDates: ['2026-01-01', '2026-04-30'] },
+    }).success).toBe(true);
+    expect(CreateReportChannelSchema.safeParse({
+      ...validConfig,
+      slaConfig: { ...validConfig.slaConfig, businessDaysOnly: true, holidayDates: ['2026-02-30'] },
+    }).success).toBe(false);
+  });
+
   it('rejects duplicate dynamic field keys and invalid select fields', () => {
     const field = { fieldKey: 'ghi_chu', label: 'Ghi chú', dataType: 'select', isRequired: false, excelHeaderAliases: [], displayOrder: 1, showInTableGrid: true };
     const result = CreateReportChannelSchema.safeParse({ ...validConfig, schemaConfig: { ...validConfig.schemaConfig, fields: [field, field] } });

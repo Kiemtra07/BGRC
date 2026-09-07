@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import type { Finding, UserProfile } from '../../shared/contracts';
 import {
+  decodeFindingListCursor,
+  encodeFindingListCursor,
   PostgresFindingRecords,
   buildListQuery,
   findingContentHash,
@@ -127,6 +129,24 @@ describe('truy vấn danh sách hồ sơ bằng SQL', () => {
     expect(rendered.params.slice(-2)).toEqual([20, 40]);
   });
 
+  it('dùng keyset cursor cho trang sâu mà vẫn giữ total của toàn bộ tập đã lọc', () => {
+    const cursor = { createdAt: '2026-09-03T01:02:03.000Z', id: 'find-older' };
+    const rendered = buildListQuery({ user: adminUser, query: {}, page: 1, limit: 20, cursor });
+
+    expect(rendered.sql).toContain('WITH scoped_findings AS');
+    expect(rendered.sql).toContain('count(*) OVER () AS total_count');
+    expect(rendered.sql).toContain('(created_at, finding_id) < ($1::timestamptz, $2)');
+    expect(rendered.sql).not.toContain('OFFSET');
+    // Lấy thêm một dòng để trả nextCursor chính xác mà không suy diễn từ total.
+    expect(rendered.params).toEqual([cursor.createdAt, cursor.id, 21]);
+  });
+
+  it('mã hóa cursor opaque và từ chối dữ liệu không hợp lệ', () => {
+    const cursor = { createdAt: '2026-09-03T01:02:03.000Z', id: 'find-older' };
+    expect(decodeFindingListCursor(encodeFindingListCursor(cursor))).toEqual(cursor);
+    expect(() => decodeFindingListCursor('not-a-valid-cursor')).toThrow('INVALID_FINDING_CURSOR');
+  });
+
   it('đánh số tham số liên tục từ phạm vi sang bộ lọc, không trùng không nhảy', () => {
     const rendered = buildListQuery({
       user: branchUser,
@@ -146,7 +166,7 @@ describe('đồng bộ bảng chiếu hồ sơ', () => {
   it('lần đầu nạp vân tay từ database rồi ghi mọi hồ sơ', async () => {
     const client = new FakeClient([]);
     const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
-    const result = await records.sync([finding({ id: 'a' }), finding({ id: 'b' })], noEvidence);
+    const result = await records.sync([finding({ id: 'a' }), finding({ id: 'b' })], noEvidence, '1');
 
     expect(result).toEqual({ upserted: 2, deleted: 0 });
     expect(client.queries.some(q => /SELECT finding_id, content_hash/i.test(q.sql))).toBe(true);
@@ -158,10 +178,10 @@ describe('đồng bộ bảng chiếu hồ sơ', () => {
     const client = new FakeClient([]);
     const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
     const items = [finding({ id: 'a' }), finding({ id: 'b' })];
-    await records.sync(items, noEvidence);
+    await records.sync(items, noEvidence, '1');
     client.queries.length = 0;
 
-    const second = await records.sync(items, noEvidence);
+    const second = await records.sync(items, noEvidence, '2');
     expect(second).toEqual({ upserted: 0, deleted: 0 });
     // Đây là toàn bộ lý do có cột content_hash: không đẩy lại 20.000 dòng ở mỗi lần ai đó bấm nút.
     expect(client.queries.filter(q => /INSERT INTO finding_records/i.test(q.sql))).toHaveLength(0);
@@ -171,24 +191,40 @@ describe('đồng bộ bảng chiếu hồ sơ', () => {
   it('chỉ ghi lại đúng hồ sơ vừa đổi, và xoá hồ sơ đã biến mất', async () => {
     const client = new FakeClient([]);
     const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
-    await records.sync([finding({ id: 'a' }), finding({ id: 'b' })], noEvidence);
+    await records.sync([finding({ id: 'a' }), finding({ id: 'b' })], noEvidence, '1');
     client.queries.length = 0;
 
-    const result = await records.sync([finding({ id: 'a', workflowStatus: 'SUBMITTED_BRANCH' })], noEvidence);
+    const result = await records.sync([finding({ id: 'a', workflowStatus: 'SUBMITTED_BRANCH' })], noEvidence, '2');
     expect(result).toEqual({ upserted: 1, deleted: 1 });
     const del = client.queries.find(q => /DELETE FROM finding_records/i.test(q.sql));
-    expect(del?.params).toEqual([['b']]);
+    expect(del?.params).toEqual([['b'], '2']);
+  });
+
+  it('không cho projection từ snapshot cũ ghi đè hoặc xoá dòng mới hơn', async () => {
+    const client = new FakeClient([{ finding_id: 'a', content_hash: 'newer-hash' }]);
+    const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
+
+    await records.sync([], noEvidence, '7');
+
+    const deletion = client.queries.find(q => /DELETE FROM finding_records/i.test(q.sql));
+    expect(deletion?.sql).toContain('source_revision <= $2::bigint');
+    expect(deletion?.params).toEqual([['a'], '7']);
+
+    client.queries.length = 0;
+    await records.sync([finding({ id: 'a', workflowStatus: 'SUBMITTED_BRANCH' })], noEvidence, '7');
+    const upsert = client.queries.find(q => /INSERT INTO finding_records/i.test(q.sql));
+    expect(upsert?.sql).toContain('WHERE finding_records.source_revision <= EXCLUDED.source_revision');
   });
 
   it('coi việc thêm minh chứng là một thay đổi cần ghi lại', async () => {
     const client = new FakeClient([]);
     const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
     const items = [finding({ id: 'a' })];
-    await records.sync(items, noEvidence);
+    await records.sync(items, noEvidence, '1');
     client.queries.length = 0;
 
     // Hồ sơ không đổi, nhưng cột evidence_count thì đổi — bộ lọc "đã có minh chứng" đọc cột đó.
-    const result = await records.sync(items, new Map([['a', 2]]));
+    const result = await records.sync(items, new Map([['a', 2]]), '2');
     expect(result.upserted).toBe(1);
   });
 
@@ -201,11 +237,11 @@ describe('đồng bộ bảng chiếu hồ sơ', () => {
     }
     const client = new FailingClient([]);
     const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
-    await expect(records.sync([finding({ id: 'a' })], noEvidence)).rejects.toThrow('mất kết nối');
+    await expect(records.sync([finding({ id: 'a' })], noEvidence, '1')).rejects.toThrow('mất kết nối');
 
     // Giữ lại bộ nhớ đệm sau một lượt hỏng là bỏ qua đúng những dòng chưa hề được ghi.
     client.queries.length = 0;
-    await expect(records.sync([finding({ id: 'a' })], noEvidence)).rejects.toThrow();
+    await expect(records.sync([finding({ id: 'a' })], noEvidence, '2')).rejects.toThrow();
     expect(client.queries.some(q => /SELECT finding_id, content_hash/i.test(q.sql))).toBe(true);
   });
 
@@ -235,5 +271,65 @@ describe('đồng bộ bảng chiếu hồ sơ', () => {
     const records = new PostgresFindingRecords({ pool: new FakePool(client) as never });
 
     await expect(records.assertCoverage(items, noEvidence)).resolves.toBeUndefined();
+  });
+
+  it('cắt dòng dư của keyset page và trả cursor của dòng cuối được phát', async () => {
+    class CursorPageClient extends FakeClient {
+      public override async query(sql: string, params: unknown[] = []): Promise<QueryResult> {
+        if (/WITH scoped_findings AS/i.test(sql)) {
+          return {
+            rowCount: 3,
+            rows: [
+              { payload: finding({ id: 'newer' }), created_at: '2026-09-03T03:00:00.000Z', finding_id: 'newer', total_count: '5' },
+              { payload: finding({ id: 'middle' }), created_at: '2026-09-03T02:00:00.000Z', finding_id: 'middle', total_count: '5' },
+              { payload: finding({ id: 'older' }), created_at: '2026-09-03T01:00:00.000Z', finding_id: 'older', total_count: '5' },
+            ],
+          };
+        }
+        return super.query(sql, params);
+      }
+    }
+
+    const records = new PostgresFindingRecords({ pool: new FakePool(new CursorPageClient()) as never });
+    const page = await records.list({
+      user: adminUser,
+      query: {},
+      page: 1,
+      limit: 2,
+      cursor: { createdAt: '2026-09-04T00:00:00.000Z', id: 'start' },
+    });
+
+    expect(page.items.map(item => item.id)).toEqual(['newer', 'middle']);
+    expect(page).toMatchObject({
+      total: 5,
+      hasMore: true,
+      nextCursor: { createdAt: '2026-09-03T02:00:00.000Z', id: 'middle' },
+    });
+  });
+
+  it('quét toàn bộ phạm vi SQL bằng cursor thay vì tăng OFFSET', async () => {
+    class CursorAwareRecords extends PostgresFindingRecords {
+      public readonly calls: Array<Parameters<PostgresFindingRecords['list']>[0]> = [];
+
+      public override async list(options: Parameters<PostgresFindingRecords['list']>[0]) {
+        this.calls.push(options);
+        if (!options.cursor) {
+          return {
+            items: [finding({ id: 'first' })], total: 2, hasMore: true,
+            nextCursor: { createdAt: '2026-09-03T02:00:00.000Z', id: 'first' },
+          };
+        }
+        return { items: [finding({ id: 'second' })], total: 2, hasMore: false };
+      }
+    }
+
+    const records = new CursorAwareRecords({ pool: new FakePool(new FakeClient()) as never });
+    await expect(records.listAll({ user: adminUser, query: {} })).resolves.toEqual([
+      expect.objectContaining({ id: 'first' }),
+      expect.objectContaining({ id: 'second' }),
+    ]);
+    expect(records.calls).toHaveLength(2);
+    expect(records.calls[0]?.cursor).toBeUndefined();
+    expect(records.calls[1]?.cursor).toEqual({ createdAt: '2026-09-03T02:00:00.000Z', id: 'first' });
   });
 });

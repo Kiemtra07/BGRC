@@ -33,6 +33,21 @@ export interface FindingApprovalRoute {
   requiresBranchLeaderApproval: boolean;
   assignedByUserId?: string;
   assignedAt?: string;
+  assignmentHistory?: FindingApprovalAssignment[];
+}
+
+/** A deliberate administrative reassignment of one in-flight approval stage. */
+export type ApprovalAssignmentStage = 'BRANCH_CONTROLLER' | 'BRANCH_LEADER' | 'INTERNAL_APPROVER';
+
+export interface FindingApprovalAssignment {
+  stage: ApprovalAssignmentStage;
+  previousUserId?: string;
+  assignedUserId: string;
+  assignedByUserId: string;
+  reason: string;
+  assignedAt: string;
+  /** Optional expiry for a temporary reassignment/delegation. */
+  validUntil?: string;
 }
 
 export interface Finding {
@@ -86,7 +101,7 @@ export interface Finding {
   importedByUserId?: string;
   importedByName?: string;
   importedAt?: string;
-  importSourceType?: 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'PDF' | 'API_BULK' | 'WEB_FORM';
+  importSourceType?: 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'PDF' | 'API_BULK' | 'WEB_FORM' | 'EXCEL_IMPORT';
   importSourceFileName?: string;
 
   // Status & Versioning (P0-01, P0-02, P0-06, P0-08)

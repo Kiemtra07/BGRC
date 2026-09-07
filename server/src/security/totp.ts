@@ -61,18 +61,23 @@ export function generateTotpCode(secret: string, timestampMs = Date.now(), digit
   return String(binary % (10 ** digits)).padStart(digits, '0');
 }
 
-export function verifyTotpCode(secret: string, submittedCode: string, timestampMs = Date.now(), window = 1): boolean {
-  if (!/^\d{6}$/.test(submittedCode) || !Number.isInteger(window) || window < 0 || window > 2) return false;
+export function matchingTotpCounter(secret: string, submittedCode: string, timestampMs = Date.now(), window = 1): number | undefined {
+  if (!/^\d{6}$/.test(submittedCode) || !Number.isInteger(window) || window < 0 || window > 2) return undefined;
   try {
     for (let offset = -window; offset <= window; offset += 1) {
-      const expected = Buffer.from(generateTotpCode(secret, timestampMs + offset * TOTP_PERIOD_SECONDS * 1_000));
+      const candidateTimestamp = timestampMs + offset * TOTP_PERIOD_SECONDS * 1_000;
+      const expected = Buffer.from(generateTotpCode(secret, candidateTimestamp));
       const actual = Buffer.from(submittedCode);
-      if (timingSafeEqual(expected, actual)) return true;
+      if (timingSafeEqual(expected, actual)) return Math.floor(candidateTimestamp / 1_000 / TOTP_PERIOD_SECONDS);
     }
   } catch {
-    return false;
+    return undefined;
   }
-  return false;
+  return undefined;
+}
+
+export function verifyTotpCode(secret: string, submittedCode: string, timestampMs = Date.now(), window = 1): boolean {
+  return matchingTotpCounter(secret, submittedCode, timestampMs, window) !== undefined;
 }
 
 export function buildOtpAuthUri(secret: string, accountName: string, issuer = 'Audit Monitoring'): string {
@@ -107,4 +112,3 @@ export function decryptTotpSecret(payload: string, key: string): string {
   decodeBase32(plaintext);
   return plaintext;
 }
-

@@ -28,7 +28,7 @@ export type SlaStatus =
   | 'OVERDUE'    // Quá hạn
   | 'CLOSED';    // Đã đóng khi finding hoàn tất
 
-export type EvidenceStatus = 'PENDING_UPLOAD' | 'AVAILABLE' | 'FAILED' | 'REVOKED';
+export type EvidenceStatus = 'PENDING_UPLOAD' | 'QUARANTINED' | 'SCANNING' | 'AVAILABLE' | 'REJECTED' | 'FAILED' | 'REVOKED';
 
 /**
  * Risk grade and business line carried over verbatim from the CoPlus inspection record, so a

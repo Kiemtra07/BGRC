@@ -13,13 +13,20 @@ const accounts = {
     expectedUserId: 'user-branch-controller-635',
     credentials: { username: 'lyltk1', password: 'BranchControl@2026' },
   },
+  internalOfficer: {
+    expectedUserId: 'user-internal-officer',
+    credentials: { username: 'bachtd', password: 'AuditOfficer@2026' },
+  },
 };
 
 export async function loginAs(page, accountName) {
   const account = accounts[accountName];
   if (!account) throw new Error(`Unknown local smoke account: ${accountName}`);
 
-  await page.request.post(`${APP_URL}/api/v1/auth/logout`);
+  // A direct Playwright request does not receive the app's CSRF header. Starting
+  // a fresh browser session is equivalent for the smoke test and avoids masking
+  // the production double-submit CSRF guard with a test-only bypass.
+  await page.context().clearCookies();
   const response = await page.request.post(`${APP_URL}/api/v1/auth/login`, {
     data: account.credentials,
   });

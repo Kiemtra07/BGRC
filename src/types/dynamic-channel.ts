@@ -82,6 +82,8 @@ export interface DynamicSlaConfig {
   lowRiskDays: number;
   escalationAfterDaysOverdue: number;
   reminderDaysBefore: number[];
+  businessDaysOnly: boolean;
+  holidayDates: string[];
 }
 
 export interface DynamicReportChannel {

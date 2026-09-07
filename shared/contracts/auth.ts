@@ -45,7 +45,7 @@ export interface UserProfile {
 export interface LoginDTO {
   username: string;
   password: string;
-  /** Google Authenticator six-digit token when the account requires MFA. */
+  /** Google Authenticator six-digit token or one-time recovery code when the account requires MFA. */
   mfaCode?: string;
 }
 
@@ -61,14 +61,21 @@ export interface AuthSessionRecord {
   createdAt: string;
   lastSeenAt: string;
   expiresAt: string;
+  stepUpAt?: string;
   revokedAt?: string;
 }
 
 export const LoginSchema = z.object({
   username: z.string().trim().min(2).max(100),
   password: z.string().min(1).max(200),
+  mfaCode: z.string().trim().regex(/^(?:\d{6}|[A-Za-z0-9]{4}(?:-[A-Za-z0-9]{4}){2})$/, 'Nhập mã Authenticator 6 chữ số hoặc mã dự phòng dạng XXXX-XXXX-XXXX.').optional(),
+});
+
+export const StepUpSchema = z.object({
+  password: z.string().min(1).max(200),
   mfaCode: z.string().trim().regex(/^\d{6}$/, 'Mã Authenticator phải gồm 6 chữ số.').optional(),
 });
+export type StepUpDTO = z.infer<typeof StepUpSchema>;
 
 export const ChangePasswordSchema = z.object({
   currentPassword: z.string().min(1).max(200).optional(),
@@ -98,6 +105,11 @@ export const UpdateAuthenticatorSchema = z.object({
 });
 export type UpdateAuthenticatorDTO = z.infer<typeof UpdateAuthenticatorSchema>;
 
+export const ConfirmAuthenticatorEnrollmentSchema = z.object({
+  code: z.string().trim().regex(/^\d{6}$/, 'Mã Authenticator phải gồm 6 chữ số.'),
+});
+export type ConfirmAuthenticatorEnrollmentDTO = z.infer<typeof ConfirmAuthenticatorEnrollmentSchema>;
+
 export interface AuthenticatorSetup {
   secret: string;
   otpauthUri: string;
@@ -106,6 +118,10 @@ export interface AuthenticatorSetup {
 export interface UpdateAuthenticatorResponse {
   user: UserProfile;
   setup?: AuthenticatorSetup;
+}
+
+export interface ConfirmAuthenticatorEnrollmentResponse {
+  user: UserProfile;
 }
 
 /**

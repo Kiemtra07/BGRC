@@ -27,7 +27,7 @@ const payload = {
       { stageId: 'head-office', stageName: 'Phê duyệt HT', statusCode: 'SUBMITTED_INTERNAL', allowedRoles: ['INTERNAL_APPROVER'], availableButtons: [] },
     ],
   },
-  slaConfig: { defaultDays: 12, highRiskDays: 5, mediumRiskDays: 12, lowRiskDays: 20, escalationAfterDaysOverdue: 2, reminderDaysBefore: [3, 1] },
+  slaConfig: { defaultDays: 12, highRiskDays: 5, mediumRiskDays: 12, lowRiskDays: 20, escalationAfterDaysOverdue: 2, reminderDaysBefore: [3, 1], businessDaysOnly: true, holidayDates: ['2026-04-30'] },
   integrationConfig: {
     googleSheets: { enabled: true, spreadsheetId: 'sheet-test', sheetName: 'AuditBGS', syncMode: 'UPSERT' },
     email: { enabled: true, sendOnSubmission: true, sendBeforeDeadline: true, sendWhenOverdue: true, sendTime: '08:30', recipientRoles: ['INTERNAL_APPROVER'], additionalRecipients: ['audit@example.com'], subjectTemplate: '[Audit BGS] {{reportName}}' },
@@ -41,7 +41,7 @@ describe('report type configuration API', () => {
     const created = await app.inject({ method: 'POST', url: '/api/v1/admin/channels', headers, payload });
     expect(created.statusCode).toBe(200);
     createdId = created.json().id;
-    expect(created.json()).toMatchObject({ code: payload.code, configVersion: 1, slaConfig: { defaultDays: 12 }, schemaConfig: { formTemplate: { name: 'Mẫu kiểm thử', blocks: [{ type: 'SECTION' }, { type: 'FIELD', fieldKey: 'noi_dung_rieng' }] } } });
+    expect(created.json()).toMatchObject({ code: payload.code, configVersion: 1, slaConfig: { defaultDays: 12, businessDaysOnly: true, holidayDates: ['2026-04-30'] }, schemaConfig: { formTemplate: { name: 'Mẫu kiểm thử', blocks: [{ type: 'SECTION' }, { type: 'FIELD', fieldKey: 'noi_dung_rieng' }] } } });
 
     const updated = await app.inject({ method: 'PATCH', url: `/api/v1/admin/channels/${createdId}`, headers, payload: { slaConfig: { ...payload.slaConfig, defaultDays: 9 } } });
     expect(updated.statusCode).toBe(200);
@@ -95,6 +95,39 @@ describe('report type configuration API', () => {
     expect(created.statusCode, created.body).toBe(200);
     const removed = await app.inject({ method: 'DELETE', url: `/api/v1/admin/channels/${created.json().id}`, headers: officerHeaders });
     expect(removed.statusCode, removed.body).toBe(204);
+  });
+
+  it('derives a finding deadline from the channel business calendar', async () => {
+    const channel = await app.inject({
+      method: 'POST',
+      url: '/api/v1/admin/channels',
+      headers,
+      payload: {
+        ...payload,
+        code: 'REPORT_BUSINESS_SLA_TEST',
+        name: 'Loại báo cáo lịch SLA ngày làm việc',
+        schemaConfig: { ...payload.schemaConfig, tableName: 'report_business_sla_test' },
+        slaConfig: { ...payload.slaConfig, defaultDays: 1, holidayDates: [] },
+      },
+    });
+    expect(channel.statusCode, channel.body).toBe(200);
+
+    const created = await app.inject({
+      method: 'POST',
+      url: '/api/v1/findings',
+      headers,
+      payload: {
+        channelId: channel.json().id,
+        cif: 'SLA-BUSINESS-001', customerName: 'Khách hàng lịch SLA', clusterName: 'Cụm Tây Nguyên',
+        branchCode: '635', branchName: 'Chi nhánh Nam Buôn Hồ', auditDate: '2026-04-24',
+        errorCode: 'SLA.01', errorTitle: 'Tính hạn theo ngày làm việc',
+        description: 'Ngày bắt đầu là thứ Sáu, hạn một ngày làm việc phải rơi vào thứ Hai.', exposureAmount: 0,
+        customPayload: { noi_dung_rieng: 'Kiểm thử lịch SLA theo kênh.' },
+      },
+    });
+
+    expect(created.statusCode, created.body).toBe(200);
+    expect(created.json()).toMatchObject({ deadlineDate: '2026-04-27' });
   });
 
   it('uses the pinned report version to allow a form-only workflow without evidence', async () => {

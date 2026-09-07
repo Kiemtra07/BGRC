@@ -64,6 +64,16 @@ export class AuthSessionStore {
     return true;
   }
 
+  /** Marks exactly this active browser session as recently re-authenticated. */
+  public markStepUp(token: string): boolean {
+    if (!token) return false;
+    const record = this.sessionRecords.find(item => item.tokenDigest === this.digest(token) && !item.revokedAt);
+    if (!record) return false;
+    record.stepUpAt = this.now().toISOString();
+    this.publish();
+    return true;
+  }
+
   /**
    * Thu hồi mọi phiên đang mở của một tài khoản. Dùng khi đổi hoặc đặt lại mật khẩu: nếu không,
    * phiên cấp bằng mật khẩu cũ vẫn dùng được và việc đặt lại mật khẩu không có tác dụng bảo vệ.

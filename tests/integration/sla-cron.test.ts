@@ -48,6 +48,16 @@ describe('SLA cron endpoint', () => {
       overdueCount: expect.any(Number),
       dueSoonCount: expect.any(Number),
     });
+
+    const metrics = await app.inject({
+      method: 'GET',
+      url: '/api/v1/admin/operational-metrics',
+      headers: { 'x-user-id': 'user-admin' },
+    });
+    expect(metrics.statusCode).toBe(200);
+    expect(metrics.json()).toMatchObject({
+      sla: { lastSuccessfulRunAt: expect.any(String) },
+    });
   });
 
   it('also accepts the GET method used by Vercel Cron', async () => {

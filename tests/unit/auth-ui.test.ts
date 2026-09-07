@@ -73,4 +73,24 @@ describe('authentication UI architecture', () => {
       expect(smokeSource, smokePath).not.toContain("'x-user-id'");
     }
   });
+
+  it('reauthenticates before account and permission administration', () => {
+    const userManager = read('src/components/admin/UserManager.tsx');
+    expect(userManager).toContain('const confirmAccountAdministration');
+    expect(userManager).toContain("confirmAccountAdministration('tạo tài khoản và cấp quyền')");
+    expect(userManager).toContain("confirmAccountAdministration('nhập hàng loạt tài khoản và cấp quyền')");
+    expect(userManager).toContain("confirmAccountAdministration('cập nhật tài khoản hoặc quyền')");
+    expect(userManager).toContain("confirmAccountAdministration('xóa tài khoản')");
+    expect(userManager).toContain('await api.stepUp({ password });');
+  });
+
+  it('clears only the signed-out user\'s resumable import state after logout succeeds', () => {
+    const appSource = read('src/App.tsx');
+    const logoutRequest = appSource.indexOf('await api.logout();');
+    const clearImportSession = appSource.indexOf('clearStagedImportSession(sessionStorage, currentUser.id);');
+
+    expect(appSource).toContain("import { clearStagedImportSession } from './services/staged-import-retry';");
+    expect(logoutRequest).toBeGreaterThanOrEqual(0);
+    expect(clearImportSession).toBeGreaterThan(logoutRequest);
+  });
 });

@@ -75,6 +75,8 @@ describe('serverless read-through re-hydration', () => {
     const postgres = { DATA_STORE_MODE: 'postgres' } as NodeJS.ProcessEnv;
     expect(shouldHydrateRuntimeStatePerRequest(postgres, '/api/v1/internal/sla/run', 'GET')).toBe(false);
     expect(shouldHydrateRuntimeStatePerRequest(postgres, '/api/v1/internal/sla/run', 'POST')).toBe(false);
+    expect(shouldHydrateRuntimeStatePerRequest(postgres, '/api/v1/internal/outbox/run', 'GET')).toBe(false);
+    expect(shouldHydrateRuntimeStatePerRequest(postgres, '/api/v1/internal/outbox/run', 'POST')).toBe(false);
     expect(shouldHydrateRuntimeStatePerRequest(postgres, '/api/v1/findings', 'POST')).toBe(false);
     expect(shouldHydrateRuntimeStatePerRequest(postgres, '/api/v1/findings', 'PATCH')).toBe(false);
     expect(shouldHydrateRuntimeStatePerRequest(postgres, '/api/v1/findings', 'DELETE')).toBe(false);

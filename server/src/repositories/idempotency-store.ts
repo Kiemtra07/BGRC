@@ -1,3 +1,4 @@
+import crypto from 'node:crypto';
 import type { PostgresClientLike, PostgresPoolLike } from './postgres-state';
 import { withBackendTransaction } from './postgres-transaction';
 import {
@@ -8,6 +9,7 @@ import {
 export interface IdempotencyRecord {
   requestHash: string;
   response: unknown;
+  claimToken?: string;
   /** 102 means a request has claimed the key but has not completed yet. */
   status?: number;
   storedAt?: string;
@@ -25,13 +27,38 @@ export interface IdempotencyClaimOptions {
 }
 
 export type IdempotencyClaim =
-  | { state: 'CLAIMED' }
+  | { state: 'CLAIMED'; claimToken: string }
   | { state: 'IN_PROGRESS' }
   | { state: 'CONFLICT' }
   | { state: 'REPLAY'; record: IdempotencyRecord };
 
 export const IDEMPOTENCY_PENDING_STATUS = 102;
 export const IDEMPOTENCY_PENDING_RETENTION_MS = 2 * 60_000;
+
+export async function completeIdempotencyClaim(
+  client: PostgresClientLike,
+  key: string,
+  record: IdempotencyRecord,
+  options: IdempotencyPutOptions,
+): Promise<void> {
+  const result = await client.query(
+    `UPDATE idempotency_keys
+        SET response_status = $3,
+            response_body = $4::jsonb,
+            expires_at = NOW() + ($5 || ' milliseconds')::interval
+      WHERE key = $1 AND request_hash = $2 AND response_status = $6 AND claim_token = $7`,
+    [
+      key,
+      record.requestHash,
+      options.status,
+      JSON.stringify(record.response ?? null),
+      String(IDEMPOTENCY_RETENTION_MS),
+      IDEMPOTENCY_PENDING_STATUS,
+      record.claimToken ?? '',
+    ],
+  );
+  if (result.rowCount !== 1) throw new Error('IDEMPOTENCY_CLAIM_LOST — không tìm thấy claim đang chờ để hoàn tất.');
+}
 
 /**
  * Bộ nhớ chống xử lý lặp.
@@ -49,7 +76,7 @@ export interface IdempotencyStore {
   get(key: string): Promise<IdempotencyRecord | undefined>;
   claim(key: string, requestHash: string, options: IdempotencyClaimOptions): Promise<IdempotencyClaim>;
   put(key: string, record: IdempotencyRecord, options: IdempotencyPutOptions): Promise<void>;
-  release(key: string, requestHash: string): Promise<void>;
+  release(key: string, requestHash: string, claimToken?: string): Promise<void>;
   /** Dọn bản ghi hết hạn. Trả về số dòng đã bỏ. */
   prune(): Promise<number>;
 }
@@ -79,7 +106,9 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
         status: IDEMPOTENCY_PENDING_STATUS,
         storedAt: new Date().toISOString(),
       };
-      return { state: 'CLAIMED' };
+      const claimToken = crypto.randomUUID();
+      records[key].claimToken = claimToken;
+      return { state: 'CLAIMED', claimToken };
     }
     if (existing.requestHash !== requestHash) return { state: 'CONFLICT' };
     if (existing.status === IDEMPOTENCY_PENDING_STATUS) {
@@ -94,7 +123,9 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
         status: IDEMPOTENCY_PENDING_STATUS,
         storedAt: new Date().toISOString(),
       };
-      return { state: 'CLAIMED' };
+      const claimToken = crypto.randomUUID();
+      records[key].claimToken = claimToken;
+      return { state: 'CLAIMED', claimToken };
     }
     return { state: 'REPLAY', record: structuredClone(existing) };
   }
@@ -102,15 +133,15 @@ export class MemoryIdempotencyStore implements IdempotencyStore {
   public async put(key: string, record: IdempotencyRecord): Promise<void> {
     const records = this.read();
     const existing = records[key];
-    if (!existing || existing.requestHash !== record.requestHash || existing.status !== IDEMPOTENCY_PENDING_STATUS) {
+    if (!existing || existing.requestHash !== record.requestHash || existing.claimToken !== record.claimToken || existing.status !== IDEMPOTENCY_PENDING_STATUS) {
       throw new Error('IDEMPOTENCY_CLAIM_LOST — không tìm thấy claim đang chờ để hoàn tất.');
     }
     records[key] = { ...record, status: undefined, storedAt: new Date().toISOString() };
   }
 
-  public async release(key: string, requestHash: string): Promise<void> {
+  public async release(key: string, requestHash: string, claimToken?: string): Promise<void> {
     const records = this.read();
-    if (records[key]?.requestHash === requestHash && records[key]?.status === IDEMPOTENCY_PENDING_STATUS) {
+    if (records[key]?.requestHash === requestHash && records[key]?.claimToken === claimToken && records[key]?.status === IDEMPOTENCY_PENDING_STATUS) {
       delete records[key];
     }
   }
@@ -169,14 +200,15 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
           storedAt: row.created_at instanceof Date ? row.created_at.toISOString() : String(row.created_at),
         } };
       }
+      const claimToken = crypto.randomUUID();
       await client.query(
         `INSERT INTO idempotency_keys(
            key, request_path, request_method, request_hash,
-           response_status, response_body, expires_at
-         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW() + ($7 || ' milliseconds')::interval)`,
-        [key, options.path.slice(0, 255), options.method, requestHash, IDEMPOTENCY_PENDING_STATUS, JSON.stringify(null), String(IDEMPOTENCY_PENDING_RETENTION_MS)],
+           response_status, response_body, expires_at, claim_token
+         ) VALUES ($1, $2, $3, $4, $5, $6::jsonb, NOW() + ($7 || ' milliseconds')::interval, $8)`,
+        [key, options.path.slice(0, 255), options.method, requestHash, IDEMPOTENCY_PENDING_STATUS, JSON.stringify(null), String(IDEMPOTENCY_PENDING_RETENTION_MS), claimToken],
       );
-      return { state: 'CLAIMED' };
+      return { state: 'CLAIMED', claimToken };
     });
   }
 
@@ -186,29 +218,14 @@ export class PostgresIdempotencyStore implements IdempotencyStore {
     options: IdempotencyPutOptions,
   ): Promise<void> {
     await withBackendTransaction(this.pool, async (client: PostgresClientLike) => {
-      const result = await client.query(
-        `UPDATE idempotency_keys
-            SET response_status = $3,
-                response_body = $4::jsonb,
-                expires_at = NOW() + ($5 || ' milliseconds')::interval
-          WHERE key = $1 AND request_hash = $2 AND response_status = $6`,
-        [
-          key,
-          record.requestHash,
-          options.status,
-          JSON.stringify(record.response ?? null),
-          String(IDEMPOTENCY_RETENTION_MS),
-          IDEMPOTENCY_PENDING_STATUS,
-        ],
-      );
-      if (result.rowCount !== 1) throw new Error('IDEMPOTENCY_CLAIM_LOST — không tìm thấy claim đang chờ để hoàn tất.');
+      await completeIdempotencyClaim(client, key, record, options);
     });
   }
 
-  public async release(key: string, requestHash: string): Promise<void> {
+  public async release(key: string, requestHash: string, claimToken?: string): Promise<void> {
     await withBackendTransaction(this.pool, client => client.query(
-      'DELETE FROM idempotency_keys WHERE key = $1 AND request_hash = $2 AND response_status = $3',
-      [key, requestHash, IDEMPOTENCY_PENDING_STATUS],
+      'DELETE FROM idempotency_keys WHERE key = $1 AND request_hash = $2 AND response_status = $3 AND claim_token = $4',
+      [key, requestHash, IDEMPOTENCY_PENDING_STATUS, claimToken ?? ''],
     ).then(() => undefined));
   }
 

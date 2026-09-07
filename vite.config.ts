@@ -1,4 +1,4 @@
-import { defineConfig } from 'vite'
+import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 // https://vitejs.dev/config/
@@ -28,6 +28,14 @@ export default defineConfig({
         target: 'http://127.0.0.1:3001',
         changeOrigin: true,
       },
+    },
+  },
+  // The Windows fork pool intermittently exits after the suite completes, producing a false-red
+  // CI result. One persistent fork keeps the isolation boundary while making the run deterministic.
+  test: {
+    pool: 'forks',
+    poolOptions: {
+      forks: { singleFork: true },
     },
   },
 })

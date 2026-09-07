@@ -16,12 +16,14 @@ export interface FindingBackfillState {
 export interface FindingRecordsSource {
   hasSnapshot(): Promise<boolean>;
   load(fallback: FindingBackfillState): Promise<FindingBackfillState>;
+  currentVersion(): string | undefined;
 }
 
 export interface FindingRecordsTarget {
   sync(
     findings: readonly Finding[],
     evidenceCountById: ReadonlyMap<string, number>,
+    sourceRevision: string,
   ): Promise<{ upserted: number; deleted: number }>;
 }
 
@@ -58,6 +60,8 @@ export async function backfillFindingRecords(options: {
   const state = await options.source.load({ findings: [], evidences: [] });
   const findings = Array.isArray(state.findings) ? state.findings : [];
   const evidences = Array.isArray(state.evidences) ? state.evidences : [];
+  const sourceRevision = options.source.currentVersion();
+  if (!sourceRevision) throw new Error('FINDING_RECORDS_BACKFILL_SOURCE_REVISION_MISSING');
   const evidenceCountById = availableEvidenceCounts(evidences);
   const availableEvidenceCount = [...evidenceCountById.values()].reduce((sum, count) => sum + count, 0);
   if (options.dryRun) {
@@ -71,7 +75,7 @@ export async function backfillFindingRecords(options: {
     };
   }
 
-  const sync = await options.target.sync(findings, evidenceCountById);
+  const sync = await options.target.sync(findings, evidenceCountById, sourceRevision);
   return {
     findingCount: findings.length,
     evidenceCount: evidences.length,

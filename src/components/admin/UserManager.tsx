@@ -20,7 +20,7 @@ import {
   Pencil,
   Trash2,
 } from 'lucide-react';
-import { BulkUserImportDTO, BulkUserImportResult, CreatedUserResponse, CreateUserDTO, OrgUnit, ResetUserPasswordDTO, UserProfile, UserRole, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, UpdateUserDTO, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
+import { BulkUserImportDTO, BulkUserImportResult, ConfirmAuthenticatorEnrollmentDTO, ConfirmAuthenticatorEnrollmentResponse, CreatedUserResponse, CreateUserDTO, OrgUnit, ResetUserPasswordDTO, UserProfile, UserRole, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, UpdateUserDTO, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
 import { userRoleLabels } from '../../content/ui-copy';
 import { parseUserImportFile, type UserImportPreviewRow } from '../../lib/user-import';
 import { api } from '../../services/api';
@@ -34,6 +34,7 @@ interface Props {
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
   onUsersImported: (batch: BulkUserImportDTO) => Promise<BulkUserImportResult>;
   onAuthenticatorChange: (id: string, data: UpdateAuthenticatorDTO) => Promise<UpdateAuthenticatorResponse>;
+  onAuthenticatorConfirm?: (id: string, data: ConfirmAuthenticatorEnrollmentDTO) => Promise<ConfirmAuthenticatorEnrollmentResponse>;
   onUserUpdated: (id: string, data: UpdateUserDTO) => Promise<UserProfile>;
   onUserDeleted: (id: string) => Promise<void>;
   onUserPasswordReset: (id: string, data?: ResetUserPasswordDTO) => Promise<CreatedUserResponse>;
@@ -165,7 +166,7 @@ const UserCard: React.FC<UserCardProps> = ({ user, compact = false, onAuthentica
   </article>
 );
 
-export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false, onUserCreated, onUsersImported, onAuthenticatorChange, onUserUpdated, onUserDeleted, onUserPasswordReset, onUserPasswordResetEmail }) => {
+export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false, onUserCreated, onUsersImported, onAuthenticatorChange, onAuthenticatorConfirm, onUserUpdated, onUserDeleted, onUserPasswordReset, onUserPasswordResetEmail }) => {
   const [directoryView, setDirectoryView] = useState<DirectoryView>('INTERNAL');
   // Card grouping is good for reading an org chart and bad for finding one person among
   // hundreds; the list is the opposite. Both read the same filtered set.
@@ -191,7 +192,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
   const [userImportPreview, setUserImportPreview] = useState<UserImportPreviewRow[]>([]);
   const [isImportingUsers, setIsImportingUsers] = useState(false);
   const [updatingAuthenticatorId, setUpdatingAuthenticatorId] = useState<string | null>(null);
-  const [authenticatorSetup, setAuthenticatorSetup] = useState<{ fullName: string; secret: string; otpauthUri: string } | null>(null);
+  const [authenticatorSetup, setAuthenticatorSetup] = useState<{ userId: string; fullName: string; secret: string; otpauthUri: string; code: string } | null>(null);
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
   const [passwordUser, setPasswordUser] = useState<UserProfile | null>(null);
@@ -260,6 +261,13 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
     setSelectedDepartment('');
   };
 
+  const confirmAccountAdministration = async (action: string): Promise<boolean> => {
+    const password = window.prompt(`Nhập lại mật khẩu hiện tại để xác nhận ${action}`);
+    if (!password) return false;
+    await api.stepUp({ password });
+    return true;
+  };
+
   const handleCreateUser = async (event: React.FormEvent) => {
     event.preventDefault();
     const needsInternalTeam = role === 'INTERNAL_OFFICER' || role === 'INTERNAL_APPROVER';
@@ -298,6 +306,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
     };
 
     try {
+      if (!await confirmAccountAdministration('tạo tài khoản và cấp quyền')) return;
       const created = await onUserCreated(payload);
       resetForm();
       setIsAddModalOpen(false);
@@ -335,6 +344,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
     setIsImportingUsers(true);
     const credentials: string[][] = [['Họ và tên', 'Tên đăng nhập', 'Email', 'Mật khẩu tạm']];
     try {
+      if (!await confirmAccountAdministration('nhập hàng loạt tài khoản và cấp quyền')) return;
       const result = await onUsersImported({ rows: valid.map(row => ({ rowNumber: row.rowNumber, user: row.payload! })) });
       for (const created of result.created) {
         const source = valid.find(row => row.rowNumber === created.rowNumber);
@@ -363,12 +373,33 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
   const handleAuthenticatorChange = async (user: UserProfile, enabled: boolean) => {
     setUpdatingAuthenticatorId(user.id);
     try {
+      const password = window.prompt('Nhập lại mật khẩu hiện tại để xác nhận thay đổi Authenticator');
+      if (!password) return;
+      await api.stepUp({ password });
       const result = await onAuthenticatorChange(user.id, { enabled });
-      if (result.setup) setAuthenticatorSetup({ fullName: user.fullName, ...result.setup });
-      setToastMessage(enabled ? `Đã bật yêu cầu mã Authenticator cho ${user.fullName}.` : `Đã tắt Authenticator cho ${user.fullName}.`);
+      if (result.setup) setAuthenticatorSetup({ userId: user.id, fullName: user.fullName, code: '', ...result.setup });
+      setToastMessage(enabled ? `Đã cấp secret Authenticator cho ${user.fullName}; cần xác nhận mã 6 chữ số.` : `Đã tắt Authenticator cho ${user.fullName}.`);
       setTimeout(() => setToastMessage(null), 6000);
     } catch (error) {
       setToastMessage(error instanceof Error ? error.message : 'Không thể cập nhật Authenticator.');
+    } finally {
+      setUpdatingAuthenticatorId(null);
+    }
+  };
+
+  const handleAuthenticatorConfirmation = async () => {
+    if (!authenticatorSetup) return;
+    setUpdatingAuthenticatorId(authenticatorSetup.userId);
+    try {
+      const password = window.prompt('Nhập lại mật khẩu hiện tại để xác nhận thiết bị Authenticator');
+      if (!password) return;
+      await api.stepUp({ password });
+      await (onAuthenticatorConfirm ? onAuthenticatorConfirm(authenticatorSetup.userId, { code: authenticatorSetup.code }) : api.confirmUserAuthenticatorEnrollment(authenticatorSetup.userId, { code: authenticatorSetup.code }));
+      setToastMessage(`Đã xác nhận Google Authenticator cho ${authenticatorSetup.fullName}.`);
+      setAuthenticatorSetup(null);
+      setTimeout(() => setToastMessage(null), 6000);
+    } catch (error) {
+      setToastMessage(error instanceof Error ? error.message : 'Không thể xác nhận mã Authenticator.');
     } finally {
       setUpdatingAuthenticatorId(null);
     }
@@ -381,6 +412,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
   const saveUserProfile = async (id: string, data: UpdateUserDTO) => {
     setUpdatingUserId(id);
     try {
+      if (!await confirmAccountAdministration('cập nhật tài khoản hoặc quyền')) return;
       const updated = await onUserUpdated(id, data);
       setEditingUser(null);
       setToastMessage(`Đã cập nhật ${updated.fullName}.`);
@@ -396,6 +428,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
     if (!window.confirm(`Xóa tài khoản ${user.fullName}? Thao tác này không thể hoàn tác.`)) return;
     setUpdatingUserId(user.id);
     try {
+      if (!await confirmAccountAdministration('xóa tài khoản')) return;
       await onUserDeleted(user.id);
       setToastMessage(`Đã xóa ${user.fullName}.`);
       setTimeout(() => setToastMessage(null), 6000);
@@ -413,6 +446,9 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
   const handlePasswordSubmit = async (user: UserProfile, data?: ResetUserPasswordDTO) => {
     setUpdatingUserId(user.id);
     try {
+      const password = window.prompt('Nhập lại mật khẩu hiện tại để xác nhận đặt lại mật khẩu');
+      if (!password) throw new Error('Đã hủy xác nhận đặt lại mật khẩu.');
+      await api.stepUp({ password });
       const result = await onUserPasswordReset(user.id, data);
       setPasswordUser(null);
       if (result.temporaryPassword) setIssuedCredential({ fullName: user.fullName, username: user.username, password: result.temporaryPassword });
@@ -429,6 +465,9 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
   const handleSendResetEmail = async (user: UserProfile) => {
     setUpdatingUserId(user.id);
     try {
+      const password = window.prompt('Nhập lại mật khẩu hiện tại để xác nhận gửi email đặt lại mật khẩu');
+      if (!password) return;
+      await api.stepUp({ password });
       await (onUserPasswordResetEmail ? onUserPasswordResetEmail(user.id) : api.sendUserPasswordResetEmail(user.id));
       setToastMessage(`Đã gửi email đặt lại mật khẩu tới ${user.email}.`);
       setTimeout(() => setToastMessage(null), 6000);
@@ -474,12 +513,18 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
         <div role="alert" className="rounded-xl border-2 border-info-border bg-info-surface p-4 shadow-lg">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
-              <p className="flex items-center gap-2 text-xs font-black text-info"><ShieldCheck className="h-4 w-4" />Đã bật Google Authenticator cho {authenticatorSetup.fullName}</p>
-              <p className="mt-1 text-[11px] font-semibold text-info">Lưu secret này hoặc nhập URI vào Google Authenticator. Secret chỉ hiển thị một lần.</p>
+              <p className="flex items-center gap-2 text-xs font-black text-info"><ShieldCheck className="h-4 w-4" />Xác nhận Google Authenticator cho {authenticatorSetup.fullName}</p>
+              <p className="mt-1 text-[11px] font-semibold text-info">Quét secret, nhập mã 6 chữ số đang hiển thị để hoàn tất. Secret chỉ hiển thị một lần.</p>
               <dl className="mt-3 grid gap-2 sm:grid-cols-2">
                 <div className="rounded-lg border border-info-border bg-white p-2.5"><dt className="text-[9px] font-bold text-slate-500">Secret</dt><dd className="mt-1 select-all break-all font-mono text-sm font-bold text-slate-900">{authenticatorSetup.secret}</dd></div>
                 <div className="rounded-lg border border-info-border bg-white p-2.5"><dt className="text-[9px] font-bold text-slate-500">otpauth URI</dt><dd className="mt-1 select-all break-all font-mono text-[10px] font-semibold text-slate-900">{authenticatorSetup.otpauthUri}</dd></div>
               </dl>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+                <label className="grid gap-1 text-[10px] font-bold text-slate-600">Mã 6 chữ số
+                  <input value={authenticatorSetup.code} onChange={event => setAuthenticatorSetup(previous => previous ? { ...previous, code: event.target.value.replace(/\D/g, '').slice(0, 6) } : previous)} inputMode="numeric" autoComplete="one-time-code" className="w-40 rounded-lg border border-info-border bg-white px-3 py-2 font-mono text-sm font-bold tracking-[0.2em] text-slate-900" />
+                </label>
+                <button type="button" onClick={handleAuthenticatorConfirmation} disabled={authenticatorSetup.code.length !== 6 || updatingAuthenticatorId === authenticatorSetup.userId} className="rounded-lg bg-info px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">Xác nhận thiết bị</button>
+              </div>
             </div>
             <button type="button" aria-label="Tôi đã lưu secret Authenticator" onClick={() => setAuthenticatorSetup(null)} className="shrink-0 rounded-lg p-1 text-info hover:bg-info-surface"><X className="h-4 w-4" /></button>
           </div>

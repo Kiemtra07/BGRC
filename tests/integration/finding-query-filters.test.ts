@@ -33,6 +33,17 @@ describe('Bộ lọc danh sách hồ sơ phía máy chủ', () => {
     expect(all.total).toBeGreaterThan(0);
   });
 
+  it('từ chối cursor hỏng trước khi đọc dữ liệu', async () => {
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/v1/findings?cursor=not-a-valid-cursor',
+      headers: adminHeaders,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ code: 'INVALID_FINDING_CURSOR' });
+  });
+
   it('lọc theo chi nhánh, phòng và cụm', async () => {
     const all = await query({});
     for (const field of ['branchCode', 'department', 'clusterName'] as const) {

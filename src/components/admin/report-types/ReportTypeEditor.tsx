@@ -20,7 +20,7 @@ interface Props {
 
 type EditorTab = 'GENERAL' | 'FORM' | 'WORKFLOW' | 'SLA_INTEGRATION';
 
-const DEFAULT_SLA: CreateReportChannelDTO['slaConfig'] = { defaultDays: 15, highRiskDays: 7, mediumRiskDays: 15, lowRiskDays: 30, escalationAfterDaysOverdue: 1, reminderDaysBefore: [3, 1] };
+const DEFAULT_SLA: CreateReportChannelDTO['slaConfig'] = { defaultDays: 15, highRiskDays: 7, mediumRiskDays: 15, lowRiskDays: 30, escalationAfterDaysOverdue: 1, reminderDaysBefore: [3, 1], businessDaysOnly: false, holidayDates: [] };
 const defaultIntegration = (): CreateReportChannelDTO['integrationConfig'] => ({
   googleSheets: { enabled: false, sheetName: 'AuditBGS', syncMode: 'APPEND' },
   email: { enabled: false, sendOnSubmission: true, sendBeforeDeadline: true, sendWhenOverdue: true, sendTime: '08:00', recipientRoles: ['INTERNAL_APPROVER'], additionalRecipients: [], subjectTemplate: '[Audit Monitoring] {{reportName}} - {{status}}' },

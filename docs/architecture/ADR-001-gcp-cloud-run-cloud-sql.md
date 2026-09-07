@@ -8,7 +8,7 @@ Chấp thuận về kiến trúc mục tiêu; chưa được phép triển khai 
 
 AuditBGS gồm frontend React/Vite, API Fastify, xử lý SLA theo lịch, dữ liệu nghiệp vụ có quan hệ và kho chứng từ Google Drive. Hệ thống phục vụ dữ liệu kiểm tra nội bộ nên cần phân quyền theo phạm vi, nhật ký bất biến, sao lưu, khôi phục và khả năng thu hồi phiên bản.
 
-Hiện tại API vẫn đọc/ghi `data/local-state.json`; PostgreSQL mới được dùng cho migration/seed. Đăng nhập production OIDC và adapter Google Drive API v3 cho tệp minh chứng chưa hoàn tất. Vì vậy bản hiện tại chỉ phù hợp local/UAT có kiểm soát.
+Mã nguồn hiện có thể dùng state PostgreSQL, workflow/idempotency ledger và transactional outbox khi `DATA_STORE_MODE=postgres`; local vẫn dùng `data/local-state.json` để phát triển. Workspace hiện chưa có PostgreSQL acceptance tách biệt, OIDC/Drive/scanner tenant và scheduler worker đã nghiệm thu, nên chưa có bằng chứng production. Vì vậy bản hiện tại chỉ phù hợp local/UAT có kiểm soát cho đến khi hoàn tất các gate đó.
 
 ## Các phương án đã xem xét
 
@@ -38,7 +38,7 @@ flowchart LR
     WEB -->|secret version| SM[Secret Manager]
     WEB -->|HMAC command| GAS[Apps Script Drive Gateway]
     GAS --> DRIVE[Google Drive riêng tư]
-    SCH[Cloud Scheduler\n08:30 Asia/Ho_Chi_Minh] -->|OIDC service account| JOB[Cloud Run Job / SLA endpoint]
+    SCH[Cloud Scheduler\nSLA và outbox theo SLO] -->|OIDC service account| JOB[Cloud Run Job / SLA + outbox endpoint]
     JOB --> DB
     WEB --> LOG[Cloud Logging + Monitoring]
     JOB --> LOG
@@ -47,7 +47,7 @@ flowchart LR
 ## Hệ quả và đánh đổi
 
 - Có một nền tảng thống nhất cho runtime, database, lịch chạy, secrets và quan sát hệ thống.
-- Phải hoàn tất repository PostgreSQL, OIDC, outbox/email và Drive binary trước production.
+- Phải diễn tập migration PostgreSQL, OIDC, scanner/Drive, provider notification và worker outbox trước production; code/CI local không thay cho bằng chứng này.
 - Cloud Run có thể mở nhiều instance; mọi session, idempotency, audit event và state phải nằm trong PostgreSQL, không nằm trong RAM hoặc JSON local.
 - Pool hiện tại `max=20` phải được tính cùng `max-instances`; ví dụ 5 instance là tối đa khoảng 100 kết nối ứng dụng trước khi tính job/migration.
 
@@ -67,4 +67,3 @@ flowchart LR
 - [Cloud Run và Secret Manager](https://docs.cloud.google.com/run/docs/configuring/services/secrets)
 - [Cloud SQL backup, PITR và HA](https://docs.cloud.google.com/sql/docs/postgres/backup-recovery/backup-options)
 - [Google OpenID Connect](https://developers.google.com/identity/openid-connect/openid-connect)
-

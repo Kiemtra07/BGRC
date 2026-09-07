@@ -227,7 +227,7 @@ Vào **Quản trị -> Loại báo cáo**:
 3. Chọn trường bắt buộc, kiểu dữ liệu và dropdown.
 4. Cấu hình có/không yêu cầu minh chứng.
 5. Chọn luồng duyệt. Luồng mới chỉ áp dụng cho hồ sơ tạo sau khi lưu phiên bản; hồ sơ cũ giữ phiên bản đã ghim.
-6. Cấu hình SLA, thông báo và tích hợp.
+6. Cấu hình SLA, thông báo và tích hợp. Nếu SLA phải bỏ cuối tuần/ngày lễ, bật **Chỉ tính ngày làm việc** và nhập ngày nghỉ theo `YYYY-MM-DD`; hạn tạo mới, nhắc hạn và trạng thái quá hạn sẽ dùng cùng lịch này. Loại báo cáo không bật tùy chọn tiếp tục tính ngày lịch.
 7. Lưu phiên bản mới, kiểm tra trên hồ sơ mẫu rồi mới kích hoạt rộng.
 
 ![Cấu hình luồng phê duyệt](assets/huong-dan/07-luong-phe-duyet.png)
@@ -376,6 +376,14 @@ GOOGLE_OAUTH_TOKEN_ENCRYPTION_KEY=<64-hex>
 GOOGLE_DRIVE_ROOT_FOLDER_ID=<folder-id>
 
 CRON_SECRET=<64-hex-or-strong-random>
+# Các delivery nghiệp vụ qua outbox. URL/token là server-only, không dùng VITE_*.
+NOTIFICATION_WEBHOOK_URL=https://notification.example.com/auditbgs/events
+NOTIFICATION_WEBHOOK_TOKEN=<at-least-32-random-bytes>
+# Scanner nhận metadata/checksum rồi callback để kết luận AVAILABLE hoặc REJECTED.
+EVIDENCE_SCANNER_WEBHOOK_URL=https://scanner.example.com/scan
+EVIDENCE_SCANNER_WEBHOOK_TOKEN=<at-least-32-random-bytes>
+EVIDENCE_SCANNER_CALLBACK_BASE_URL=https://bgrc.vercel.app/api/v1/internal/evidence-scans/
+EVIDENCE_SCANNER_CALLBACK_TOKEN=<at-least-32-random-bytes>
 SEED_DEMO_DATA=false
 SEED_DEMO_USERS=false
 BOOTSTRAP_ADMIN_USERNAME=<admin-username>
@@ -390,6 +398,24 @@ Sinh khóa và hash trên PowerShell:
 node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
 npm run auth:hash-password -- '<mat-khau-manh>'
 ```
+
+### 7.3a Kiểm tra trước nghiệm thu và chạy worker outbox
+
+Trước khi chạy migration hoặc test trên database staging riêng, dùng lệnh chỉ đọc sau. Lệnh chỉ kiểm URL/configuration, kết nối, role runtime và checksum migration; không in `DATABASE_URL` hay secret:
+
+```powershell
+npm run acceptance:preflight
+```
+
+Outbox không chạy trên local JSON/memory. Sau khi PostgreSQL, webhook và scanner đã cấu hình, chạy một vòng worker từ môi trường có các secret server-only:
+
+```powershell
+npm run outbox:run
+```
+
+`vercel.json` có lịch baseline hằng ngày lúc 03:30 UTC (10:30 `Asia/Ho_Chi_Minh`) cho `GET /api/v1/internal/outbox/run`; Vercel sẽ gửi `Authorization: Bearer <CRON_SECRET>`. Endpoint chỉ claim delivery từ PostgreSQL, trả `503 OUTBOX_NOT_DURABLE` nếu kho không bền vững và mỗi vòng chỉ xử lý batch đã claim; nhiều worker có thể chạy song song nhờ lease `SKIP LOCKED`. Với Vercel Hobby, cron chỉ được chạy một lần/ngày và độ chính xác theo giờ, nên lịch này chỉ là safety net. Chốt scheduler/worker job có tần suất theo SLO delivery sau khi nghiệm thu staging; không dùng endpoint này để thay thế kiểm tra dead-letter hoặc đối soát provider.
+
+Admin xem/retry dead-letter tại **Cấu hình → Outbox**. Với scanner, chỉ callback có token hợp lệ và checksum khớp mới chuyển minh chứng từ `QUARANTINED` sang `AVAILABLE` hoặc `REJECTED`.
 
 ### 7.4 Quản trị tài khoản bằng Supabase Auth (khuyến nghị)
 
@@ -524,6 +550,8 @@ Thực hiện lần lượt:
 
 - Kiểm tra `/api/v1/ready`, Vercel runtime logs và trạng thái Supabase.
 - Kiểm tra hàng đợi quá hạn, cron SLA và lỗi upload Drive.
+- Kiểm tra age, retry và dead-letter outbox; đối soát delivery key với provider sau incident.
+- Vào `GET /api/v1/admin/operational-metrics` bằng tài khoản Admin để xem p50/p95, 409/429/5xx, số PENDING/PROCESSING/DEAD_LETTER và tuổi event PENDING cũ nhất. Khi PostgreSQL không sẵn sàng, `outbox.durable` là `false` và không được suy diễn queue đang rỗng. `sla.lastSuccessfulRunAt` chỉ là lần chạy thành công của runtime hiện tại, nên phải có alert/scheduler staging độc lập cho môi trường nhiều instance.
 - Xem audit log cho đăng nhập thất bại hoặc thao tác bất thường.
 
 ### Hằng tuần
@@ -567,6 +595,8 @@ Khi project bị pause:
 | Không xóa chuyên đề/đơn vị | Đang có dữ liệu tham chiếu | Chuyển tạm ngừng/archived thay vì xóa lịch sử |
 | Hồ sơ không đi qua lãnh đạo CN | Hồ sơ không có dấu sao hoặc loại báo cáo không bắt buộc | Kiểm `isSpecialCase` trước khi nộp và phiên bản luồng đã ghim |
 | SLA không cập nhật | Cron không chạy hoặc `CRON_SECRET` sai | Kiểm Vercel Cron/log và gọi endpoint nội bộ bằng secret từ môi trường an toàn |
+| Outbox không giao delivery | Worker/scheduler chưa gọi endpoint, thiếu webhook/scanner hoặc event ở dead-letter | Kiểm `/api/v1/internal/outbox/run` bằng `CRON_SECRET`, cấu hình provider server-only, rồi xem/retry dead-letter trong Outbox; không chạy queue local JSON/memory |
+| Scanner không giải phóng minh chứng | Callback thiếu token, checksum không khớp hoặc provider timeout | Kiểm payload/callback của provider, không ép `AVAILABLE`; dùng retry outbox sau khi nguyên nhân đã được sửa |
 
 ## 13. Bảo mật và thay đổi cấu hình
 

@@ -7,7 +7,7 @@ import {
 import { REPORT_FORM_WIDTH_CLASS, ReportFieldLabel, ReportFormBlockLayout, resolveReportFormTemplate } from '../reports/ReportFormBlockLayout';
 import { ExcelFastIngestionService } from '../../lib/excel-parser';
 import type { UserProfile as LegacyUserProfile } from '../../types';
-import { api } from '../../services/api';
+import { api, ApiError } from '../../services/api';
 
 interface Props {
   isOpen: boolean;
@@ -18,6 +18,7 @@ interface Props {
   orgUnits: OrgUnit[];
   currentUser?: import('../../../shared/contracts').UserProfile;
   onSubmit: (dto: WebFormFindingDTO | WebFormFindingDTO[]) => void | Promise<void>;
+  onConflict?: () => Promise<void>;
 }
 
 const emptyValue = (value: unknown): boolean => value === undefined || value === null || value === '';
@@ -31,6 +32,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
   orgUnits,
   currentUser,
   onSubmit,
+  onConflict,
 }) => {
   const branches = useMemo(() => orgUnits.filter(u => u.type === 'BRANCH'), [orgUnits]);
 
@@ -230,7 +232,15 @@ export const WebFormFindingModal: React.FC<Props> = ({
         : dto);
       onClose();
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : 'Không thể tạo hồ sơ.');
+      if (error instanceof ApiError && error.status === 409) {
+        try { await onConflict?.(); } catch { /* Keep the draft usable if the background refresh is unavailable. */ }
+        const conflictMessage = error.code === 'IMPORT_BATCH_DUPLICATE'
+          ? 'Lô nhập chưa được ghi vì có dòng trùng. Danh sách nền đã được tải lại; dữ liệu và tệp đã tách vẫn được giữ để đối chiếu, sửa rồi gửi lại.'
+          : 'Dữ liệu vừa thay đổi ở phiên khác. Danh sách nền đã được tải lại; bản nháp hiện tại vẫn được giữ để đối chiếu rồi gửi lại.';
+        setFormError(conflictMessage);
+      } else {
+        setFormError(error instanceof Error ? error.message : 'Không thể tạo hồ sơ.');
+      }
     } finally {
       setImportBusy(false);
     }

@@ -29,6 +29,7 @@ export interface PostgresStateRepositoryOptions {
 }
 
 type StateTransform<T> = (latest: T) => T | void | Promise<T | void>;
+type TransactionFinalizer = (client: PostgresClientLike) => void | Promise<void>;
 
 export class PostgresStateRepository<T> {
   private readonly pool: PostgresPoolLike;
@@ -108,6 +109,14 @@ export class PostgresStateRepository<T> {
     return this.withTransaction(async client => (await this.loadRow(client)) !== undefined);
   }
 
+  /**
+   * Revision của snapshot vừa được tiến trình này commit. Projection bất đồng bộ phải mang revision
+   * này xuống bảng đọc để một bản snapshot cũ hoàn tất muộn không thể ghi lùi dữ liệu mới hơn.
+   */
+  public currentVersion(): string | undefined {
+    return this.observedVersion;
+  }
+
   public async save(data: T): Promise<void> {
     await this.saveWithWorkflowEvents(data, []);
   }
@@ -132,6 +141,7 @@ export class PostgresStateRepository<T> {
     fallback: T,
     transform: StateTransform<T>,
     events: readonly WorkflowEvent[],
+    finalize?: TransactionFinalizer,
   ): Promise<T> {
     return this.withTransaction(async client => {
       await this.acquireWriteLock(client);
@@ -141,6 +151,7 @@ export class PostgresStateRepository<T> {
       const next = transformed ?? latest;
       await this.saveRow(client, next);
       await insertWorkflowEvents(client, events);
+      await finalize?.(client);
       return structuredClone(next);
     });
   }

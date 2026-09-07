@@ -2,7 +2,7 @@ import {
   UserProfile, Finding, CustomerCase, ReportChannel, OrgUnit, DashboardSummary, ReportSummary,
   SubmitBranchCommandDTO, BranchControlApproveCommandDTO, BranchControlRejectCommandDTO,
   BranchLeaderApproveCommandDTO, BranchLeaderRejectCommandDTO, SetFindingSpecialCaseDTO,
-  InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO,
+  InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO, StageFindingImportDTO, CommitStagedFindingImportDTO, ScheduleStagedFindingImportDTO, ImportBatch, StagingRow,
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, CreateDashboardDefinitionDTO, DashboardDefinition, ReportFilterQuery,
   AuditLogPage, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
   FindingApprovalRouteView,
@@ -10,8 +10,8 @@ import {
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest, ReportDrillRequest, ReportDrillResult,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness, CreateReportSpreadsheetDTO, ReportSpreadsheetResult,
   ReportCatalogConfiguration, UpdateReportCatalogConfigurationDTO, CreatedUserResponse, ResetUserPasswordDTO,
-  BulkUserImportDTO, BulkUserImportResult, SecuritySettingsDTO, SecuritySettingsResponse, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse,
-  LoginDTO, LoginResponse,
+  BulkUserImportDTO, BulkUserImportResult, SecuritySettingsDTO, SecuritySettingsResponse, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, ConfirmAuthenticatorEnrollmentDTO, ConfirmAuthenticatorEnrollmentResponse,
+  LoginDTO, LoginResponse, StepUpDTO,
   AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UpdateUserDTO,
   BulkOrgUnitImportDTO, BulkOrgUnitImportResult,
 } from '../../shared/contracts';
@@ -20,6 +20,19 @@ export interface FindingApprovalCandidates {
   branchControllers: UserProfile[];
   branchLeaders: UserProfile[];
   internalApprovers: UserProfile[];
+}
+
+export interface StagedFindingImportView {
+  batch: ImportBatch;
+  items: StagingRow[];
+  total: number;
+}
+
+export interface StagedFindingImportCheckpoint extends ImportBatch {
+  remainingRows: number;
+  committedThisCheckpoint?: number;
+  duplicateThisCheckpoint?: number;
+  idempotentReplay?: boolean;
 }
 
 export interface BootstrapResponse {
@@ -77,6 +90,18 @@ export class ApiError extends Error {
  * chờ tiếp hay thử lại, và cái nút họ vừa bấm thì đã bị khoá.
  */
 const REQUEST_TIMEOUT_MS = 60_000;
+const unsafeHttpMethods = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+
+function readBrowserCookie(name: string): string | undefined {
+  if (typeof document === 'undefined') return undefined;
+  for (const part of document.cookie.split(';')) {
+    const separator = part.indexOf('=');
+    if (separator < 0 || part.slice(0, separator).trim() !== name) continue;
+    try { return decodeURIComponent(part.slice(separator + 1).trim()); }
+    catch { return undefined; }
+  }
+  return undefined;
+}
 
 export class ApiService {
   private readonly pendingCommandKeys = new Map<string, string>();
@@ -84,9 +109,13 @@ export class ApiService {
 
   private async request<T>(endpoint: string, options: RequestInit = {}, allowRefresh = true): Promise<T> {
     const providedHeaders = options.headers as Record<string, string> || {};
-    const headers = options.body === undefined || options.body === null
+    const headers: Record<string, string> = options.body === undefined || options.body === null
       ? providedHeaders
       : { 'Content-Type': 'application/json', ...providedHeaders };
+    const csrfToken = unsafeHttpMethods.has((options.method ?? 'GET').toUpperCase())
+      ? readBrowserCookie('audit_bgs_csrf')
+      : undefined;
+    if (csrfToken && !headers['x-csrf-token']) headers['x-csrf-token'] = csrfToken;
     const timeoutController = new AbortController();
     const timeout = setTimeout(() => timeoutController.abort(), REQUEST_TIMEOUT_MS);
     let res: Response;
@@ -125,6 +154,16 @@ export class ApiService {
     }
   }
 
+  /**
+   * Multipart uploads and binary downloads cannot use `request()` because their
+   * bodies and responses are not JSON. They still target our authenticated API,
+   * so they must carry the same double-submit CSRF token as every other write.
+   */
+  private csrfHeaders(headers: Record<string, string> = {}): Record<string, string> {
+    const csrfToken = readBrowserCookie('audit_bgs_csrf');
+    return csrfToken && !headers['x-csrf-token'] ? { ...headers, 'x-csrf-token': csrfToken } : headers;
+  }
+
   private async tryRefreshSession(): Promise<boolean> {
     if (!this.refreshInFlight) {
       this.refreshInFlight = this.request('/auth/refresh', { method: 'POST' }, false)
@@ -149,7 +188,7 @@ export class ApiService {
   public async importCampaignDraft(file: File): Promise<CampaignImportDraft> {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch(`${API_BASE}/admin/campaigns/import-draft`, { method: 'POST', credentials: 'same-origin', body: formData });
+    const response = await fetch(`${API_BASE}/admin/campaigns/import-draft`, { method: 'POST', credentials: 'same-origin', headers: this.csrfHeaders(), body: formData });
     if (!response.ok) {
       const problem = await response.json().catch(() => ({ detail: response.statusText }));
       throw new ApiError(problem.detail || problem.title || `HTTP ${response.status}`, response.status, problem.code);
@@ -262,11 +301,20 @@ export class ApiService {
   public updateUserAuthenticator(id: string, data: UpdateAuthenticatorDTO): Promise<UpdateAuthenticatorResponse> {
     return this.request(`/admin/users/${id}/authenticator`, { method: 'PUT', body: JSON.stringify(data) });
   }
+  public confirmUserAuthenticatorEnrollment(id: string, data: ConfirmAuthenticatorEnrollmentDTO): Promise<ConfirmAuthenticatorEnrollmentResponse> {
+    return this.request(`/admin/users/${id}/authenticator/confirm`, { method: 'POST', body: JSON.stringify(data) });
+  }
+  public issueUserAuthenticatorRecoveryCodes(id: string): Promise<{ codes: string[] }> {
+    return this.request(`/admin/users/${id}/authenticator/recovery-codes`, { method: 'POST' });
+  }
   public getSecuritySettings(): Promise<SecuritySettingsResponse> {
     return this.request('/admin/security-settings');
   }
   public updateSecuritySettings(data: SecuritySettingsDTO): Promise<SecuritySettingsResponse> {
     return this.request('/admin/security-settings', { method: 'PUT', body: JSON.stringify(data) });
+  }
+  public stepUp(data: StepUpDTO): Promise<void> {
+    return this.request('/auth/step-up', { method: 'POST', body: JSON.stringify(data) });
   }
   public changePassword(data: { currentPassword?: string; password: string }): Promise<{ user: UserProfile }> {
     return this.request('/auth/password', { method: 'POST', body: JSON.stringify(data) });
@@ -292,7 +340,7 @@ export class ApiService {
   public createReportSpreadsheet(data: CreateReportSpreadsheetDTO): Promise<ReportSpreadsheetResult> {
     return this.request('/admin/report-spreadsheets', { method: 'POST', body: JSON.stringify(data) });
   }
-  public getFindings(params: Record<string, string> = {}): Promise<{ items: Finding[]; total: number; page: number; limit: number; hasMore: boolean }> {
+  public getFindings(params: Record<string, string> = {}): Promise<{ items: Finding[]; total: number; page: number; limit: number; hasMore: boolean; nextCursor?: string }> {
     return this.request(`/findings?${new URLSearchParams(params).toString()}`);
   }
   public getFindingById(id: string): Promise<Finding> { return this.request(`/findings/${id}`); }
@@ -322,6 +370,9 @@ export class ApiService {
   public createFinding(data: WebFormFindingDTO): Promise<Finding> {
     return this.request('/findings', { method: 'POST', body: JSON.stringify(data) });
   }
+  public createFindings(rows: WebFormFindingDTO[]): Promise<{ batchId: string; customerCount: number; findingCount: number; duplicateCount: number; findings: Finding[] }> {
+    return this.importFindings({ sourceFileName: 'web-form-batch', sourceType: 'WEB_FORM', atomic: true, rows });
+  }
   public importFindings(data: BulkFindingImportDTO): Promise<{ batchId: string; customerCount: number; findingCount: number; duplicateCount: number; findings: Finding[] }> {
     return this.request('/imports/findings', {
       method: 'POST',
@@ -329,10 +380,34 @@ export class ApiService {
       body: JSON.stringify(data),
     });
   }
+  public stageFindingImport(data: StageFindingImportDTO, idempotencyKey = crypto.randomUUID()): Promise<ImportBatch> {
+    return this.request('/imports/findings/stage', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(data),
+    });
+  }
+  public getStagedFindingImport(batchId: string): Promise<StagedFindingImportView> {
+    return this.request(`/imports/findings/${encodeURIComponent(batchId)}/staging`);
+  }
+  public commitStagedFindingImport(batchId: string, data: CommitStagedFindingImportDTO, idempotencyKey = crypto.randomUUID()): Promise<StagedFindingImportCheckpoint> {
+    return this.request(`/imports/findings/${encodeURIComponent(batchId)}/commit`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(data),
+    });
+  }
+  public scheduleStagedFindingImportBackground(batchId: string, data: ScheduleStagedFindingImportDTO, idempotencyKey = crypto.randomUUID()): Promise<StagedFindingImportCheckpoint> {
+    return this.request(`/imports/findings/${encodeURIComponent(batchId)}/background`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(data),
+    });
+  }
   public async previewFindingDocx(file: File): Promise<{ fileName: string; rows: Array<{ rowNumber: number; cif: string; customerName: string; branchCode: string; branchName: string; errorCode: string; errorTitle: string; description: string; department?: string; decisionNo?: string }> }> {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch(`${API_BASE}/imports/findings/docx-preview`, { method: 'POST', credentials: 'same-origin', body: formData });
+    const response = await fetch(`${API_BASE}/imports/findings/docx-preview`, { method: 'POST', credentials: 'same-origin', headers: this.csrfHeaders(), body: formData });
     if (!response.ok) {
       const problem = await response.json().catch(() => ({ detail: response.statusText }));
       throw new ApiError(problem.detail || problem.title || 'Không thể đọc DOCX.', response.status, problem.code);
@@ -342,7 +417,7 @@ export class ApiService {
   public async previewFindingDocument(file: File): Promise<{ fileName: string; rows: Array<{ rowNumber: number; cif: string; customerName: string; branchCode: string; branchName: string; errorCode: string; errorTitle: string; description: string; department?: string; decisionNo?: string }> }> {
     const formData = new FormData();
     formData.append('file', file);
-    const response = await fetch(`${API_BASE}/imports/findings/document-preview`, { method: 'POST', credentials: 'same-origin', body: formData });
+    const response = await fetch(`${API_BASE}/imports/findings/document-preview`, { method: 'POST', credentials: 'same-origin', headers: this.csrfHeaders(), body: formData });
     if (!response.ok) {
       const problem = await response.json().catch(() => ({ detail: response.statusText }));
       throw new ApiError(problem.detail || problem.title || 'Không thể đọc tiểu biên bản.', response.status, problem.code);
@@ -355,13 +430,21 @@ export class ApiService {
     const idempotencyKey = this.pendingCommandKeys.get(operationKey) ?? crypto.randomUUID();
     this.pendingCommandKeys.set(operationKey, idempotencyKey);
     try {
-      return await this.request(endpoint, {
+      const response = await this.request<Finding>(endpoint, {
         method: 'POST',
         headers: { 'Idempotency-Key': idempotencyKey },
         body: JSON.stringify(dto),
       });
-    } finally {
+      // A definitive server response (including 4xx/5xx) means this browser can begin a fresh
+      // operation. A timeout/network failure is ambiguous: the server may have committed just
+      // before the connection broke, so retain this key for the exact retry.
       this.pendingCommandKeys.delete(operationKey);
+      return response;
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 0) {
+        this.pendingCommandKeys.delete(operationKey);
+      }
+      throw error;
     }
   }
 
@@ -407,7 +490,7 @@ export class ApiService {
     }
     const formData = new FormData();
     formData.append('file', file);
-    const res = await fetch(`${API_BASE}/findings/${id}/evidence`, { method: 'POST', credentials: 'same-origin', body: formData });
+    const res = await fetch(`${API_BASE}/findings/${id}/evidence`, { method: 'POST', credentials: 'same-origin', headers: this.csrfHeaders(), body: formData });
     if (!res.ok) {
       const problem = await res.json().catch(() => ({ detail: res.statusText }));
       throw new Error(problem.detail || problem.title || `HTTP ${res.status}`);
@@ -438,7 +521,7 @@ export class ApiService {
     const res = await fetch(`${API_BASE}/reports/exports`, {
       method: 'POST',
       credentials: 'same-origin',
-      headers: { 'Content-Type': 'application/json' },
+      headers: this.csrfHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ ...request, format }),
     });
     if (!res.ok) {

@@ -10,7 +10,7 @@ import {
   ClipboardCheck,
   ShieldCheck,
 } from 'lucide-react';
-import { AuditCampaign, BulkUserImportDTO, BulkUserImportResult, BulkOrgUnitImportDTO, BulkOrgUnitImportResult, CampaignImportDraft, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, UpdateUserDTO } from '../../../shared/contracts';
+import { AuditCampaign, BulkUserImportDTO, BulkUserImportResult, BulkOrgUnitImportDTO, BulkOrgUnitImportResult, CampaignImportDraft, ConfirmAuthenticatorEnrollmentDTO, ConfirmAuthenticatorEnrollmentResponse, CreateAuditCampaignDTO, CreateReportChannelDTO, CreatedUserResponse, CreateUserDTO, OrgUnit, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UserProfile, ReportChannel, UpdateReportChannelDTO, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, UpdateUserDTO } from '../../../shared/contracts';
 import { DynamicChannelManager } from './DynamicChannelManager';
 import { OrganizationManager } from './OrganizationManager';
 import { UserManager } from './UserManager';
@@ -34,6 +34,7 @@ interface Props {
   onUserCreated: (user: CreateUserDTO) => Promise<CreatedUserResponse>;
   onUsersImported: (batch: BulkUserImportDTO) => Promise<BulkUserImportResult>;
   onAuthenticatorChange: (id: string, data: UpdateAuthenticatorDTO) => Promise<UpdateAuthenticatorResponse>;
+  onAuthenticatorConfirm?: (id: string, data: ConfirmAuthenticatorEnrollmentDTO) => Promise<ConfirmAuthenticatorEnrollmentResponse>;
   onUserUpdated: (id: string, data: UpdateUserDTO) => Promise<UserProfile>;
   onUserDeleted: (id: string) => Promise<void>;
   onUserPasswordReset: (id: string, data?: import('../../../shared/contracts').ResetUserPasswordDTO) => Promise<CreatedUserResponse>;
@@ -65,6 +66,7 @@ export const AdminPortal: React.FC<Props> = ({
   onUserCreated,
   onUsersImported,
   onAuthenticatorChange,
+  onAuthenticatorConfirm,
   onUserUpdated,
   onUserDeleted,
   onUserPasswordReset,
@@ -155,7 +157,7 @@ export const AdminPortal: React.FC<Props> = ({
           )}
 
           {activeTab === 'USERS' && (
-            <UserManager users={users} orgUnits={orgUnits} loading={adminCatalogLoading} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} onUserUpdated={onUserUpdated} onUserDeleted={onUserDeleted} onUserPasswordReset={onUserPasswordReset} onUserPasswordResetEmail={onUserPasswordResetEmail} />
+            <UserManager users={users} orgUnits={orgUnits} loading={adminCatalogLoading} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} onAuthenticatorConfirm={onAuthenticatorConfirm} onUserUpdated={onUserUpdated} onUserDeleted={onUserDeleted} onUserPasswordReset={onUserPasswordReset} onUserPasswordResetEmail={onUserPasswordResetEmail} />
           )}
 
           {activeTab === 'PERMISSIONS' && (

@@ -1,6 +1,14 @@
 import { z } from 'zod';
 import { EvidenceStatus, WorkflowStatus } from './common';
 
+export interface EvidenceScanResult {
+  verdict: 'CLEAN' | 'REJECTED';
+  scannedAt: string;
+  provider?: string;
+  scanReference?: string;
+  detail?: string;
+}
+
 export interface EvidenceObject {
   id: string;
   findingId: string;
@@ -16,6 +24,7 @@ export interface EvidenceObject {
   uploadedByRole: string;
   versionNumber: number;
   notes?: string;
+  scanResult?: EvidenceScanResult;
   revokedAt?: string;
   revokedReason?: string;
   revokedByUserId?: string;
@@ -43,6 +52,16 @@ export const CompleteEvidenceDirectUploadSchema = EvidenceUploadMetadataSchema.e
 
 export type CreateEvidenceUploadSessionDTO = z.infer<typeof CreateEvidenceUploadSessionSchema>;
 export type CompleteEvidenceDirectUploadDTO = z.infer<typeof CompleteEvidenceDirectUploadSchema>;
+
+export const CompleteEvidenceScanSchema = z.object({
+  verdict: z.enum(['CLEAN', 'REJECTED']),
+  sha256Checksum: z.string().regex(/^[a-f0-9]{64}$/i),
+  provider: z.string().trim().min(1).max(100).optional(),
+  scanReference: z.string().trim().min(1).max(255).optional(),
+  detail: z.string().trim().min(1).max(500).optional(),
+});
+
+export type CompleteEvidenceScanDTO = z.infer<typeof CompleteEvidenceScanSchema>;
 
 export const canManageEvidenceAtBranch = (status: WorkflowStatus): boolean => (
   status === 'PENDING' || status === 'REJECTED'

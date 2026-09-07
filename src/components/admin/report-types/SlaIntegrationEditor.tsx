@@ -67,6 +67,14 @@ export const SlaIntegrationEditor: React.FC<Props> = ({ sla, integration, readin
         <label className="text-xs font-bold text-slate-700">Nhắc trước hạn
           <input value={sla.reminderDaysBefore.join(', ')} onChange={event => onSlaChange({ ...sla, reminderDaysBefore: event.target.value.split(',').map(value => Number(value.trim())).filter(value => Number.isInteger(value) && value >= 0) })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" placeholder="3, 1" />
         </label>
+        <label className="col-span-full flex items-center gap-2 text-xs font-bold text-slate-700">
+          <input type="checkbox" checked={sla.businessDaysOnly} onChange={event => onSlaChange({ ...sla, businessDaysOnly: event.target.checked })} />
+          Chỉ tính ngày làm việc (bỏ Thứ Bảy, Chủ nhật và ngày nghỉ bên dưới)
+        </label>
+        <label className="col-span-full text-xs font-bold text-slate-700">Ngày nghỉ bổ sung
+          <input value={sla.holidayDates.join(', ')} onChange={event => onSlaChange({ ...sla, holidayDates: [...new Set(event.target.value.split(',').map(value => value.trim()).filter(value => /^\d{4}-\d{2}-\d{2}$/.test(value)))].sort() })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" placeholder="2026-01-01, 2026-04-30" />
+          <span className="mt-1 block font-normal text-slate-500">Nhập theo YYYY-MM-DD. Ngày không hợp lệ không được lưu.</span>
+        </label>
       </div>
     </section>
 

@@ -9,7 +9,7 @@ const CalendarDateSchema = z.string()
     return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
   }, 'Ngày lịch không hợp lệ');
 
-export type ImportBatchStatus = 'STAGING' | 'VALIDATING' | 'VALIDATED_WITH_ERRORS' | 'READY_TO_COMMIT' | 'COMMITTED' | 'FAILED';
+export type ImportBatchStatus = 'STAGING' | 'VALIDATING' | 'VALIDATED_WITH_ERRORS' | 'READY_TO_COMMIT' | 'COMMITTING' | 'COMMITTED' | 'FAILED';
 export type FindingImportSourceType = 'XLSX' | 'ZIP_XLSX' | 'CLIPBOARD' | 'DOCX' | 'PDF' | 'API_BULK' | 'WEB_FORM';
 
 export interface StagingValidationError {
@@ -30,6 +30,8 @@ export interface StagingRow {
   parsedData: Record<string, any>;
   isValid: boolean;
   errors: StagingValidationError[];
+  commitStatus?: 'PENDING' | 'COMMITTED' | 'DUPLICATE';
+  committedAt?: string;
 }
 
 export interface ImportBatch {
@@ -49,6 +51,10 @@ export interface ImportBatch {
   createdAt: string;
   committedAt?: string;
   committedFindingsCount?: number;
+  committedDuplicateCount?: number;
+  checkpointRowNumber?: number;
+  backgroundProcessing?: boolean;
+  backgroundCheckpointSize?: number;
 }
 
 export const WebFormFindingSchema = z.object({
@@ -90,6 +96,7 @@ export type WebFormFindingDTO = z.infer<typeof WebFormFindingSchema>;
 export const BulkFindingImportSchema = z.object({
   sourceFileName: z.string().trim().min(1).max(255),
   sourceType: z.enum(['XLSX', 'ZIP_XLSX', 'CLIPBOARD', 'DOCX', 'PDF', 'API_BULK', 'WEB_FORM']).default('API_BULK'),
+  atomic: z.boolean().optional(),
   rows: z.array(WebFormFindingSchema).min(1).max(5000),
 }).superRefine((value, context) => {
   if (value.sourceType !== 'API_BULK' && value.rows.some(row => !row.campaignId?.trim())) {
@@ -100,6 +107,26 @@ export const BulkFindingImportSchema = z.object({
   }
 });
 export type BulkFindingImportDTO = z.infer<typeof BulkFindingImportSchema>;
+
+/** Keeps raw rows and row-level errors durable before a large import is committed in checkpoints. */
+export const StageFindingImportSchema = z.object({
+  sourceFileName: z.string().trim().min(1).max(255),
+  sourceType: z.enum(['XLSX', 'ZIP_XLSX', 'CLIPBOARD', 'DOCX', 'PDF', 'API_BULK', 'WEB_FORM']).default('API_BULK'),
+  rows: z.array(z.record(z.unknown())).min(1).max(5000),
+});
+export type StageFindingImportDTO = z.infer<typeof StageFindingImportSchema>;
+
+export const CommitStagedFindingImportSchema = z.object({
+  maxRows: z.coerce.number().int().min(1).max(1_000).default(250),
+  allowPartial: z.boolean().default(false),
+});
+export type CommitStagedFindingImportDTO = z.infer<typeof CommitStagedFindingImportSchema>;
+
+/** Schedules a durable worker only after the source rows have passed staging validation. */
+export const ScheduleStagedFindingImportSchema = z.object({
+  maxRows: z.coerce.number().int().min(1).max(1_000).default(250),
+});
+export type ScheduleStagedFindingImportDTO = z.infer<typeof ScheduleStagedFindingImportSchema>;
 
 type FindingBusinessKeyInput = Pick<WebFormFindingDTO, 'channelId' | 'campaignId' | 'branchCode' | 'cif' | 'errorCode' | 'decisionNo'>;
 

@@ -27,11 +27,39 @@ export interface FindingListOptions {
   query: Record<string, string | undefined>;
   page: number;
   limit: number;
+  /** Điểm bắt đầu độc lập với OFFSET cho danh sách SQL có tập dữ liệu lớn. */
+  cursor?: FindingListCursor;
+}
+
+export interface FindingListCursor {
+  createdAt: string;
+  id: string;
 }
 
 export interface FindingListPage {
   items: Finding[];
   total: number;
+  hasMore: boolean;
+  nextCursor?: FindingListCursor;
+}
+
+/** Cursor chỉ chứa khóa sắp xếp công khai của record; không nhúng scope, bộ lọc hay payload. */
+export function encodeFindingListCursor(cursor: FindingListCursor): string {
+  return Buffer.from(JSON.stringify(cursor), 'utf8').toString('base64url');
+}
+
+export function decodeFindingListCursor(value: string): FindingListCursor {
+  try {
+    const parsed = JSON.parse(Buffer.from(value, 'base64url').toString('utf8')) as Partial<FindingListCursor>;
+    if (typeof parsed.createdAt !== 'string' || typeof parsed.id !== 'string' || !parsed.id || parsed.id.length > 200) {
+      throw new Error('invalid cursor shape');
+    }
+    const parsedDate = new Date(parsed.createdAt);
+    if (!Number.isFinite(parsedDate.getTime())) throw new Error('invalid cursor timestamp');
+    return { createdAt: parsedDate.toISOString(), id: parsed.id };
+  } catch {
+    throw new Error('INVALID_FINDING_CURSOR');
+  }
 }
 
 /**
@@ -49,7 +77,7 @@ const asDate = (value?: string): string | null => (value && value.trim() ? value
 const asText = (value?: string | null): string | null => (value === undefined || value === null || value === '' ? null : value);
 
 /** Thứ tự cột phải khớp đúng danh sách trong câu INSERT bên dưới. */
-function rowValues(finding: Finding, evidenceCount: number, hash: string): unknown[] {
+function rowValues(finding: Finding, evidenceCount: number, hash: string, sourceRevision: string): unknown[] {
   return [
     finding.id,
     asText(finding.campaignId),
@@ -81,6 +109,7 @@ function rowValues(finding: Finding, evidenceCount: number, hash: string): unkno
     finding.updatedAt,
     JSON.stringify(finding),
     hash,
+    sourceRevision,
   ];
 }
 
@@ -90,7 +119,7 @@ const COLUMNS = [
   'error_code', 'error_group', 'error_title', 'business_line', 'risk_level',
   'workflow_status', 'sla_status', 'is_overdue', 'is_special_case',
   'audit_date', 'deadline_date', 'exposure_amount', 'credit_balance', 'version',
-  'evidence_count', 'created_at', 'updated_at', 'payload', 'content_hash',
+  'evidence_count', 'created_at', 'updated_at', 'payload', 'content_hash', 'source_revision',
 ];
 
 /** Ép kiểu cho những cột mà driver không tự suy ra được từ tham số. */
@@ -100,6 +129,7 @@ const COLUMN_CASTS: Record<string, string> = {
   created_at: '::timestamptz',
   updated_at: '::timestamptz',
   payload: '::jsonb',
+  source_revision: '::bigint',
 };
 
 /** Ghi theo lô để một lần nhập lớn không dựng ra câu lệnh vượt giới hạn tham số của Postgres. */
@@ -121,6 +151,7 @@ export class PostgresFindingRecords {
   public async sync(
     findings: readonly Finding[],
     evidenceCountById: ReadonlyMap<string, number>,
+    sourceRevision: string,
   ): Promise<FindingRecordsSyncResult> {
     return withBackendTransaction(this.pool, async client => {
       const known = this.knownHashes ?? await this.loadHashes(client);
@@ -136,10 +167,13 @@ export class PostgresFindingRecords {
       const removed = [...known.keys()].filter(id => !nextHashes.has(id));
 
       for (let start = 0; start < changed.length; start += UPSERT_BATCH_SIZE) {
-        await this.upsertBatch(client, changed.slice(start, start + UPSERT_BATCH_SIZE), evidenceCountById, nextHashes);
+        await this.upsertBatch(client, changed.slice(start, start + UPSERT_BATCH_SIZE), evidenceCountById, nextHashes, sourceRevision);
       }
       if (removed.length > 0) {
-        await client.query('DELETE FROM finding_records WHERE finding_id = ANY($1::text[])', [removed]);
+        await client.query(
+          'DELETE FROM finding_records WHERE finding_id = ANY($1::text[]) AND source_revision <= $2::bigint',
+          [removed, sourceRevision],
+        );
       }
 
       // Chỉ tin vào bộ nhớ đệm sau khi transaction đã ghi xong. Gán sớm hơn thì một lần COMMIT hỏng
@@ -163,12 +197,13 @@ export class PostgresFindingRecords {
     batch: readonly Finding[],
     evidenceCountById: ReadonlyMap<string, number>,
     hashes: ReadonlyMap<string, string>,
+    sourceRevision: string,
   ): Promise<void> {
     if (batch.length === 0) return;
     const params: unknown[] = [];
     const tuples = batch.map(finding => {
       const offset = params.length;
-      params.push(...rowValues(finding, evidenceCountById.get(finding.id) ?? 0, hashes.get(finding.id)!));
+      params.push(...rowValues(finding, evidenceCountById.get(finding.id) ?? 0, hashes.get(finding.id)!, sourceRevision));
       return `(${COLUMNS.map((column, index) => `$${offset + index + 1}${COLUMN_CASTS[column] ?? ''}`).join(', ')})`;
     });
     const updates = COLUMNS.filter(column => column !== 'finding_id')
@@ -176,7 +211,8 @@ export class PostgresFindingRecords {
       .join(', ');
     await client.query(
       `INSERT INTO finding_records(${COLUMNS.join(', ')}) VALUES ${tuples.join(', ')}
-       ON CONFLICT (finding_id) DO UPDATE SET ${updates}`,
+       ON CONFLICT (finding_id) DO UPDATE SET ${updates}
+       WHERE finding_records.source_revision <= EXCLUDED.source_revision`,
       params,
     );
   }
@@ -232,10 +268,23 @@ export class PostgresFindingRecords {
     const { sql, params } = buildListQuery(options);
     return withBackendTransaction(this.pool, async client => {
       const result = await client.query(sql, params);
+      const rows = options.cursor ? result.rows.slice(0, options.limit) : result.rows;
+      const total = result.rows.length > 0 ? Number(result.rows[0].total_count) : 0;
+      const hasMore = options.cursor
+        ? result.rows.length > options.limit
+        : (options.page - 1) * options.limit + rows.length < total;
+      const last = rows.at(-1);
       return {
         // `payload` là bản ghi hồ sơ nguyên vẹn, nên không có bước dựng lại nào để mà sai.
-        items: result.rows.map(row => row.payload as Finding),
-        total: result.rows.length > 0 ? Number(result.rows[0].total_count) : 0,
+        items: rows.map(row => row.payload as Finding),
+        total,
+        hasMore,
+        ...(hasMore && last ? {
+          nextCursor: {
+            createdAt: new Date(last.created_at as string | number | Date).toISOString(),
+            id: String(last.finding_id),
+          },
+        } : {}),
       };
     });
   }
@@ -244,14 +293,12 @@ export class PostgresFindingRecords {
   public async listAll(options: Omit<FindingListOptions, 'page' | 'limit'>): Promise<Finding[]> {
     const items: Finding[] = [];
     const pageSize = 1_000;
-    let page = 1;
-    let total = Number.POSITIVE_INFINITY;
-    while (items.length < total) {
-      const result = await this.list({ ...options, page, limit: pageSize });
+    let cursor = options.cursor;
+    while (true) {
+      const result = await this.list({ ...options, page: 1, limit: pageSize, cursor });
       items.push(...result.items);
-      total = result.total;
-      if (result.items.length === 0) break;
-      page += 1;
+      if (!result.hasMore || !result.nextCursor) break;
+      cursor = result.nextCursor;
     }
     return items;
   }
@@ -267,7 +314,7 @@ export class PostgresFindingRecords {
  * từng trường ngay bên cạnh. Chỉ mục để chạy nhanh, vị từ để chạy đúng.
  */
 export function buildListQuery(options: FindingListOptions): { sql: string; params: unknown[] } {
-  const { user, query, page, limit } = options;
+  const { user, query, page, limit, cursor } = options;
   const params: unknown[] = [];
   const placeholder = (value: unknown): string => {
     params.push(value);
@@ -334,6 +381,25 @@ export function buildListQuery(options: FindingListOptions): { sql: string; para
       OR position(${term} in lower(coalesce(f.branch_name, ''))) > 0
       OR position(${term} in lower(coalesce(f.cluster_name, ''))) > 0
     ))`);
+  }
+
+  if (cursor) {
+    const cursorCreatedAt = placeholder(cursor.createdAt);
+    const cursorId = placeholder(cursor.id);
+    // COUNT chạy trước keyset condition để API vẫn giữ đúng `total` của toàn bộ kết quả lọc.
+    // Lấy một dòng dư để xác định `hasMore` mà không dùng OFFSET.
+    const cursorLimit = placeholder(limit + 1);
+    const sql = `WITH scoped_findings AS (
+      SELECT f.payload, f.created_at, f.finding_id, count(*) OVER () AS total_count
+        FROM finding_records f
+       WHERE ${conditions.join(' AND ')}
+    )
+    SELECT payload, total_count, created_at, finding_id
+      FROM scoped_findings
+     WHERE (created_at, finding_id) < (${cursorCreatedAt}::timestamptz, ${cursorId})
+     ORDER BY created_at DESC, finding_id DESC
+     LIMIT ${cursorLimit}`;
+    return { sql, params };
   }
 
   const offset = Math.max(0, (page - 1) * limit);

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { WorkflowStatus, UserRole } from './common';
+import { ApprovalAssignmentStage } from './findings';
 
 export const workflowCommands = [
   'SET_APPROVAL_ROUTE',
@@ -71,6 +72,15 @@ export const SetFindingSpecialCaseSchema = z.object({
   isSpecialCase: z.boolean(),
 });
 export type SetFindingSpecialCaseDTO = z.infer<typeof SetFindingSpecialCaseSchema>;
+
+export const ReassignApprovalRouteSchema = z.object({
+  expectedVersion: z.number().int().min(1),
+  stage: z.enum(['BRANCH_CONTROLLER', 'BRANCH_LEADER', 'INTERNAL_APPROVER']),
+  assigneeUserId: z.string().trim().min(1).max(120),
+  reason: z.string().trim().min(5).max(2_000),
+  validUntil: z.string().datetime({ offset: true }).optional(),
+});
+export type ReassignApprovalRouteDTO = z.infer<typeof ReassignApprovalRouteSchema> & { stage: ApprovalAssignmentStage };
 
 export const InternalWaiveCommandSchema = z.object({
   expectedVersion: z.number().int().min(1),

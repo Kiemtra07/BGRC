@@ -16,11 +16,18 @@ export class WorkflowCommandService {
     finding: Finding,
     user: UserProfile,
     field: 'branchControllerUserId' | 'branchLeaderUserId' | 'internalApproverUserId',
+    stage: 'BRANCH_CONTROLLER' | 'BRANCH_LEADER' | 'INTERNAL_APPROVER',
     label: string,
   ): void {
     const selectedUserId = finding.approvalRoute?.[field];
     if (selectedUserId && selectedUserId !== user.id) {
       throw new Error(`403: APPROVER_NOT_ASSIGNED — Hồ sơ này được phân cho ${label} khác duyệt.`);
+    }
+    const latestAssignment = finding.approvalRoute?.assignmentHistory
+      ?.filter(assignment => assignment.stage === stage)
+      .at(-1);
+    if (latestAssignment?.validUntil && Date.parse(latestAssignment.validUntil) <= Date.now()) {
+      throw new Error(`409: APPROVAL_ASSIGNMENT_EXPIRED — Thời hạn được giao cho ${label} đã kết thúc; quản trị viên phải giao lại người duyệt.`);
     }
   }
 
@@ -51,7 +58,7 @@ export class WorkflowCommandService {
         if (!user.roles.includes('BRANCH_CONTROLLER')) {
           throw new Error('403: FORBIDDEN — Chỉ Kiểm soát chi nhánh mới có quyền đồng ý xử lý lỗi.');
         }
-        this.assertSelectedApprover(finding, user, 'branchControllerUserId', 'người kiểm soát chi nhánh');
+        this.assertSelectedApprover(finding, user, 'branchControllerUserId', 'BRANCH_CONTROLLER', 'người kiểm soát chi nhánh');
         break;
       }
       case 'BRANCH_CONTROL_REJECT': {
@@ -61,7 +68,7 @@ export class WorkflowCommandService {
         if (!user.roles.includes('BRANCH_CONTROLLER')) {
           throw new Error('403: FORBIDDEN — Chỉ Kiểm soát chi nhánh mới có quyền chuyển trả hồ sơ.');
         }
-        this.assertSelectedApprover(finding, user, 'branchControllerUserId', 'người kiểm soát chi nhánh');
+        this.assertSelectedApprover(finding, user, 'branchControllerUserId', 'BRANCH_CONTROLLER', 'người kiểm soát chi nhánh');
         break;
       }
       case 'BRANCH_LEADER_APPROVE': {
@@ -71,7 +78,7 @@ export class WorkflowCommandService {
         if (!user.roles.includes('BRANCH_LEADER')) {
           throw new Error('403: FORBIDDEN — Chỉ Lãnh đạo chi nhánh mới có quyền phê duyệt bước này.');
         }
-        this.assertSelectedApprover(finding, user, 'branchLeaderUserId', 'lãnh đạo chi nhánh');
+        this.assertSelectedApprover(finding, user, 'branchLeaderUserId', 'BRANCH_LEADER', 'lãnh đạo chi nhánh');
         break;
       }
       case 'BRANCH_LEADER_REJECT': {
@@ -81,7 +88,7 @@ export class WorkflowCommandService {
         if (!user.roles.includes('BRANCH_LEADER')) {
           throw new Error('403: FORBIDDEN — Chỉ Lãnh đạo chi nhánh mới có quyền chuyển trả hồ sơ.');
         }
-        this.assertSelectedApprover(finding, user, 'branchLeaderUserId', 'lãnh đạo chi nhánh');
+        this.assertSelectedApprover(finding, user, 'branchLeaderUserId', 'BRANCH_LEADER', 'lãnh đạo chi nhánh');
         break;
       }
       case 'INTERNAL_WAIVE': {
@@ -91,7 +98,7 @@ export class WorkflowCommandService {
         if (!user.roles.includes('INTERNAL_APPROVER') && !user.roles.includes('SUPERVISOR')) {
           throw new Error('403: FORBIDDEN — Chỉ Khối Nội Bộ / Lãnh đạo mới có quyền phê duyệt bỏ lỗi.');
         }
-        this.assertSelectedApprover(finding, user, 'internalApproverUserId', 'người duyệt nội bộ');
+        this.assertSelectedApprover(finding, user, 'internalApproverUserId', 'INTERNAL_APPROVER', 'người duyệt nội bộ');
         break;
       }
       case 'INTERNAL_REJECT': {
@@ -101,7 +108,7 @@ export class WorkflowCommandService {
         if (!user.roles.includes('INTERNAL_APPROVER') && !user.roles.includes('SUPERVISOR')) {
           throw new Error('403: FORBIDDEN — Chỉ Khối Nội Bộ mới có quyền từ chối bỏ lỗi.');
         }
-        this.assertSelectedApprover(finding, user, 'internalApproverUserId', 'người duyệt nội bộ');
+        this.assertSelectedApprover(finding, user, 'internalApproverUserId', 'INTERNAL_APPROVER', 'người duyệt nội bộ');
         break;
       }
       default:

@@ -22,22 +22,65 @@ export const SecuritySettingsPanel: React.FC = () => {
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [enrolling, setEnrolling] = useState<string | null>(null);
-  const [issued, setIssued] = useState<{ fullName: string; secret: string; otpauthUri: string } | null>(null);
+  const [issued, setIssued] = useState<{ userId: string; fullName: string; secret: string; otpauthUri: string; code: string } | null>(null);
+  const [recoveryCodes, setRecoveryCodes] = useState<{ fullName: string; codes: string[] } | null>(null);
   const mountedRef = useRef(true);
+
+  const confirmSensitiveAction = async (): Promise<boolean> => {
+    const password = window.prompt('Nhập lại mật khẩu hiện tại để xác nhận thao tác bảo mật');
+    if (!password) return false;
+    await api.stepUp({ password });
+    return true;
+  };
 
   /** Issue or revoke one person's TOTP secret. The server refuses a revoke the policy still needs. */
   const setEnrolment = async (userId: string, fullName: string, enabled: boolean) => {
     try {
       setEnrolling(userId); setError(null); setNotice(null);
+      if (!await confirmSensitiveAction()) return;
       const result = await api.updateUserAuthenticator(userId, { enabled });
       if (!mountedRef.current) return;
-      if (result.setup) setIssued({ fullName, ...result.setup });
+      if (result.setup) setIssued({ userId, fullName, code: '', ...result.setup });
       else setNotice(`Đã thu hồi mã Google Authenticator của ${fullName}.`);
       const refreshed = await api.getSecuritySettings();
       if (mountedRef.current) setData(refreshed);
     } catch (reason) {
       if (!mountedRef.current) return;
       setError(reason instanceof Error ? reason.message : 'Không thể cập nhật mã Authenticator.');
+    } finally {
+      if (mountedRef.current) setEnrolling(null);
+    }
+  };
+
+  const confirmEnrolment = async () => {
+    if (!issued) return;
+    try {
+      setEnrolling(issued.userId); setError(null); setNotice(null);
+      if (!await confirmSensitiveAction()) return;
+      await api.confirmUserAuthenticatorEnrollment(issued.userId, { code: issued.code });
+      if (!mountedRef.current) return;
+      setIssued(null);
+      setNotice(`Đã xác nhận Google Authenticator cho ${issued.fullName}.`);
+      setData(await api.getSecuritySettings());
+    } catch (reason) {
+      if (!mountedRef.current) return;
+      setError(reason instanceof Error ? reason.message : 'Không thể xác nhận mã Authenticator.');
+    } finally {
+      if (mountedRef.current) setEnrolling(null);
+    }
+  };
+
+  const issueRecoveryCodes = async (userId: string, fullName: string) => {
+    try {
+      setEnrolling(userId); setError(null); setNotice(null);
+      if (!await confirmSensitiveAction()) return;
+      const result = await api.issueUserAuthenticatorRecoveryCodes(userId);
+      if (!mountedRef.current) return;
+      setRecoveryCodes({ fullName, codes: result.codes });
+      setNotice(`Đã cấp 10 mã dự phòng mới cho ${fullName}.`);
+    } catch (reason) {
+      if (!mountedRef.current) return;
+      setError(reason instanceof Error ? reason.message : 'Không thể cấp mã dự phòng.');
     } finally {
       if (mountedRef.current) setEnrolling(null);
     }
@@ -62,6 +105,7 @@ export const SecuritySettingsPanel: React.FC = () => {
   const save = async () => {
     try {
       setBusy(true); setError(null); setNotice(null);
+      if (!await confirmSensitiveAction()) return;
       const result = await api.updateSecuritySettings({ mfaPolicy: draft });
       setData(result);
       setDraft(result.settings.mfaPolicy);
@@ -142,10 +186,10 @@ export const SecuritySettingsPanel: React.FC = () => {
       {issued && (
         <section role="status" className="rounded-2xl border border-ok-border bg-ok-surface p-5">
           <div className="flex flex-wrap items-start justify-between gap-3">
-            <h4 className="flex items-center gap-2 text-sm font-bold text-ok"><CircleCheck className="h-4 w-4" />Đã cấp mã cho {issued.fullName}</h4>
+            <h4 className="flex items-center gap-2 text-sm font-bold text-ok"><CircleCheck className="h-4 w-4" />Xác nhận thiết bị cho {issued.fullName}</h4>
             <button type="button" onClick={() => setIssued(null)} className="text-[11px] font-bold text-slate-600 hover:text-slate-900">Đóng</button>
           </div>
-            <p className="mt-1 text-xs leading-5 text-slate-600">Gửi thông tin này cho người dùng để thêm tài khoản vào Google Authenticator. Sau khi đóng, mã sẽ không thể xem lại.</p>
+            <p className="mt-1 text-xs leading-5 text-slate-600">Quét secret, rồi nhập mã 6 chữ số đang hiển thị để hoàn tất ghi danh. Sau khi đóng, secret sẽ không thể xem lại.</p>
           <dl className="mt-3 grid gap-2 sm:grid-cols-2">
             <div className="rounded-lg border border-rule bg-white p-2.5">
               <dt className="text-[10px] font-bold text-slate-500">Mã bí mật</dt>
@@ -156,6 +200,25 @@ export const SecuritySettingsPanel: React.FC = () => {
               <dd className="mt-1 select-all break-all font-mono text-[10px] font-semibold text-slate-900">{issued.otpauthUri}</dd>
             </div>
           </dl>
+          <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-end">
+            <label className="grid gap-1 text-[11px] font-bold text-slate-600">Mã 6 chữ số
+              <input value={issued.code} onChange={event => setIssued(previous => previous ? { ...previous, code: event.target.value.replace(/\D/g, '').slice(0, 6) } : previous)} inputMode="numeric" autoComplete="one-time-code" className="w-44 rounded-lg border border-ok-border px-3 py-2 font-mono text-sm font-bold tracking-[0.2em] text-slate-900" />
+            </label>
+            <button type="button" onClick={() => void confirmEnrolment()} disabled={issued.code.length !== 6 || enrolling === issued.userId} className="min-h-10 rounded-xl bg-ok px-4 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">Xác nhận thiết bị</button>
+          </div>
+        </section>
+      )}
+
+      {recoveryCodes && (
+        <section role="alert" className="rounded-2xl border border-warn-border bg-warn-surface p-5">
+          <div className="flex flex-wrap items-start justify-between gap-3">
+            <h4 className="flex items-center gap-2 text-sm font-bold text-warn"><TriangleAlert className="h-4 w-4" />Mã dự phòng của {recoveryCodes.fullName}</h4>
+            <button type="button" onClick={() => setRecoveryCodes(null)} className="text-[11px] font-bold text-slate-600 hover:text-slate-900">Tôi đã lưu mã</button>
+          </div>
+          <p className="mt-1 text-xs leading-5 text-slate-700">Mỗi mã chỉ dùng một lần khi mất thiết bị. Lưu ngoại tuyến; cấp lại sẽ hủy toàn bộ mã cũ.</p>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
+            {recoveryCodes.codes.map(code => <code key={code} className="select-all rounded-lg border border-warn-border bg-white px-2.5 py-2 text-center text-xs font-bold text-slate-900">{code}</code>)}
+          </div>
         </section>
       )}
 
@@ -198,11 +261,14 @@ export const SecuritySettingsPanel: React.FC = () => {
                     <span className={`inline-flex items-center rounded-md border px-1.5 py-[2px] text-[10px] font-bold ${row.configured ? 'border-ok-border bg-ok-surface text-ok' : row.covered ? 'border-warn-border bg-warn-surface text-warn' : 'border-idle-border bg-idle-surface text-idle'}`}>{row.configured ? 'Đã cấp' : 'Chưa cấp'}</span>
                   </td>
                   <td className="px-4 py-3">
-                    <div className="flex justify-end">
+                    <div className="flex justify-end gap-2">
                       {row.configured ? (
-                        <button type="button" disabled={enrolling === row.id || row.covered} title={row.covered ? 'Đổi chính sách trước khi thu hồi, nếu không tài khoản sẽ không đăng nhập được.' : undefined} onClick={() => void setEnrolment(row.id, row.fullName, false)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-risk-border px-2.5 text-[11px] font-bold text-risk hover:bg-risk-surface disabled:cursor-not-allowed disabled:opacity-40">
-                          {enrolling === row.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldOff className="h-3.5 w-3.5" />}Thu hồi
-                        </button>
+                        <>
+                          <button type="button" disabled={enrolling === row.id} onClick={() => void issueRecoveryCodes(row.id, row.fullName)} className="inline-flex min-h-8 items-center rounded-lg border border-warn-border px-2.5 text-[11px] font-bold text-warn hover:bg-warn-surface disabled:opacity-50">Mã dự phòng</button>
+                          <button type="button" disabled={enrolling === row.id || row.covered} title={row.covered ? 'Đổi chính sách trước khi thu hồi, nếu không tài khoản sẽ không đăng nhập được.' : undefined} onClick={() => void setEnrolment(row.id, row.fullName, false)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-risk-border px-2.5 text-[11px] font-bold text-risk hover:bg-risk-surface disabled:cursor-not-allowed disabled:opacity-40">
+                            {enrolling === row.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldOff className="h-3.5 w-3.5" />}Thu hồi
+                          </button>
+                        </>
                       ) : (
                         <button type="button" disabled={enrolling === row.id} onClick={() => void setEnrolment(row.id, row.fullName, true)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-brand-200 px-2.5 text-[11px] font-bold text-brand-600 hover:bg-brand-50 disabled:opacity-50">
                           {enrolling === row.id ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <ShieldCheck className="h-3.5 w-3.5" />}Cấp mã

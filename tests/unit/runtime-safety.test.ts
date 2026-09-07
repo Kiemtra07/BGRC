@@ -141,6 +141,10 @@ describe('demo data must not reach production', () => {
     EVIDENCE_STORAGE_MODE: 'google-drive',
     GOOGLE_SERVICE_ACCOUNT_JSON: '{}',
     GOOGLE_DRIVE_ROOT_FOLDER_ID: 'folder-id',
+    EVIDENCE_SCANNER_WEBHOOK_URL: 'https://scanner.example.com/scan',
+    EVIDENCE_SCANNER_WEBHOOK_TOKEN: 'scanner-webhook-token-for-tests-32b',
+    EVIDENCE_SCANNER_CALLBACK_BASE_URL: 'https://audit.example/api/v1/internal/evidence-scans/',
+    EVIDENCE_SCANNER_CALLBACK_TOKEN: 'scanner-callback-token-for-tests',
     BOOTSTRAP_ADMIN_USERNAME: 'quantri',
     BOOTSTRAP_ADMIN_PASSWORD_HASH: 'scrypt$salt$key',
     BOOTSTRAP_ADMIN_EMAIL: 'quantri@example.com',
@@ -164,6 +168,28 @@ describe('demo data must not reach production', () => {
   it('refuses production when the Google OIDC authorization-code client is incomplete', () => {
     const { GOOGLE_OIDC_CLIENT_SECRET, ...withoutClientSecret } = productionBase;
     expect(() => assertSafeRuntimeConfiguration(withoutClientSecret)).toThrow(/Google OIDC/);
+  });
+
+  it('refuses production without the scanner callback boundary', () => {
+    const { EVIDENCE_SCANNER_CALLBACK_TOKEN, ...withoutScannerCallback } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration(withoutScannerCallback)).toThrow(/scanner minh chứng/i);
+  });
+
+  it('refuses a scanner that has no outbound credential or uses insecure endpoints', () => {
+    const { EVIDENCE_SCANNER_WEBHOOK_TOKEN, ...withoutScannerCredential } = productionBase;
+    expect(() => assertSafeRuntimeConfiguration(withoutScannerCredential)).toThrow(/scanner minh chứng/i);
+    expect(() => assertSafeRuntimeConfiguration({
+      ...productionBase,
+      EVIDENCE_SCANNER_WEBHOOK_URL: 'http://scanner.example.com/scan',
+      EVIDENCE_SCANNER_CALLBACK_BASE_URL: 'http://audit.example/api/v1/internal/evidence-scans/',
+    })).toThrow(/scanner minh chứng/i);
+  });
+
+  it('refuses a scanner callback token shorter than 32 bytes', () => {
+    expect(() => assertSafeRuntimeConfiguration({
+      ...productionBase,
+      EVIDENCE_SCANNER_CALLBACK_TOKEN: 'too-short',
+    })).toThrow(/scanner minh chứng/i);
   });
 
   it('accepts production with seeding off and a bootstrap administrator supplied', () => {

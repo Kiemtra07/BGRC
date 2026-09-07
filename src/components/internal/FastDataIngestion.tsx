@@ -1,7 +1,8 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { CustomerRecord, BatchUploadResult, UserProfile } from '../../types';
 import { ExcelFastIngestionService } from '../../lib/excel-parser';
-import { api } from '../../services/api';
+import { api, StagedFindingImportView } from '../../services/api';
+import { clearStagedImportCheckpointKey, getOrCreateStagedImportCheckpointKey, stagedImportStorageKey } from '../../services/staged-import-retry';
 import type { AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, ReportChannel } from '../../../shared/contracts';
 import {
   Upload,
@@ -46,6 +47,7 @@ const isoDateOffset = (days: number) => {
   return date.toISOString().slice(0, 10);
 };
 
+const STAGED_IMPORT_CHECKPOINT_SIZE = 250;
 export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
   currentUser,
   channels,
@@ -64,8 +66,26 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
   const [campaignId, setCampaignId] = useState('');
   const [campaignDraftSource, setCampaignDraftSource] = useState<CampaignImportDraft | null>(null);
   const [campaignDraft, setCampaignDraft] = useState<ImportedCampaignForm | null>(null);
+  const [stagedImport, setStagedImport] = useState<StagedFindingImportView | null>(null);
   const availableCampaigns = campaigns.filter(campaign => campaign.status === 'ACTIVE' && campaign.reportChannelIds.includes(channelId));
   const targetSelected = Boolean(channelId && campaignId);
+
+  const rememberStagedImport = (view: StagedFindingImportView | null) => {
+    setStagedImport(view);
+    const storageKey = stagedImportStorageKey(currentUser.id);
+    if (view) sessionStorage.setItem(storageKey, view.batch.id);
+    else sessionStorage.removeItem(storageKey);
+  };
+
+  useEffect(() => {
+    const batchId = sessionStorage.getItem(stagedImportStorageKey(currentUser.id));
+    if (!batchId) return;
+    let active = true;
+    void api.getStagedFindingImport(batchId)
+      .then(view => { if (active) setStagedImport(view); })
+      .catch(() => sessionStorage.removeItem(stagedImportStorageKey(currentUser.id)));
+    return () => { active = false; };
+  }, [currentUser.id]);
 
   // 1. Handle Multi-Excel selection
   const handleMultiExcelUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -349,6 +369,40 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
 
   // Commit staged data to master system
   const handleCommit = async () => {
+    if (stagedImport) {
+      try {
+        setIsProcessing(true);
+        const idempotencyKey = getOrCreateStagedImportCheckpointKey(
+          sessionStorage,
+          currentUser.id,
+          stagedImport.batch.id,
+          () => crypto.randomUUID(),
+        );
+        const checkpoint = await api.commitStagedFindingImport(
+          stagedImport.batch.id,
+          { maxRows: STAGED_IMPORT_CHECKPOINT_SIZE, allowPartial: stagedImport.batch.errorRowsCount > 0 },
+          idempotencyKey,
+        );
+        const refreshed = await api.getStagedFindingImport(stagedImport.batch.id);
+        clearStagedImportCheckpointKey(sessionStorage, currentUser.id, stagedImport.batch.id);
+        await onCommitNewCustomers(stagedCustomers);
+        if (checkpoint.remainingRows === 0) {
+          rememberStagedImport(null);
+          setStagedCustomers([]);
+          setUploadResults([]);
+          alert(`Đã hoàn tất lô ${checkpoint.committedFindingsCount ?? 0} mã lỗi. ${checkpoint.committedDuplicateCount ?? 0} dòng trùng đã được ghi nhận.`);
+          if (onClose) onClose();
+        } else {
+          rememberStagedImport(refreshed);
+          alert(`Đã lưu checkpoint: ${checkpoint.committedThisCheckpoint ?? 0} mã lỗi. Còn ${checkpoint.remainingRows} dòng hợp lệ để tiếp tục.`);
+        }
+      } catch (reason) {
+        alert(reason instanceof Error ? reason.message : 'Không thể tiếp tục checkpoint của lô dữ liệu.');
+      } finally {
+        setIsProcessing(false);
+      }
+      return;
+    }
     const customersWithErrors = stagedCustomers.filter(customer => customer.errors.length > 0);
     if (customersWithErrors.length === 0) {
       alert('Không có khách hàng nào có mã sai sót hợp lệ để lưu vào hệ thống.');
@@ -360,10 +414,9 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
     }
     try {
       setIsProcessing(true);
-      const result = await api.importFindings({
-        sourceFileName: uploadResults.map(item => item.fileName).join(', ') || 'clipboard-import.xlsx',
-        sourceType: activeMode === 'ZIP_BATCH' ? 'ZIP_XLSX' : activeMode === 'CLIPBOARD' ? 'CLIPBOARD' : activeMode === 'DOCX' ? 'DOCX' : 'XLSX',
-        rows: customersWithErrors.flatMap(customer => customer.errors.map(error => ({
+      const sourceFileName = uploadResults.map(item => item.fileName).join(', ') || 'clipboard-import.xlsx';
+      const sourceType = activeMode === 'ZIP_BATCH' ? 'ZIP_XLSX' : activeMode === 'CLIPBOARD' ? 'CLIPBOARD' : activeMode === 'DOCX' ? 'DOCX' : 'XLSX';
+      const rows = customersWithErrors.flatMap(customer => customer.errors.map(error => ({
           channelId,
           campaignId,
           cif: customer.cif,
@@ -395,8 +448,15 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
           officerName: customer.officerName,
           deptHeadName: customer.deptHeadName,
           inspectorName: customer.inspectorName,
-        }))),
-      });
+        })));
+      if (rows.length > STAGED_IMPORT_CHECKPOINT_SIZE) {
+        const batch = await api.stageFindingImport({ sourceFileName, sourceType, rows }, crypto.randomUUID());
+        const view = await api.getStagedFindingImport(batch.id);
+        rememberStagedImport(view);
+        alert(`Đã lưu ${batch.totalRows} dòng vào staging. Kiểm tra lỗi theo dòng rồi xác nhận từng checkpoint ${STAGED_IMPORT_CHECKPOINT_SIZE} dòng.`);
+        return;
+      }
+      const result = await api.importFindings({ sourceFileName, sourceType, atomic: true, rows });
       await onCommitNewCustomers(customersWithErrors);
       alert(`Đã nhập ${result.customerCount} khách hàng, ${result.findingCount} mã lỗi; bỏ qua ${result.duplicateCount} dòng trùng.`);
       setStagedCustomers([]);
@@ -404,6 +464,26 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
       if (onClose) onClose();
     } catch (reason) {
       alert(reason instanceof Error ? reason.message : 'Không thể lưu lô dữ liệu.');
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
+  const handleScheduleBackground = async () => {
+    if (!stagedImport) return;
+    try {
+      setIsProcessing(true);
+      const scheduled = await api.scheduleStagedFindingImportBackground(
+        stagedImport.batch.id,
+        { maxRows: STAGED_IMPORT_CHECKPOINT_SIZE },
+      );
+      const refreshed = await api.getStagedFindingImport(stagedImport.batch.id);
+      rememberStagedImport(refreshed);
+      alert(scheduled.remainingRows > 0
+        ? `Đã đưa ${scheduled.remainingRows} dòng vào worker nền theo checkpoint ${STAGED_IMPORT_CHECKPOINT_SIZE} dòng.`
+        : 'Lô dữ liệu đã hoàn tất.');
+    } catch (reason) {
+      alert(reason instanceof Error ? reason.message : 'Không thể đưa lô dữ liệu vào worker nền.');
     } finally {
       setIsProcessing(false);
     }
@@ -661,6 +741,34 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
         )}
 
         {/* Extraction Preview & Reconciliation Matrix */}
+        {stagedImport && (
+          <section className="mt-6 rounded-xl border border-info-border bg-info-surface/40 p-4" aria-live="polite">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <h3 className="text-sm font-black text-info">Lô lớn đang chờ xử lý</h3>
+                <p className="mt-1 text-xs text-info">{stagedImport.batch.fileName}: đã lưu {stagedImport.batch.committedFindingsCount ?? 0}/{stagedImport.batch.validRowsCount} dòng hợp lệ. Mỗi lần tiếp tục tối đa {STAGED_IMPORT_CHECKPOINT_SIZE} dòng.</p>
+                {stagedImport.batch.errorRowsCount > 0 && <p className="mt-1 text-xs font-bold text-amber-800">Có {stagedImport.batch.errorRowsCount} dòng lỗi. Nút bên phải chỉ lưu các dòng hợp lệ.</p>}
+              </div>
+              <div className="flex flex-wrap gap-2">
+                {stagedImport.batch.errorRowsCount === 0 && stagedImport.batch.status !== 'COMMITTED' && !stagedImport.batch.backgroundProcessing && (
+                  <button onClick={handleScheduleBackground} disabled={isProcessing} className="inline-flex items-center gap-2 rounded-xl bg-sky-700 px-4 py-2.5 text-xs font-black text-white disabled:opacity-40">
+                    <Clock className="h-4 w-4" />
+                    Chạy nền
+                  </button>
+                )}
+                <button onClick={handleCommit} disabled={isProcessing || stagedImport.batch.status === 'COMMITTED' || stagedImport.batch.backgroundProcessing} className="inline-flex items-center gap-2 rounded-xl bg-emerald-600 px-4 py-2.5 text-xs font-black text-white disabled:opacity-40">
+                  <CheckCircle2 className="h-4 w-4" />
+                  {stagedImport.batch.status === 'COMMITTED' ? 'Đã hoàn tất' : stagedImport.batch.backgroundProcessing ? 'Đang chạy nền' : stagedImport.batch.errorRowsCount > 0 ? 'Lưu dòng hợp lệ' : 'Tiếp tục checkpoint'}
+                </button>
+              </div>
+            </div>
+            {stagedImport.items.filter(item => !item.isValid).slice(0, 5).map(item => (
+              <div key={item.id} className="mt-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+                Dòng {item.rowNumber}: {item.errors.map(error => error.errorMessage).join(' · ')}
+              </div>
+            ))}
+          </section>
+        )}
         {uploadResults.length > 0 && (
           <div className="mt-6 space-y-4">
             <div className="flex items-center justify-between border-b border-rule pb-3">
@@ -683,7 +791,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
                 className="inline-flex items-center gap-2 px-6 py-2.5 text-xs font-black text-white bg-emerald-600 hover:bg-emerald-700 rounded-xl shadow-lg transition transform hover:scale-[1.02]"
               >
                 <CheckCircle2 className="w-4 h-4" />
-                Lưu hồ sơ ({customersWithErrorsInStage} khách hàng)
+                {stagedImport ? 'Tiếp tục lô staging' : `Lưu hồ sơ (${customersWithErrorsInStage} khách hàng)`}
               </button>
             </div>
 

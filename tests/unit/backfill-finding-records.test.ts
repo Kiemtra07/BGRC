@@ -21,6 +21,7 @@ describe('backfill bảng finding_records', () => {
       source: {
         hasSnapshot: async () => true,
         load: async () => sourceState,
+        currentVersion: () => '41',
       },
       target: {
         sync: async () => {
@@ -41,10 +42,11 @@ describe('backfill bảng finding_records', () => {
       source: {
         hasSnapshot: async () => true,
         load: async () => sourceState,
+        currentVersion: () => '41',
       },
       target: {
-        sync: async (findings, evidenceCounts) => {
-          received = { findings, evidenceCounts: [...evidenceCounts.entries()] };
+        sync: async (findings, evidenceCounts, sourceRevision) => {
+          received = { findings, evidenceCounts: [...evidenceCounts.entries()], sourceRevision };
           return { upserted: 2, deleted: 0 };
         },
       },
@@ -54,6 +56,7 @@ describe('backfill bảng finding_records', () => {
     expect(received).toEqual({
       findings: sourceState.findings,
       evidenceCounts: [['a', 1], ['b', 1]],
+      sourceRevision: '41',
     });
   });
 
@@ -62,6 +65,7 @@ describe('backfill bảng finding_records', () => {
       source: {
         hasSnapshot: async () => false,
         load: async () => sourceState,
+        currentVersion: () => undefined,
       },
       target: { sync: async () => ({ upserted: 0, deleted: 0 }) },
     })).rejects.toThrow(/FINDING_RECORDS_BACKFILL_SNAPSHOT_MISSING/);

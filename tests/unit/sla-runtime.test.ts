@@ -62,6 +62,10 @@ describe('SLA runtime behavior', () => {
       path: '/api/v1/internal/sla/run',
       schedule: '30 1 * * *',
     });
+    expect(config.crons).toContainEqual({
+      path: '/api/v1/internal/outbox/run',
+      schedule: '30 3 * * *',
+    });
   });
 
   it('updates a real local-state envelope atomically without losing unrelated fields and skips missing state', () => {

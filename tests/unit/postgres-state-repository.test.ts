@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkflowEvent } from '../../shared/contracts';
+import { insertOutboxEvents } from '../../server/src/repositories/outbox';
 import { PostgresStateRepository } from '../../server/src/repositories/postgres-state';
 import { createStateRepository } from '../../server/src/repositories/state-repository';
 
@@ -127,6 +128,61 @@ describe('PostgresStateRepository', () => {
     const snapshotWrite = client.queries.findIndex(sql => /INSERT INTO app_state_snapshots/i.test(sql));
     expect(ledgerWrite).toBeGreaterThan(snapshotWrite);
     expect(client.queries.at(-1)).toBe('COMMIT');
+  });
+
+  it('runs a command finalizer before the snapshot transaction commits', async () => {
+    const client = new FakePostgresClient({ label: 'Bản mới nhất', values: [1] }, 4);
+    const repository = new PostgresStateRepository<TestState>({ pool: new FakePostgresPool(client) });
+
+    await repository.updateWithWorkflowEvents(
+      { label: 'Bản cũ', values: [] },
+      latest => { latest.values.push(2); },
+      [],
+      async transactionClient => { await transactionClient.query('UPDATE idempotency_keys SET response_status = 200'); },
+    );
+
+    const finalizer = client.queries.findIndex(sql => /UPDATE idempotency_keys/i.test(sql));
+    const snapshotWrite = client.queries.findIndex(sql => /INSERT INTO app_state_snapshots/i.test(sql));
+    const commit = client.queries.findIndex(sql => sql === 'COMMIT');
+    expect(finalizer).toBeGreaterThan(snapshotWrite);
+    expect(finalizer).toBeLessThan(commit);
+  });
+
+  it('commits an outbox delivery in the same transaction as the updated snapshot', async () => {
+    const client = new FakePostgresClient({ label: 'SLA trước khi đánh giá', values: [1] }, 4);
+    const repository = new PostgresStateRepository<TestState>({ pool: new FakePostgresPool(client) });
+
+    await repository.updateWithWorkflowEvents(
+      { label: 'Bản cũ', values: [] },
+      latest => { latest.values.push(2); },
+      [],
+      transactionClient => insertOutboxEvents(transactionClient, [{
+        eventType: 'SLA_REMINDER', aggregateType: 'FINDING', aggregateId: 'find-test-001',
+        payload: { findingId: 'find-test-001' }, dedupeKey: 'sla-reminder:find-test-001:2026-09-05:1',
+      }]),
+    );
+
+    const snapshotWrite = client.queries.findIndex(sql => /INSERT INTO app_state_snapshots/i.test(sql));
+    const outboxWrite = client.queries.findIndex(sql => /INSERT INTO outbox_events/i.test(sql));
+    const commit = client.queries.findIndex(sql => sql === 'COMMIT');
+    expect(outboxWrite).toBeGreaterThan(snapshotWrite);
+    expect(outboxWrite).toBeLessThan(commit);
+  });
+
+  it('rolls back the snapshot when a canonical command finalizer fails', async () => {
+    const committed = { label: 'Lịch sử giao lại trước đó', values: [1] };
+    const client = new FakePostgresClient(committed, 4);
+    const repository = new PostgresStateRepository<TestState>({ pool: new FakePostgresPool(client) });
+
+    await expect(repository.updateWithWorkflowEvents(
+      committed,
+      latest => { latest.values.push(2); },
+      [],
+      async () => { throw new Error('canonical assignment history failed'); },
+    )).rejects.toThrow('canonical assignment history failed');
+
+    expect(client.state).toEqual(committed);
+    expect(client.queries.at(-1)).toBe('ROLLBACK');
   });
 
   it('rolls back and keeps the committed snapshot when a transform fails', async () => {

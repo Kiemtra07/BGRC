@@ -167,4 +167,57 @@ describe('automatic approval routing + special-case flag', () => {
     expect(approveStar.statusCode, approveStar.body).toBe(200);
     expect(approveStar.json().workflowStatus).toBe('SUBMITTED_BRANCH_LEADER');
   });
+
+  it('lets an administrator reassign only the waiting approval stage with a recorded reason', async () => {
+    const delegate = await createBranchUser('BRANCH_LEADER', '428', 'route.delegate.428@bank.com.vn');
+    const current = await app.inject({
+      method: 'GET', url: '/api/v1/findings/find-002', headers: adminHeaders,
+    });
+    expect(current.statusCode, current.body).toBe(200);
+
+    const reassigned = await app.inject({
+      method: 'POST', url: '/api/v1/findings/find-002/approval-route/reassign', headers: adminHeaders,
+      payload: {
+        expectedVersion: current.json().version,
+        stage: 'BRANCH_LEADER',
+        assigneeUserId: delegate,
+        reason: 'Lãnh đạo phụ trách ban đầu đang nghỉ phép.',
+        validUntil: '2099-12-31T23:59:59.000Z',
+      },
+    });
+
+    expect(reassigned.statusCode, reassigned.body).toBe(200);
+    expect(reassigned.json().approvalRoute.branchLeaderUserId).toBe(delegate);
+    expect(reassigned.json().approvalRoute.assignmentHistory.at(-1)).toMatchObject({
+      stage: 'BRANCH_LEADER',
+      assignedUserId: delegate,
+      assignedByUserId: 'user-admin',
+      reason: 'Lãnh đạo phụ trách ban đầu đang nghỉ phép.',
+      validUntil: '2099-12-31T23:59:59.000Z',
+    });
+    const wrongStage = await app.inject({
+      method: 'POST', url: '/api/v1/findings/find-002/approval-route/reassign', headers: adminHeaders,
+      payload: {
+        expectedVersion: reassigned.json().version,
+        stage: 'BRANCH_CONTROLLER',
+        assigneeUserId: delegate,
+        reason: 'Không được giao lại bước đã hoàn thành.',
+      },
+    });
+    expect(wrongStage.statusCode).toBe(409);
+    expect(wrongStage.json()).toMatchObject({ code: 'APPROVAL_REASSIGNMENT_STAGE_INVALID' });
+
+    const expiredDelegation = await app.inject({
+      method: 'POST', url: '/api/v1/findings/find-002/approval-route/reassign', headers: adminHeaders,
+      payload: {
+        expectedVersion: reassigned.json().version,
+        stage: 'BRANCH_LEADER',
+        assigneeUserId: delegate,
+        reason: 'Không được phép giao lại với thời hạn đã hết.',
+        validUntil: '2000-01-01T00:00:00.000Z',
+      },
+    });
+    expect(expiredDelegation.statusCode).toBe(422);
+    expect(expiredDelegation.json()).toMatchObject({ code: 'APPROVAL_ASSIGNMENT_EXPIRY_INVALID' });
+  });
 });

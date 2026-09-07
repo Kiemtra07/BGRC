@@ -5,6 +5,7 @@ import crypto from 'crypto';
 import { Readable } from 'node:stream';
 import { JWT, OAuth2Client } from 'google-auth-library';
 import { HttpProblem } from '../http/problem';
+import { validateEvidenceContent } from '../security/evidence-content';
 
 // The Drive singleton reads configuration at module initialization. Load local .env first, but
 // keep Vitest isolated so test process variables remain authoritative.
@@ -47,7 +48,11 @@ function createLocalPreviewPdf(): Buffer {
   let document = '%PDF-1.4\n'; const offsets = [0];
   objects.forEach((body, index) => { offsets.push(Buffer.byteLength(document, 'ascii')); document += `${index + 1} 0 obj\n${body}\nendobj\n`; });
   const xrefOffset = Buffer.byteLength(document, 'ascii');
-  document += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+  // A PDF xref entry is fixed-width and must include the final flag separator. Interpolate the
+  // space so the generated Vercel bundle has no source-line trailing whitespace.
+  const xrefPadding = ' ';
+  const xrefEntries = offsets.slice(1).map(offset => `${String(offset).padStart(10, '0')} 00000 n${xrefPadding}`).join('\n');
+  document += `xref\n0 ${objects.length + 1}\n0000000000 65535 f${xrefPadding}\n${xrefEntries}\ntrailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
   return Buffer.from(document, 'ascii');
 }
 
@@ -236,6 +241,21 @@ export class GoogleDriveAdapter {
     return { driveFileId: metadata.id, driveUrl: `/api/v1/evidence/${metadata.id}/content`, sha256Checksum: params.sha256Checksum, fileSize: params.fileSize, mimeType: params.mimeType, folderPath: params.folderPath };
   }
 
+  public async verifyCompletedEvidenceContent(params: { driveFileId: string; fileName: string; mimeType: string; sha256Checksum: string }): Promise<void> {
+    this.requireGoogleMode();
+    const response = await this.driveFetch(`${DRIVE_API}/files/${encodeURIComponent(params.driveFileId)}?alt=media&supportsAllDrives=true`);
+    const bytes = Buffer.from(await response.arrayBuffer());
+    const checksum = crypto.createHash('sha256').update(bytes).digest('hex');
+    if (checksum !== params.sha256Checksum.toLowerCase()) {
+      throw new HttpProblem(409, 'EVIDENCE_CHECKSUM_MISMATCH', 'Không xác minh được nội dung minh chứng', 'Nội dung tệp Google Drive không khớp checksum của phiên tải lên.');
+    }
+    validateEvidenceContent(bytes, params.fileName, params.mimeType);
+  }
+
+  public usesGoogleDriveStorage(): boolean {
+    return this.storageMode === 'google-drive';
+  }
+
   public async uploadEvidenceFile(params: { fileName: string; fileBuffer: Buffer; mimeType: string; folderPath: string; findingId: string }): Promise<DriveUploadResult> {
     if (this.storageMode === 'google-drive') {
       if (!this.googleDriveRootFolderId || (!this.accessTokenProvider && !this.serviceAccount)) this.requireGoogleMode();
@@ -247,6 +267,44 @@ export class GoogleDriveAdapter {
     if (targetFolder !== this.localFallbackDir && !targetFolder.startsWith(`${this.localFallbackDir}${path.sep}`)) throw new HttpProblem(400, 'UNSAFE_STORAGE_PATH', 'Đường dẫn lưu trữ không hợp lệ', 'Đường dẫn thư mục minh chứng vượt ngoài thư mục local cho phép.');
     if (!fs.existsSync(targetFolder)) fs.mkdirSync(targetFolder, { recursive: true }); fs.writeFileSync(path.join(targetFolder, `${fileId}_${safeFileName}`), params.fileBuffer);
     return { driveFileId: fileId, driveUrl: `/api/v1/evidence/${fileId}/content`, sha256Checksum, fileSize, mimeType: params.mimeType, folderPath: params.folderPath };
+  }
+
+  /**
+   * Removes a file reserved for a resumable upload that was never registered as evidence.
+   * Callers must only pass an ID from their own pending-upload registry; this is deliberately
+   * not used when a user revokes an already-audited evidence record.
+   */
+  public async deleteEvidenceFile(driveFileId: string): Promise<boolean> {
+    if (!/^[A-Za-z0-9_-]{1,255}$/.test(driveFileId)) {
+      throw new HttpProblem(422, 'EVIDENCE_FILE_ID_INVALID', 'Mã tệp minh chứng không hợp lệ', 'Mã tệp không được chứa đường dẫn hoặc ký tự không hợp lệ.');
+    }
+    if (this.storageMode === 'google-drive') {
+      this.requireGoogleMode();
+      let response: Response;
+      try {
+        response = await this.fetchImpl(
+          `${DRIVE_API}/files/${encodeURIComponent(driveFileId)}?supportsAllDrives=true`,
+          { method: 'DELETE', headers: { Authorization: `Bearer ${await this.getAccessToken()}` } },
+        );
+      } catch {
+        throw new HttpProblem(503, 'GOOGLE_API_UNAVAILABLE', 'Google Drive không khả dụng', 'Không kết nối được Google Drive để dọn tệp tải dở.');
+      }
+      if (response.status === 404) return false;
+      if (!response.ok) {
+        throw new HttpProblem(503, 'GOOGLE_API_UNAVAILABLE', 'Google Drive không khả dụng', `Google Drive trả HTTP ${response.status} khi dọn tệp tải dở.`);
+      }
+      return true;
+    }
+    if (this.storageMode !== 'local') throw this.invalidModeProblem();
+    const matchingFile = (fs.readdirSync(this.localFallbackDir, { recursive: true }) as string[])
+      .find(file => path.basename(file).startsWith(`${driveFileId}_`));
+    if (!matchingFile) return false;
+    const target = path.resolve(this.localFallbackDir, matchingFile);
+    if (target !== this.localFallbackDir && !target.startsWith(`${this.localFallbackDir}${path.sep}`)) {
+      throw new HttpProblem(400, 'UNSAFE_STORAGE_PATH', 'Đường dẫn lưu trữ không hợp lệ', 'Đường dẫn tệp minh chứng vượt ngoài thư mục local cho phép.');
+    }
+    fs.unlinkSync(target);
+    return true;
   }
 
   public async getFileContentStream(driveFileId: string): Promise<{ stream: NodeJS.ReadableStream; fileName: string; mimeType: string } | null> {

@@ -4,6 +4,7 @@ export default defineConfig({
   test: {
     include: ['tests/**/*.{test,spec}.{ts,tsx}'],
     exclude: ['**/node_modules/**', '**/dist/**', '.agents/**'],
+    pool: 'threads',
     fileParallelism: false,
     passWithNoTests: false,
   },

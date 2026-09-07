@@ -247,6 +247,80 @@ describe('customer case, branch control, import and reporting', () => {
     ]));
   });
 
+  it('stages a large import with row errors and commits valid rows through durable checkpoints', async () => {
+    const headers = { 'x-user-id': 'user-internal-officer' };
+    const baseRow = {
+      channelId: 'chan-audit-bgs', campaignId: 'campaign-regular-2026', clusterName: 'Cụm Tây Nguyên',
+      branchCode: '635', branchName: 'Chi nhánh Nam Buôn Hồ', auditDate: '2024-10-31',
+      errorTitle: 'Hồ sơ nhập theo checkpoint', description: 'Dữ liệu hợp lệ để kiểm chứng import staging theo từng đợt.', exposureAmount: 1,
+    };
+    const staged = await app.inject({
+      method: 'POST', url: '/api/v1/imports/findings/stage', headers: { ...headers, 'idempotency-key': 'stage-checkpoint-import' },
+      payload: {
+        sourceFileName: 'checkpoint-import.xlsx', sourceType: 'XLSX',
+        rows: [
+          { ...baseRow, cif: 'STAGE-IMPORT-01', customerName: 'Khách hàng checkpoint một', errorCode: 'TD97.01' },
+          { ...baseRow, cif: 'STAGE-IMPORT-02', customerName: 'Khách hàng checkpoint hai', errorCode: 'TD97.02' },
+          { ...baseRow, cif: 'STAGE-IMPORT-BAD', customerName: 'Lỗi dữ liệu', errorCode: 'TD97.03', description: '' },
+        ],
+      },
+    });
+    expect(staged.statusCode, staged.body).toBe(201);
+    expect(staged.json()).toMatchObject({ totalRows: 3, validRowsCount: 2, errorRowsCount: 1, status: 'VALIDATED_WITH_ERRORS' });
+
+    const batchId = staged.json().id;
+    const checkpointOne = await app.inject({
+      method: 'POST', url: `/api/v1/imports/findings/${batchId}/commit`, headers: { ...headers, 'idempotency-key': 'checkpoint-one' },
+      payload: { maxRows: 1, allowPartial: true },
+    });
+    expect(checkpointOne.statusCode, checkpointOne.body).toBe(200);
+    expect(checkpointOne.json()).toMatchObject({ status: 'COMMITTING', committedFindingsCount: 1, remainingRows: 1 });
+
+    const checkpointOneReplay = await app.inject({
+      method: 'POST', url: `/api/v1/imports/findings/${batchId}/commit`, headers: { ...headers, 'idempotency-key': 'checkpoint-one' },
+      payload: { maxRows: 1, allowPartial: true },
+    });
+    expect(checkpointOneReplay.statusCode, checkpointOneReplay.body).toBe(200);
+    expect(checkpointOneReplay.json()).toEqual(checkpointOne.json());
+
+    const checkpointTwo = await app.inject({
+      method: 'POST', url: `/api/v1/imports/findings/${batchId}/commit`, headers: { ...headers, 'idempotency-key': 'checkpoint-two' },
+      payload: { maxRows: 1, allowPartial: true },
+    });
+    expect(checkpointTwo.statusCode, checkpointTwo.body).toBe(200);
+    expect(checkpointTwo.json()).toMatchObject({ status: 'COMMITTED', committedFindingsCount: 2, remainingRows: 0 });
+
+    const stagedRows = await app.inject({ method: 'GET', url: `/api/v1/imports/findings/${batchId}/staging`, headers });
+    expect(stagedRows.statusCode).toBe(200);
+    expect(stagedRows.json().items).toEqual(expect.arrayContaining([
+      expect.objectContaining({ rowNumber: 3, isValid: false, errors: [expect.objectContaining({ fieldKey: 'description' })] }),
+    ]));
+  });
+
+  it('fails closed when a background staged import has no durable PostgreSQL outbox', async () => {
+    const headers = { 'x-user-id': 'user-internal-officer' };
+    const staged = await app.inject({
+      method: 'POST', url: '/api/v1/imports/findings/stage', headers: { ...headers, 'idempotency-key': 'stage-background-fail-closed' },
+      payload: {
+        sourceFileName: 'background-fail-closed.xlsx', sourceType: 'XLSX',
+        rows: [{
+          channelId: 'chan-audit-bgs', campaignId: 'campaign-regular-2026', clusterName: 'Cụm Tây Nguyên',
+          branchCode: '635', branchName: 'Chi nhánh Nam Buôn Hồ', cif: 'BACKGROUND-FAIL-CLOSED-01',
+          customerName: 'Khách hàng kiểm tra outbox', errorCode: 'TD97.04', errorTitle: 'Queue nền phải bền vững',
+          description: 'Không được nhận lịch chạy nền khi PostgreSQL outbox chưa sẵn sàng.', exposureAmount: 1,
+        }],
+      },
+    });
+    expect(staged.statusCode, staged.body).toBe(201);
+
+    const queued = await app.inject({
+      method: 'POST', url: `/api/v1/imports/findings/${staged.json().id}/background`,
+      headers: { ...headers, 'idempotency-key': 'queue-background-fail-closed' }, payload: { maxRows: 250 },
+    });
+    expect(queued.statusCode, queued.body).toBe(503);
+    expect(queued.json()).toMatchObject({ code: 'BACKGROUND_IMPORT_REQUIRES_POSTGRES' });
+  });
+
   it('preserves an imported deadline and otherwise derives it from the channel SLA configuration', async () => {
     const response = await app.inject({
       method: 'POST',
@@ -298,6 +372,43 @@ describe('customer case, branch control, import and reporting', () => {
 
     expect(response.statusCode).toBe(201);
     expect(response.json()).toMatchObject({ findingCount: 1, duplicateCount: 1 });
+  });
+
+  it('does not persist any row when an atomic import batch contains a duplicate', async () => {
+    const row = {
+      channelId: 'chan-audit-bgs',
+      cif: 'ATOMIC-ROLLBACK-01',
+      customerName: 'Khách hàng kiểm tra rollback lô',
+      clusterName: 'Cụm Tây Nguyên',
+      branchCode: '635',
+      branchName: 'Chi nhánh Nam Buôn Hồ',
+      department: 'PGD Nam Buôn Hồ 1',
+      decisionNo: 'QĐ-ATOMIC-2026/01',
+      errorCode: 'TD97.02',
+      errorTitle: 'Lô nguyên tử phải rollback',
+      description: 'Dòng hợp lệ không được lưu khi cùng lô có một dòng trùng.',
+      exposureAmount: 75,
+    };
+
+    const rejected = await app.inject({
+      method: 'POST',
+      url: '/api/v1/imports/findings',
+      headers: { 'x-user-id': 'user-internal-officer' },
+      payload: { sourceFileName: 'atomic-duplicate-rows.xlsx', atomic: true, rows: [row, { ...row }] },
+    });
+
+    expect(rejected.json()).toMatchObject({ code: 'IMPORT_BATCH_DUPLICATE' });
+    expect(rejected.statusCode).toBe(409);
+
+    const retryAfterRejectedBatch = await app.inject({
+      method: 'POST',
+      url: '/api/v1/imports/findings',
+      headers: { 'x-user-id': 'user-internal-officer' },
+      payload: { sourceFileName: 'atomic-duplicate-retry.xlsx', rows: [row] },
+    });
+
+    expect(retryAfterRejectedBatch.statusCode).toBe(201);
+    expect(retryAfterRejectedBatch.json()).toMatchObject({ findingCount: 1, duplicateCount: 0 });
   });
 
   it('provides report aggregates and a CSV export for authorized users', async () => {

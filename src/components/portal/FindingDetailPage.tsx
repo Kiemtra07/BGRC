@@ -354,7 +354,7 @@ export const FindingDetailPage: React.FC<Props> = ({
               <div className="flex gap-2 overflow-x-auto border-b border-rule bg-slate-50 p-2">
                 {finding.evidences.map(evidence => <button key={evidence.id} onClick={() => setSelectedEvidence(evidence)} className={`flex min-h-11 min-w-[220px] items-center gap-2 rounded-xl border p-2 text-left text-[11px] ${selectedEvidence?.id === evidence.id ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500/10' : 'border-rule bg-white hover:bg-slate-50'}`}>
                   <EvidenceIcon evidence={evidence} />
-                  <span className="min-w-0"><span className="block truncate font-bold text-slate-800">{evidence.fileName}</span><span className="mt-0.5 block text-[9px] text-slate-500">{formatBytes(evidence.fileSize)}</span></span>
+                  <span className="min-w-0"><span className="block truncate font-bold text-slate-800">{evidence.fileName}</span><span className="mt-0.5 block text-[9px] text-slate-500">{evidence.status === 'QUARANTINED' ? 'Đang chờ quét an toàn' : evidence.scanResult ? `Đã quét · ${evidence.scanResult.provider ?? 'Scanner'}` : formatBytes(evidence.fileSize)}</span></span>
                 </button>)}
               </div>
               {pendingEvidenceRemovalId === selectedEvidence?.id && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
@@ -366,7 +366,15 @@ export const FindingDetailPage: React.FC<Props> = ({
                   </button>
                 </span>
               </div>}
-              <div className="min-h-0 flex-1 bg-slate-100">{selectedEvidence && <EvidenceViewer evidence={selectedEvidence} />}</div>
+              {selectedEvidence?.scanResult && <div className={`border-b px-3 py-2 text-[11px] ${selectedEvidence.scanResult.verdict === 'CLEAN' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-red-200 bg-red-50 text-red-900'}`}>
+                <strong>Kết quả quét: {selectedEvidence.scanResult.verdict === 'CLEAN' ? 'An toàn' : 'Bị từ chối'}</strong>
+                <span className="ml-1">· {selectedEvidence.scanResult.provider ?? 'Scanner tích hợp'} · {new Date(selectedEvidence.scanResult.scannedAt).toLocaleString('vi-VN')}</span>
+                {selectedEvidence.scanResult.scanReference && <span className="ml-1">· Mã {selectedEvidence.scanResult.scanReference}</span>}
+                {selectedEvidence.scanResult.detail && <span className="ml-1">· {selectedEvidence.scanResult.detail}</span>}
+              </div>}
+              <div className="min-h-0 flex-1 bg-slate-100">{selectedEvidence && (selectedEvidence.status === 'AVAILABLE'
+                ? <EvidenceViewer evidence={selectedEvidence} />
+                : <div className="flex h-full min-h-[360px] flex-col items-center justify-center gap-2 p-8 text-center text-xs text-slate-600"><ShieldCheck className="h-8 w-8 text-amber-600" /><strong>Tệp đang chờ quét an toàn</strong><span>{selectedEvidence.notes || 'Tệp chưa thể xem hoặc dùng để gửi duyệt.'}</span></div>)}</div>
             </> : <div className="flex min-h-[480px] flex-1 flex-col items-center justify-center p-8 text-center text-xs text-slate-500"><Paperclip className="mb-3 h-8 w-8 text-slate-300" />Chưa có bằng chứng cho mã lỗi này.</div>}
           </section>}
 

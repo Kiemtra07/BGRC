@@ -15,6 +15,7 @@ import { LoginPage } from './components/auth/LoginPage';
 import { CodeChip, EmptyHint, SlaPill, WorkflowPill } from './components/common/StatusPill';
 import { QueueSearchCriteria, QueueSearchPanel, criteriaToQuery, emptySearchCriteria } from './components/portal/QueueSearchPanel';
 import { ScopeSummaryTabs, SummaryScope } from './components/portal/ScopeSummaryTabs';
+import { clearStagedImportSession } from './services/staged-import-retry';
 
 const AdminPortal = lazy(() => import('./components/admin/AdminPortal').then(module => ({ default: module.AdminPortal })));
 const FastDataIngestion = lazy(() => import('./components/internal/FastDataIngestion').then(module => ({ default: module.FastDataIngestion })));
@@ -49,6 +50,8 @@ export const App: React.FC = () => {
   const [findings, setFindings] = useState<Finding[]>([]);
   const [findingsTotal, setFindingsTotal] = useState(0);
   const [findingsPage, setFindingsPage] = useState(1);
+  const [findingsNextCursor, setFindingsNextCursor] = useState<string | undefined>();
+  const [hasMoreFindings, setHasMoreFindings] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   /** Thẻ số toàn phạm vi của người dùng — không phụ thuộc điều kiện tìm kiếm. */
   const [dashboard, setDashboard] = useState<DashboardSummary | null>(null);
@@ -148,6 +151,8 @@ export const App: React.FC = () => {
       setFindings(findingsResult.items);
       setFindingsTotal(findingsResult.total);
       setFindingsPage(1);
+      setFindingsNextCursor(findingsResult.nextCursor);
+      setHasMoreFindings(findingsResult.hasMore);
       setCampaignDashboard(campaignSummary);
       setCriteria(next);
       setHasSearched(true);
@@ -194,7 +199,12 @@ export const App: React.FC = () => {
     try {
       setLoadingMore(true);
       const next = findingsPage + 1;
-      const result = await api.getFindings({ ...criteriaToQuery(criteria), page: String(next), limit: String(FINDINGS_PAGE_SIZE) });
+      const result = await api.getFindings({
+        ...criteriaToQuery(criteria),
+        page: String(next),
+        limit: String(FINDINGS_PAGE_SIZE),
+        ...(findingsNextCursor ? { cursor: findingsNextCursor } : {}),
+      });
       if (token !== searchToken.current) return;
       setFindings(previous => {
         const seen = new Set(previous.map(item => item.id));
@@ -202,6 +212,8 @@ export const App: React.FC = () => {
       });
       setFindingsTotal(result.total);
       setFindingsPage(next);
+      setFindingsNextCursor(result.nextCursor);
+      setHasMoreFindings(result.hasMore);
       rememberFacetValues(result.items);
     } catch (reason) {
       if (token !== searchToken.current) return;
@@ -311,6 +323,7 @@ export const App: React.FC = () => {
     try {
       setBootstrapping(true);
       await api.logout();
+      if (currentUser) clearStagedImportSession(sessionStorage, currentUser.id);
       setCurrentUser(null);
       setAdminCatalogLoaded(false);
       setUsers([]);
@@ -547,7 +560,7 @@ export const App: React.FC = () => {
                     <h1 className="truncate text-base font-black tracking-tight text-slate-900">{activeChannel?.name || 'Hồ sơ khách hàng'}</h1>
                     <p data-numeric className="mt-0.5 truncate text-[11px] text-slate-500">
                       {hasSearched
-                        ? `${customerCases.length} khách hàng · ${visibleFindings.length} mã lỗi đang hiển thị${findings.length < findingsTotal ? ` · đã tải ${findings.length}/${findingsTotal}` : ''}`
+                        ? `${customerCases.length} khách hàng · ${visibleFindings.length} mã lỗi đang hiển thị${hasMoreFindings ? ` · đã tải ${findings.length}/${findingsTotal}` : ''}`
                         : 'Chọn chuyên đề và điều kiện để bắt đầu'}
                     </p>
                   </div>
@@ -658,7 +671,7 @@ export const App: React.FC = () => {
             </>}
 
             {/* Says plainly that more exist rather than stopping at one page in silence. */}
-            {findings.length < findingsTotal && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-rule bg-slate-50/60 px-4 py-3">
+            {hasMoreFindings && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-rule bg-slate-50/60 px-4 py-3">
               {/* Chip trạng thái chỉ chạy trên phần đã tải, nên khi mới tải một phần thì con số trên
                   chip là câu trả lời một phần. Nói thẳng ra thay vì để nó trông như kết quả đầy đủ. */}
               <span data-numeric className="text-[11px] font-semibold text-slate-600">
@@ -676,7 +689,7 @@ export const App: React.FC = () => {
         </>}
       </main>
 
-      <WebFormFindingModal isOpen={createOpen} currentUser={currentUser ?? undefined} channels={channels.filter(channel => channel.isActive)} campaigns={campaigns} initialCampaignId={criteria.campaignId} orgUnits={orgUnits} onClose={() => setCreateOpen(false)} onSubmit={async (dto: WebFormFindingDTO | WebFormFindingDTO[]) => { const rows = Array.isArray(dto) ? dto : [dto]; for (const row of rows) await api.createFinding(row); await refreshScopedData(); setCreateOpen(false); }} />
+      <WebFormFindingModal isOpen={createOpen} currentUser={currentUser ?? undefined} channels={channels.filter(channel => channel.isActive)} campaigns={campaigns} initialCampaignId={criteria.campaignId} orgUnits={orgUnits} onClose={() => setCreateOpen(false)} onConflict={refreshScopedData} onSubmit={async (dto: WebFormFindingDTO | WebFormFindingDTO[]) => { const rows = Array.isArray(dto) ? dto : [dto]; await api.createFindings(rows); await refreshScopedData(); setCreateOpen(false); }} />
     </div>
   );
 };

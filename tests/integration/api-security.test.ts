@@ -18,6 +18,23 @@ describe('API security boundaries', () => {
       status: 401,
       code: 'AUTH_REQUIRED',
     });
+    expect(health.headers['x-request-id']).toBeTruthy();
+  });
+
+  it('exposes bounded operational metrics only to administrators', async () => {
+    const [adminResponse, branchResponse] = await Promise.all([
+      app.inject({ method: 'GET', url: '/api/v1/admin/operational-metrics', headers: adminHeaders }),
+      app.inject({ method: 'GET', url: '/api/v1/admin/operational-metrics', headers: { 'x-user-id': 'user-branch-635' } }),
+    ]);
+    expect(adminResponse.statusCode).toBe(200);
+    expect(adminResponse.json()).toMatchObject({
+      windowSize: expect.any(Number),
+      latencyMs: { p50: expect.any(Number), p95: expect.any(Number) },
+      statusCounts: { conflict409: expect.any(Number), throttled429: expect.any(Number), serverError5xx: expect.any(Number) },
+      outbox: { durable: false },
+      sla: { lastSuccessfulRunAt: null },
+    });
+    expect(branchResponse.statusCode).toBe(403);
   });
 
   it('rejects an unknown x-user-id instead of silently becoming admin', async () => {

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SlaEvaluationWorker } from '../../server/src/worker/sla-worker';
+import { addSlaDays, SlaEvaluationWorker } from '../../server/src/worker/sla-worker';
 import { Finding } from '../../shared/contracts';
 
 describe('SLA Worker Invariants (P0-06)', () => {
@@ -51,11 +51,43 @@ describe('SLA Worker Invariants (P0-06)', () => {
     expect(result.isOverdue).toBe(false);
   });
 
+  it('uses the report channel reminder horizon instead of a hard-coded three-day window', () => {
+    const result = worker.evaluateFindingSla(baseFinding, new Date('2026-08-28T08:30:00.000Z'), 1);
+
+    expect(result.daysRemaining).toBe(2);
+    expect(result.slaStatus).toBe('ON_TRACK');
+  });
+
   it('compares SLA by calendar date instead of the worker execution hour', () => {
     const result = worker.evaluateFindingSla(baseFinding, new Date('2026-08-27T00:01:00+07:00'));
 
     expect(result.daysRemaining).toBe(3);
     expect(result.slaStatus).toBe('DUE_SOON');
+  });
+
+  it('derives business-day deadlines across a weekend and a configured holiday', () => {
+    const calendar = { businessDaysOnly: true, holidayDates: ['2026-09-02'] };
+
+    expect(addSlaDays('2026-08-28', 1, calendar)).toBe('2026-08-31');
+    expect(addSlaDays('2026-08-31', 2, calendar)).toBe('2026-09-03');
+  });
+
+  it('uses the same business calendar for due-soon and overdue evaluation', () => {
+    const calendar = { businessDaysOnly: true, holidayDates: ['2026-09-02'] };
+    const finding = { ...baseFinding, deadlineDate: '2026-09-03' };
+
+    expect(worker.evaluateFindingSla(finding, new Date('2026-08-31T08:30:00+07:00'), 2, calendar))
+      .toMatchObject({ daysRemaining: 2, slaStatus: 'DUE_SOON', isOverdue: false });
+    expect(worker.evaluateFindingSla(finding, new Date('2026-09-04T08:30:00+07:00'), 2, calendar))
+      .toMatchObject({ daysRemaining: -1, slaStatus: 'OVERDUE', isOverdue: true });
+  });
+
+  it('moves an explicit non-working deadline to the next business day for SLA evaluation', () => {
+    const calendar = { businessDaysOnly: true, holidayDates: [] };
+    const finding = { ...baseFinding, deadlineDate: '2026-08-30' }; // Sunday
+
+    expect(worker.evaluateFindingSla(finding, new Date('2026-08-29T08:30:00+07:00'), 1, calendar))
+      .toMatchObject({ daysRemaining: 1, slaStatus: 'DUE_SOON', isOverdue: false });
   });
 
   it('Evaluates OVERDUE when current date is past deadline', () => {
