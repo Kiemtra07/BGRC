@@ -17,7 +17,7 @@ Cột **BB** = bắt buộc ở production. Đánh dấu **Secret** cho các bi�
 | `NODE_ENV` | ✅ | `production` | |
 | `DATA_STORE_MODE` | ✅ | `postgres` | Bắt buộc để dùng Supabase, không dùng local-json |
 | `STATE_SNAPSHOT_ID` | – | `primary` | Mặc định đã là `primary`; chỉ đổi nếu chạy nhiều môi trường chung DB |
-| `CORS_ALLOWED_ORIGINS` | ✅ | `https://bgrc.vercel.app` | Danh sách origin frontend, phẩy ngăn cách |
+| `CORS_ALLOWED_ORIGINS` | ✅ | `https://bgrc.vercel.app` | Danh sách origin frontend, phẩy ngăn cách. Chỉ cần cho origin khác domain API; origin trùng domain của chính request luôn được chấp nhận nên bản preview Vercel không bị chặn 403 `CSRF_ORIGIN_REJECTED` |
 | `VITE_API_BASE_URL` | ✅ | `/api` | Frontend gọi API cùng domain qua Vercel |
 | `REPORT_EXPORT_MAX_ROWS` | – | vd `50000` | Trần dòng khi xuất báo cáo (tùy chọn) |
 

@@ -5845,10 +5845,14 @@ function hasBrowserSessionCookie(request) {
     cookieValue(request, "audit_bgs_session") || cookieValue(request, "audit_bgs_supabase_access") || cookieValue(request, "audit_bgs_supabase_refresh")
   );
 }
+function isTrustedWriteOrigin(request, origin) {
+  if (allowedOrigins.includes(origin)) return true;
+  return origin === `${request.protocol}://${request.host}`;
+}
 function assertTrustedOriginForCookieWrite(request) {
   if (!unsafeHttpMethods.has(request.method) || !hasBrowserSessionCookie(request)) return;
   const origin = request.headers.origin;
-  if (typeof origin !== "string" || !allowedOrigins.includes(origin)) {
+  if (typeof origin !== "string" || !isTrustedWriteOrigin(request, origin)) {
     throw new HttpProblem(
       403,
       "CSRF_ORIGIN_REJECTED",

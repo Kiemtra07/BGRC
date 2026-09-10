@@ -135,6 +135,53 @@ describe('local credential authentication', () => {
     expect(stillAuthenticated.statusCode).toBe(200);
   });
 
+  it('accepts a same-origin state change from a host outside CORS_ALLOWED_ORIGINS', async () => {
+    // Giao diện và API dùng chung tên miền trên Vercel, và mỗi bản preview lại có tên miền riêng.
+    // Yêu cầu xuất phát từ chính trang đó không phải CSRF, kể cả khi biến môi trường chưa liệt kê.
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { username: 'cbht635', password: 'BranchInput@2026' },
+    });
+    const session = login.cookies.find(item => item.name === 'audit_bgs_session')!;
+    const csrf = login.cookies.find(item => item.name === 'audit_bgs_csrf')!;
+
+    const logout = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/logout',
+      headers: {
+        cookie: `audit_bgs_session=${session.value}; audit_bgs_csrf=${csrf.value}`,
+        host: 'bgrc.example.app',
+        origin: 'http://bgrc.example.app',
+        'x-csrf-token': csrf.value,
+      },
+    });
+    expect(logout.statusCode).toBe(204);
+  });
+
+  it('still rejects a write whose origin does not match the request host', async () => {
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/login',
+      payload: { username: 'cbht635', password: 'BranchInput@2026' },
+    });
+    const session = login.cookies.find(item => item.name === 'audit_bgs_session')!;
+    const csrf = login.cookies.find(item => item.name === 'audit_bgs_csrf')!;
+
+    const logout = await app.inject({
+      method: 'POST',
+      url: '/api/v1/auth/logout',
+      headers: {
+        cookie: `audit_bgs_session=${session.value}; audit_bgs_csrf=${csrf.value}`,
+        host: 'bgrc.example.app',
+        origin: 'http://attacker.example.app',
+        'x-csrf-token': csrf.value,
+      },
+    });
+    expect(logout.statusCode).toBe(403);
+    expect(logout.json()).toMatchObject({ code: 'CSRF_ORIGIN_REJECTED' });
+  });
+
   it('requires a matching CSRF token for an allowed-origin session-cookie write', async () => {
     const login = await app.inject({
       method: 'POST',

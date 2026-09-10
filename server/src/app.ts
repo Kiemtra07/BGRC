@@ -325,11 +325,24 @@ function hasBrowserSessionCookie(request: FastifyRequest): boolean {
   );
 }
 
+/**
+ * Trên Vercel giao diện và API dùng chung một tên miền (`/api/*` được rewrite về function) và mỗi
+ * bản preview lại mang một tên miền khác. Nếu chỉ đối chiếu với CORS_ALLOWED_ORIGINS thì chỉ cần
+ * biến môi trường thiếu đúng tên miền đang chạy là mọi thao tác ghi từ trình duyệt bị chặn 403,
+ * kể cả khi yêu cầu xuất phát từ chính trang web đó. Một Origin trùng host của chính yêu cầu là
+ * same-origin nên không thể là nguồn CSRF: trình duyệt không cho trang khác giả mạo Origin, còn
+ * host chỉ lấy theo x-forwarded-host khi trustProxy đã bật (Vercel/TRUST_PROXY).
+ */
+function isTrustedWriteOrigin(request: FastifyRequest, origin: string): boolean {
+  if (allowedOrigins.includes(origin)) return true;
+  return origin === `${request.protocol}://${request.host}`;
+}
+
 function assertTrustedOriginForCookieWrite(request: FastifyRequest): void {
   if (!unsafeHttpMethods.has(request.method) || !hasBrowserSessionCookie(request)) return;
 
   const origin = request.headers.origin;
-  if (typeof origin !== 'string' || !allowedOrigins.includes(origin)) {
+  if (typeof origin !== 'string' || !isTrustedWriteOrigin(request, origin)) {
     throw new HttpProblem(
       403,
       'CSRF_ORIGIN_REJECTED',
