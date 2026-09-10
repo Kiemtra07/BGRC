@@ -95,6 +95,160 @@ table,
   animation: risk-attention 240ms ease-out;
 }
 
+/* ---------------------------------------------------------------------------
+   Khung màn hình đăng nhập.
+   Phải khai báo ở đây chứ không dùng `h-screen h-[100dvh]`: hai utility đó cùng
+   mức đặc hiệu, mà Tailwind lại phát `h-[100dvh]` TRƯỚC `h-screen`, nên `100vh`
+   luôn thắng. Trên di động `100vh` là chiều cao khi đã ẩn thanh địa chỉ, tức
+   khung cao hơn phần nhìn thấy và trang sinh thanh cuộn. Viết hai dòng trong
+   cùng một rule thì thứ tự do mình quyết định, còn trình duyệt không hỗ trợ
+   `dvh` sẽ bỏ dòng sau và rơi về `100vh`.
+   --------------------------------------------------------------------------- */
+.login-root {
+  height: 100vh;
+  height: 100dvh;
+}
+
+/* ---------------------------------------------------------------------------
+   Bảng minh hoạ bên trái màn hình đăng nhập.
+   Chuyển động ở đây chỉ để trang đăng nhập không đứng chết, nên mọi hiệu ứng
+   đều chậm, biên độ nhỏ và không có gì nhấp nháy cạnh ô nhập liệu. Các vòng lặp
+   đều bắt đầu và kết thúc ở cùng một khung hình để khi người dùng bật
+   `prefers-reduced-motion` (khối bên dưới ép mọi animation về 0.01ms) hình vẫn
+   dừng đúng ở trạng thái tĩnh hợp lệ.
+   --------------------------------------------------------------------------- */
+@keyframes login-grid-drift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(32px, 32px, 0); }
+}
+
+@keyframes login-aurora {
+  0%, 100% { transform: translate3d(0, 0, 0) scale(1); opacity: 0.55; }
+  50% { transform: translate3d(22px, -18px, 0) scale(1.14); opacity: 0.85; }
+}
+
+/* Độ dài đường gấp khúc trong SVG ≈ 580 đơn vị. */
+@keyframes login-draw {
+  from { stroke-dashoffset: 580; }
+  to { stroke-dashoffset: 0; }
+}
+
+@keyframes login-comet {
+  from { stroke-dashoffset: 580; }
+  to { stroke-dashoffset: -580; }
+}
+
+@keyframes login-node-in {
+  from { opacity: 0; transform: scale(0.4); }
+  to { opacity: 1; transform: none; }
+}
+
+@keyframes login-node-pulse {
+  0% { opacity: 0.5; transform: scale(0.7); }
+  70%, 100% { opacity: 0; transform: scale(2.4); }
+}
+
+@keyframes login-rise {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: none; }
+}
+
+/* `will-change` giữ ba lớp nền này ở layer riêng: vầng sáng dùng blur rất rộng,
+   để trình duyệt vẽ lại từng khung thì một trang đăng nhập đứng yên vẫn ngốn
+   CPU trên máy yếu. */
+.login-grid {
+  animation: login-grid-drift 26s linear infinite;
+  will-change: transform;
+}
+
+.login-aurora {
+  animation: login-aurora 17s ease-in-out infinite;
+  will-change: transform, opacity;
+}
+
+.login-aurora-slow {
+  animation: login-aurora 24s ease-in-out infinite reverse;
+  will-change: transform, opacity;
+}
+
+.login-draw {
+  stroke-dasharray: 580;
+  stroke-dashoffset: 580;
+  animation: login-draw 1900ms cubic-bezier(0.22, 0.8, 0.24, 1) 200ms forwards;
+}
+
+.login-comet {
+  stroke-dasharray: 14 566;
+  stroke-dashoffset: 580;
+  animation: login-comet 6.5s linear 2.1s infinite;
+}
+
+/* `fill-box` để circle co giãn quanh tâm của chính nó thay vì gốc toạ độ SVG. */
+.login-node {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: login-node-in 520ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+}
+
+.login-node-pulse {
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: login-node-pulse 2800ms ease-out 2400ms infinite;
+}
+
+.login-rise {
+  opacity: 0;
+  animation: login-rise 640ms cubic-bezier(0.22, 0.8, 0.24, 1) forwards;
+}
+
+/* ---------------------------------------------------------------------------
+   Màn hình đăng nhập trên khung nhìn thấp.
+   Trang đăng nhập phải gọn trong đúng một màn hình, không đẻ thanh cuộn. Khi
+   chiều cao co lại (điện thoại xoay ngang, cửa sổ bị kéo dẹt) thì các khoảng
+   cách rộng của breakpoint sm/lg lại chính là thứ đẩy khung nhập ra ngoài, nên
+   ở đây ép mọi thứ về mức gọn theo chiều cao — điều mà tiền tố theo chiều rộng
+   của Tailwind không diễn đạt được. Các quy tắc nằm sau `@tailwind utilities`
+   nên thắng ở cùng mức đặc hiệu.
+   --------------------------------------------------------------------------- */
+@media (max-height: 620px) {
+  /* Bọc trong `.login-shell` để hai lớp chọn thắng được utility một lớp của
+     Tailwind (`sm:p-8`, `sm:min-h-14`…) bất kể thứ tự file. */
+  .login-shell .login-panel { padding: 0.875rem 1.25rem; }
+  .login-shell .login-panel-copy { margin-top: 0.5rem; padding-top: 0; }
+  .login-shell .login-panel-highlight { min-height: 0; }
+  .login-shell .login-panel-lede,
+  .login-shell .login-panel-detail,
+  .login-shell .login-panel-dots { display: none; }
+  .login-shell .login-form-pane { padding-top: 0.625rem; padding-bottom: 0.625rem; }
+  .login-shell .login-form-head { margin-bottom: 0.25rem; }
+  .login-shell .login-form-title { font-size: 1.25rem; }
+  .login-shell .login-form { gap: 0.625rem; }
+  /* 44px vẫn đạt kích thước chạm tối thiểu, dưới mức đó thì không rút nữa. */
+  .login-shell .login-field,
+  .login-shell .login-submit { min-height: 2.75rem; }
+}
+
+@media (max-height: 620px) and (max-width: 1023px) {
+  .login-shell .login-panel-title { font-size: 1.25rem; line-height: 1.2; }
+}
+
+/* Điện thoại cao: bảng minh hoạ giãn lấy một phần chiều cao, nếu không khung
+   nhập nằm giữa một mảng trắng rất lớn. Ngưỡng 760px để máy thấp hơn không bị
+   lấy mất phần chiều cao mà khung nhập đang cần. */
+@media (min-height: 760px) and (max-width: 1023px) {
+  .login-shell .login-panel { min-height: 38dvh; }
+}
+
+/* Thấp mà rộng = điện thoại xoay ngang: xếp hai cột như desktop, xếp dọc thì
+   bảng minh hoạ chiếm gần hết chiều cao và khung nhập chỉ còn vài chục pixel. */
+@media (max-height: 620px) and (min-width: 640px) {
+  .login-shell {
+    grid-template-columns: minmax(0, 1fr) minmax(320px, 0.9fr);
+    grid-template-rows: minmax(0, 1fr);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
