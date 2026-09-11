@@ -16,13 +16,37 @@ const PANEL_HIGHLIGHTS = [
 
 const HIGHLIGHT_INTERVAL_MS = 5_200;
 
-/** Các nút trên đường gấp khúc, hiện dần theo đúng thứ tự nét vẽ chạy qua. */
+/** Đường gấp khúc của biểu đồ; khai báo một lần để nét mờ, nét sáng, vệt chạy
+    và mảng nền phía dưới không bao giờ lệch nhau khi chỉnh hình. */
+const PANEL_LINE = 'M46 318 144 210 232 264 324 118 466 188';
+/** Nối tiếp đường trên rồi đóng xuống đáy — mảng màu dưới đường biểu đồ. */
+const PANEL_AREA = `${PANEL_LINE} L466 352 L46 352 Z`;
+
+/** Các nút trên đường gấp khúc, hiện dần theo đúng thứ tự nét vẽ chạy qua.
+    `swell` là mức phồng lúc nhàn rỗi, `float` là chu kỳ thở — mỗi nút một con
+    số lệch nhau để cả cụm không phập phồng cùng nhịp như một khối. */
 const PANEL_NODES = [
-  { cx: 46, cy: 318, r: 7, fill: '#0b3f44', stroke: true, delay: 400 },
-  { cx: 144, cy: 210, r: 8, fill: '#bcebe5', stroke: false, delay: 780 },
-  { cx: 232, cy: 264, r: 6, fill: '#e8b865', stroke: false, delay: 1080 },
-  { cx: 324, cy: 118, r: 9, fill: '#0b3f44', stroke: true, delay: 1420 },
-  { cx: 466, cy: 188, r: 7, fill: '#bcebe5', stroke: false, delay: 1760 },
+  { cx: 46, cy: 318, r: 7, fill: '#0b3f44', stroke: true, delay: 400, swell: 1.05, float: 7600 },
+  { cx: 144, cy: 210, r: 8, fill: '#bcebe5', stroke: false, delay: 780, swell: 1.08, float: 6400 },
+  { cx: 232, cy: 264, r: 6, fill: '#e8b865', stroke: false, delay: 1080, swell: 1.12, float: 8200 },
+  { cx: 324, cy: 118, r: 9, fill: '#0b3f44', stroke: true, delay: 1420, swell: 1.07, float: 7000 },
+  { cx: 466, cy: 188, r: 7, fill: '#bcebe5', stroke: false, delay: 1760, swell: 1.09, float: 8800 },
+] as const;
+
+/** Vòng sáng lan ra từ ba chốt: hổ phách (đang chờ xử lý) rõ nhất, còn đỉnh và
+    điểm cuối chỉ loé rất mờ. Chu kỳ lệch nhau để không có hai vòng nở cùng lúc. */
+const PANEL_HALOS = [
+  { cx: 232, cy: 264, r: 6, color: '#e8b865', opacity: 0.55, duration: 3600, delay: 2400 },
+  { cx: 466, cy: 188, r: 7, color: '#bcebe5', opacity: 0.32, duration: 5600, delay: 3600 },
+  { cx: 324, cy: 118, r: 9, color: '#bcebe5', opacity: 0.26, duration: 6800, delay: 5200 },
+] as const;
+
+/** Bụi sáng trôi lên trong nền bảng — chỉ đủ để mảng tối không phẳng lì. */
+const PANEL_MOTES = [
+  { cx: 96, cy: 300, r: 1.6, duration: 14000, delay: 600 },
+  { cx: 208, cy: 172, r: 1.2, duration: 17000, delay: 3200 },
+  { cx: 372, cy: 246, r: 1.8, duration: 15500, delay: 6400 },
+  { cx: 438, cy: 126, r: 1.2, duration: 19000, delay: 9000 },
 ] as const;
 
 function usePrefersReducedMotion(): boolean {
@@ -106,17 +130,64 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onForgotPassword 
           <div aria-hidden="true" className="login-aurora-slow pointer-events-none absolute -bottom-28 right-0 h-80 w-80 rounded-full bg-amber-300/10 blur-3xl" />
 
           <svg aria-hidden="true" viewBox="0 0 520 420" className="pointer-events-none absolute -right-16 top-4 h-[260px] w-[322px] opacity-60 text-teal-100/10 sm:opacity-100 sm:-right-10 sm:top-16 sm:h-[420px] sm:w-[520px] lg:right-0 lg:top-28">
+            <defs>
+              {/* Mảng dưới đường tắt hẳn trước khi chạm đáy để không phủ mờ chữ tiêu đề. */}
+              <linearGradient id="login-area-fill" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="#bcebe5" stopOpacity="0.16" />
+                <stop offset="62%" stopColor="#bcebe5" stopOpacity="0.05" />
+                <stop offset="100%" stopColor="#bcebe5" stopOpacity="0" />
+              </linearGradient>
+              {/* Hai cạnh dọc khép mảng lại (ở x=46 và x=466) sẽ thành vệt thẳng lộ liễu
+                  nếu để nguyên; mặt nạ ngang này làm chúng tan dần vào nền. */}
+              <linearGradient id="login-area-edges" x1="0" y1="0" x2="1" y2="0">
+                <stop offset="0%" stopColor="#000" />
+                <stop offset="16%" stopColor="#fff" />
+                <stop offset="80%" stopColor="#fff" />
+                <stop offset="100%" stopColor="#000" />
+              </linearGradient>
+              <mask id="login-area-mask" maskUnits="userSpaceOnUse" x="0" y="0" width="520" height="420">
+                <rect x="0" y="0" width="520" height="420" fill="url(#login-area-edges)" />
+              </mask>
+            </defs>
+
+            <path className="login-area" d={PANEL_AREA} fill="url(#login-area-fill)" stroke="none" mask="url(#login-area-mask)" />
+
             {/* Nét mờ nằm dưới để đường đi vẫn đọc được trước khi nét sáng vẽ xong. */}
-            <path d="M46 318 144 210 232 264 324 118 466 188" fill="none" stroke="currentColor" strokeWidth="1.5" />
-            <path d="M144 210 292 246 466 188M232 264 324 118" fill="none" stroke="currentColor" strokeDasharray="5 8" strokeWidth="1" />
-            <path className="login-draw" d="M46 318 144 210 232 264 324 118 466 188" fill="none" stroke="#bcebe5" strokeOpacity="0.38" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            {/* Vệt sáng chạy dọc đường đi — một hồ sơ đang đi qua các chốt xử lý. */}
-            <path className="login-comet" d="M46 318 144 210 232 264 324 118 466 188" fill="none" stroke="#e8f7f4" strokeOpacity="0.7" strokeWidth="3" strokeLinecap="round" />
+            <path d={PANEL_LINE} fill="none" stroke="currentColor" strokeWidth="1.5" />
+            {/* Đường dự phóng: nét đứt trôi chậm về phía điểm đến. */}
+            <path className="login-dash-flow" d="M144 210 292 246 466 188M232 264 324 118" fill="none" stroke="currentColor" strokeDasharray="5 8" strokeWidth="1" />
+            {/* Quầng mờ dưới nét sáng, tĩnh — chỉ để đường có chiều sâu. */}
+            <path className="login-line-glow" d={PANEL_LINE} fill="none" stroke="#bcebe5" strokeOpacity="0.16" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
+            <path className="login-draw" d={PANEL_LINE} fill="none" stroke="#bcebe5" strokeOpacity="0.38" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+            {/* Hai vệt sáng lệch nhịp chạy dọc đường đi — hồ sơ đang qua các chốt xử lý. */}
+            <path className="login-comet" d={PANEL_LINE} fill="none" stroke="#e8f7f4" strokeOpacity="0.7" strokeWidth="3" strokeLinecap="round" />
+            <path className="login-comet-trail" d={PANEL_LINE} fill="none" stroke="#e8b865" strokeOpacity="0.45" strokeWidth="2" strokeLinecap="round" />
+
+            {PANEL_HALOS.map(halo => (
+              <circle
+                key={`halo-${halo.cx}`}
+                className="login-halo"
+                style={{ animationDuration: `${halo.duration}ms`, animationDelay: `${halo.delay}ms`, opacity: halo.opacity }}
+                cx={halo.cx}
+                cy={halo.cy}
+                r={halo.r}
+                fill="none"
+                stroke={halo.color}
+                strokeWidth="1.5"
+              />
+            ))}
+
             {PANEL_NODES.map(node => (
               <circle
                 key={`${node.cx}-${node.cy}`}
                 className="login-node"
-                style={{ animationDelay: `${node.delay}ms` }}
+                style={{
+                  // Hai animation nối nhau: bung vào rồi thở nhẹ. Nhịp thở bắt đầu sau
+                  // khi nhịp bung đã kết thúc nên hai transform không giẫm lên nhau.
+                  animationDelay: `${node.delay}ms, ${node.delay + 900}ms`,
+                  animationDuration: `520ms, ${node.float}ms`,
+                  '--login-node-swell': node.swell,
+                } as React.CSSProperties}
                 cx={node.cx}
                 cy={node.cy}
                 r={node.r}
@@ -125,8 +196,18 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onForgotPassword 
                 strokeWidth={node.stroke ? 2 : undefined}
               />
             ))}
-            {/* Chốt đang chờ xử lý (màu hổ phách) là điểm duy nhất còn nhấp nhẹ. */}
-            <circle className="login-node-pulse" cx="232" cy="264" r="6" fill="none" stroke="#e8b865" strokeWidth="1.5" />
+
+            {PANEL_MOTES.map(mote => (
+              <circle
+                key={`mote-${mote.cx}`}
+                className="login-mote"
+                style={{ animationDuration: `${mote.duration}ms`, animationDelay: `${mote.delay}ms` }}
+                cx={mote.cx}
+                cy={mote.cy}
+                r={mote.r}
+                fill="#bcebe5"
+              />
+            ))}
           </svg>
 
           <div className="relative flex items-center gap-3">

@@ -143,9 +143,42 @@ table,
   to { opacity: 1; transform: none; }
 }
 
-@keyframes login-node-pulse {
-  0% { opacity: 0.5; transform: scale(0.7); }
-  70%, 100% { opacity: 0; transform: scale(2.4); }
+/* Nhịp thở của từng nút. Cố tình dùng `scale` chứ không dịch chuyển: nút phải
+   luôn nằm đúng đỉnh gấp khúc, dịch đi vài pixel là nó rời khỏi đường. Biên độ
+   lấy từ `--login-node-swell` nên mỗi nút phồng lên một mức khác nhau. */
+@keyframes login-node-float {
+  0%, 100% { transform: scale(1); }
+  50% { transform: scale(var(--login-node-swell, 1.06)); }
+}
+
+/* Vòng sáng nở ra rồi tắt; `opacity` gốc nằm ở inline style của từng vòng nên
+   keyframe chỉ nhân thêm qua `scale` và mức mờ tương đối. */
+@keyframes login-halo {
+  0% { transform: scale(0.8); }
+  8% { transform: scale(0.95); }
+  70%, 100% { transform: scale(2.2); }
+}
+
+@keyframes login-halo-fade {
+  0% { stroke-opacity: 0.9; }
+  70%, 100% { stroke-opacity: 0; }
+}
+
+@keyframes login-area-in {
+  from { opacity: 0; transform: translate3d(0, 8px, 0); }
+  to { opacity: 1; transform: none; }
+}
+
+/* Chu kỳ trôi đúng bằng một nhịp `5 8` nhân đôi để nét đứt không giật khi lặp. */
+@keyframes login-dash-flow {
+  from { stroke-dashoffset: 0; }
+  to { stroke-dashoffset: -26; }
+}
+
+@keyframes login-mote-drift {
+  0% { opacity: 0; transform: translate3d(0, 6px, 0); }
+  18%, 62% { opacity: 0.45; }
+  100% { opacity: 0; transform: translate3d(-7px, -38px, 0); }
 }
 
 @keyframes login-rise {
@@ -183,18 +216,52 @@ table,
   animation: login-comet 6.5s linear 2.1s infinite;
 }
 
+.login-comet-trail {
+  stroke-dasharray: 8 572;
+  stroke-dashoffset: 580;
+  animation: login-comet 9.4s linear 4.6s infinite;
+}
+
+/* Quầng sáng dưới nét chính: đứng yên hoàn toàn, chỉ làm đường dày thêm chiều
+   sâu. Cố tình không animate vì blur phải rasterise lại mỗi khung hình. */
+.login-line-glow {
+  filter: blur(5px);
+}
+
+/* Mảng dưới đường dâng lên một nhịp sau khi nét sáng vẽ xong, nên nó đọc như
+   phần thân của biểu đồ chứ không phải một lớp nền rời. */
+.login-area {
+  opacity: 0;
+  animation: login-area-in 1100ms cubic-bezier(0.22, 0.8, 0.24, 1) 900ms forwards;
+}
+
+.login-dash-flow {
+  animation: login-dash-flow 4.2s linear infinite;
+}
+
 /* `fill-box` để circle co giãn quanh tâm của chính nó thay vì gốc toạ độ SVG. */
 .login-node {
   opacity: 0;
   transform-box: fill-box;
   transform-origin: center;
-  animation: login-node-in 520ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+  animation:
+    login-node-in 520ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards,
+    login-node-float 7s ease-in-out infinite;
 }
 
-.login-node-pulse {
+.login-halo {
   transform-box: fill-box;
   transform-origin: center;
-  animation: login-node-pulse 2800ms ease-out 2400ms infinite;
+  animation:
+    login-halo 3600ms ease-out infinite,
+    login-halo-fade 3600ms ease-out infinite;
+}
+
+.login-mote {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: login-mote-drift 15s ease-in-out infinite;
 }
 
 .login-rise {
