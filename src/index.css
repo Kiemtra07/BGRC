@@ -133,9 +133,12 @@ table,
   to { stroke-dashoffset: 0; }
 }
 
-@keyframes login-comet {
-  from { stroke-dashoffset: 580; }
-  to { stroke-dashoffset: -580; }
+/* Gói hồ sơ chạy hết đường trong 65% chu kỳ rồi nằm ngoài đường nghỉ nốt phần
+   còn lại. Dash dài 34 đơn vị, nên đi từ `34` (đầu vệt đúng điểm xuất phát) tới
+   `-580` (đuôi vệt vừa rời điểm cuối) là trọn một lượt. */
+@keyframes login-packet {
+  0% { stroke-dashoffset: 34; }
+  65%, 100% { stroke-dashoffset: -580; }
 }
 
 @keyframes login-node-in {
@@ -143,25 +146,21 @@ table,
   to { opacity: 1; transform: none; }
 }
 
-/* Nhịp thở của từng nút. Cố tình dùng `scale` chứ không dịch chuyển: nút phải
-   luôn nằm đúng đỉnh gấp khúc, dịch đi vài pixel là nó rời khỏi đường. Biên độ
-   lấy từ `--login-node-swell` nên mỗi nút phồng lên một mức khác nhau. */
-@keyframes login-node-float {
-  0%, 100% { transform: scale(1); }
-  50% { transform: scale(var(--login-node-swell, 1.06)); }
+/* Cái nảy của chốt khi gói chạy qua: bật nhanh trong ~320ms rồi về chỗ cũ và
+   đứng yên tới hết chu kỳ. Dùng `scale` chứ không dịch chuyển vì nút phải luôn
+   nằm đúng đỉnh gấp khúc. */
+@keyframes login-node-ping {
+  0% { transform: scale(1); }
+  6% { transform: scale(1.34); }
+  22%, 100% { transform: scale(1); }
 }
 
-/* Vòng sáng nở ra rồi tắt; `opacity` gốc nằm ở inline style của từng vòng nên
-   keyframe chỉ nhân thêm qua `scale` và mức mờ tương đối. */
+/* Vòng sáng bật ra khỏi chốt rồi tan. Đứng yên và vô hình suốt phần còn lại của
+   chu kỳ, nên chỉ có đúng một vòng loé tại một thời điểm — vòng nào loé là do
+   `animation-delay` của chốt đó quyết định. */
 @keyframes login-halo {
-  0% { transform: scale(0.8); }
-  8% { transform: scale(0.95); }
-  70%, 100% { transform: scale(2.2); }
-}
-
-@keyframes login-halo-fade {
-  0% { stroke-opacity: 0.9; }
-  70%, 100% { stroke-opacity: 0; }
+  0% { transform: scale(1); stroke-opacity: 0.85; }
+  20%, 100% { transform: scale(2.8); stroke-opacity: 0; }
 }
 
 @keyframes login-area-in {
@@ -177,8 +176,8 @@ table,
 
 @keyframes login-mote-drift {
   0% { opacity: 0; transform: translate3d(0, 6px, 0); }
-  18%, 62% { opacity: 0.45; }
-  100% { opacity: 0; transform: translate3d(-7px, -38px, 0); }
+  18%, 62% { opacity: 0.6; }
+  100% { opacity: 0; transform: translate3d(-9px, -46px, 0); }
 }
 
 @keyframes login-rise {
@@ -210,16 +209,14 @@ table,
   animation: login-draw 1900ms cubic-bezier(0.22, 0.8, 0.24, 1) 200ms forwards;
 }
 
-.login-comet {
-  stroke-dasharray: 14 566;
-  stroke-dashoffset: 580;
-  animation: login-comet 6.5s linear 2.1s infinite;
-}
-
-.login-comet-trail {
-  stroke-dasharray: 8 572;
-  stroke-dashoffset: 580;
-  animation: login-comet 9.4s linear 4.6s infinite;
+/* Khoảng hở bằng trọn chiều dài đường (580) nên chỉ có đúng một gói trên đường
+   tại một thời điểm. Trạng thái gốc `-580` là lúc gói đã ra khỏi đường: khi
+   người dùng bật giảm chuyển động, hình dừng lại mà không còn vệt nào treo
+   giữa đường. Nhịp `linear` để tốc độ gói đều, không phanh gấp ở cuối. */
+.login-packet {
+  stroke-dasharray: 34 580;
+  stroke-dashoffset: -580;
+  animation: login-packet 5.4s linear infinite;
 }
 
 /* Quầng sáng dưới nét chính: đứng yên hoàn toàn, chỉ làm đường dày thêm chiều
@@ -246,15 +243,16 @@ table,
   transform-origin: center;
   animation:
     login-node-in 520ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards,
-    login-node-float 7s ease-in-out infinite;
+    login-node-ping 5.4s cubic-bezier(0.2, 0.8, 0.2, 1) infinite;
 }
 
+/* `stroke-opacity: 0` ở trạng thái gốc: vòng chỉ tồn tại trong lúc loé, còn khi
+   animation bị tắt thì nó biến mất hẳn thay vì đọng lại thành viền quanh chốt. */
 .login-halo {
+  stroke-opacity: 0;
   transform-box: fill-box;
   transform-origin: center;
-  animation:
-    login-halo 3600ms ease-out infinite,
-    login-halo-fade 3600ms ease-out infinite;
+  animation: login-halo 5.4s cubic-bezier(0.16, 0.8, 0.3, 1) infinite;
 }
 
 .login-mote {

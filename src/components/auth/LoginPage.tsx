@@ -22,31 +22,43 @@ const PANEL_LINE = 'M46 318 144 210 232 264 324 118 466 188';
 /** Nối tiếp đường trên rồi đóng xuống đáy — mảng màu dưới đường biểu đồ. */
 const PANEL_AREA = `${PANEL_LINE} L466 352 L46 352 Z`;
 
+/* ---------------------------------------------------------------------------
+   Nhịp chạy của gói hồ sơ.
+   Toàn bộ chuyển động lặp treo vào đúng một chu kỳ: gói sáng chạy hết đường
+   trong 65% chu kỳ rồi nghỉ, và mỗi chốt bật sáng đúng lúc gói đi qua. Nhờ
+   chung chu kỳ và chỉ lệch nhau bằng `animation-delay`, quan hệ pha giữa gói
+   và các chốt giữ nguyên mãi mãi chứ không trôi dần ra khỏi nhau.
+   --------------------------------------------------------------------------- */
+const PACKET_CYCLE_MS = 5_400;
+/** Gói chỉ xuất phát sau khi nét sáng vẽ xong (200ms trễ + 1900ms vẽ). */
+const PACKET_START_MS = 2_100;
+
 /** Các nút trên đường gấp khúc, hiện dần theo đúng thứ tự nét vẽ chạy qua.
-    `swell` là mức phồng lúc nhàn rỗi, `float` là chu kỳ thở — mỗi nút một con
-    số lệch nhau để cả cụm không phập phồng cùng nhịp như một khối. */
+    `arrive` là mốc gói hồ sơ chạm tới nút, tính từ đầu mỗi chu kỳ — suy ra từ
+    độ dài thật của từng đoạn (145.8 / 103.2 / 172.6 / 158.3 ≈ 580 đơn vị), nên
+    chốt sáng lên đúng khoảnh khắc đầu vệt sáng đi qua chứ không phải áng chừng. */
 const PANEL_NODES = [
-  { cx: 46, cy: 318, r: 7, fill: '#0b3f44', stroke: true, delay: 400, swell: 1.05, float: 7600 },
-  { cx: 144, cy: 210, r: 8, fill: '#bcebe5', stroke: false, delay: 780, swell: 1.08, float: 6400 },
-  { cx: 232, cy: 264, r: 6, fill: '#e8b865', stroke: false, delay: 1080, swell: 1.12, float: 8200 },
-  { cx: 324, cy: 118, r: 9, fill: '#0b3f44', stroke: true, delay: 1420, swell: 1.07, float: 7000 },
-  { cx: 466, cy: 188, r: 7, fill: '#bcebe5', stroke: false, delay: 1760, swell: 1.09, float: 8800 },
+  { cx: 46, cy: 318, r: 7, fill: '#0b3f44', halo: '#bcebe5', stroke: true, delay: 400, arrive: 0 },
+  { cx: 144, cy: 210, r: 8, fill: '#bcebe5', halo: '#bcebe5', stroke: false, delay: 780, arrive: 833 },
+  { cx: 232, cy: 264, r: 6, fill: '#e8b865', halo: '#e8b865', stroke: false, delay: 1080, arrive: 1423 },
+  { cx: 324, cy: 118, r: 9, fill: '#0b3f44', halo: '#bcebe5', stroke: true, delay: 1420, arrive: 2410 },
+  { cx: 466, cy: 188, r: 7, fill: '#bcebe5', halo: '#bcebe5', stroke: false, delay: 1760, arrive: 3315 },
 ] as const;
 
-/** Vòng sáng lan ra từ ba chốt: hổ phách (đang chờ xử lý) rõ nhất, còn đỉnh và
-    điểm cuối chỉ loé rất mờ. Chu kỳ lệch nhau để không có hai vòng nở cùng lúc. */
-const PANEL_HALOS = [
-  { cx: 232, cy: 264, r: 6, color: '#e8b865', opacity: 0.55, duration: 3600, delay: 2400 },
-  { cx: 466, cy: 188, r: 7, color: '#bcebe5', opacity: 0.32, duration: 5600, delay: 3600 },
-  { cx: 324, cy: 118, r: 9, color: '#bcebe5', opacity: 0.26, duration: 6800, delay: 5200 },
+/** Ba lớp của vệt sáng: cùng một nhịp, chỉ trễ nhau vài chục mili-giây nên lớp
+    sau luôn nằm phía sau lớp trước và cả cụm đọc thành một vệt có đuôi. */
+const PACKET_LAYERS = [
+  { lag: 210, width: 8, color: '#bcebe5', opacity: 0.14 },
+  { lag: 100, width: 4.5, color: '#d8f4f0', opacity: 0.36 },
+  { lag: 0, width: 3, color: '#f4fffd', opacity: 0.95 },
 ] as const;
 
 /** Bụi sáng trôi lên trong nền bảng — chỉ đủ để mảng tối không phẳng lì. */
 const PANEL_MOTES = [
-  { cx: 96, cy: 300, r: 1.6, duration: 14000, delay: 600 },
-  { cx: 208, cy: 172, r: 1.2, duration: 17000, delay: 3200 },
-  { cx: 372, cy: 246, r: 1.8, duration: 15500, delay: 6400 },
-  { cx: 438, cy: 126, r: 1.2, duration: 19000, delay: 9000 },
+  { cx: 96, cy: 300, r: 2, duration: 14000, delay: 600 },
+  { cx: 208, cy: 172, r: 1.6, duration: 17000, delay: 3200 },
+  { cx: 372, cy: 246, r: 2.2, duration: 15500, delay: 6400 },
+  { cx: 438, cy: 126, r: 1.6, duration: 19000, delay: 9000 },
 ] as const;
 
 function usePrefersReducedMotion(): boolean {
@@ -155,24 +167,38 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onForgotPassword 
             {/* Nét mờ nằm dưới để đường đi vẫn đọc được trước khi nét sáng vẽ xong. */}
             <path d={PANEL_LINE} fill="none" stroke="currentColor" strokeWidth="1.5" />
             {/* Đường dự phóng: nét đứt trôi chậm về phía điểm đến. */}
-            <path className="login-dash-flow" d="M144 210 292 246 466 188M232 264 324 118" fill="none" stroke="currentColor" strokeDasharray="5 8" strokeWidth="1" />
+            <path className="login-dash-flow" d="M144 210 292 246 466 188M232 264 324 118" fill="none" stroke="#bcebe5" strokeOpacity="0.2" strokeDasharray="5 8" strokeWidth="1" />
             {/* Quầng mờ dưới nét sáng, tĩnh — chỉ để đường có chiều sâu. */}
             <path className="login-line-glow" d={PANEL_LINE} fill="none" stroke="#bcebe5" strokeOpacity="0.16" strokeWidth="6" strokeLinecap="round" strokeLinejoin="round" />
             <path className="login-draw" d={PANEL_LINE} fill="none" stroke="#bcebe5" strokeOpacity="0.38" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
-            {/* Hai vệt sáng lệch nhịp chạy dọc đường đi — hồ sơ đang qua các chốt xử lý. */}
-            <path className="login-comet" d={PANEL_LINE} fill="none" stroke="#e8f7f4" strokeOpacity="0.7" strokeWidth="3" strokeLinecap="round" />
-            <path className="login-comet-trail" d={PANEL_LINE} fill="none" stroke="#e8b865" strokeOpacity="0.45" strokeWidth="2" strokeLinecap="round" />
 
-            {PANEL_HALOS.map(halo => (
-              <circle
-                key={`halo-${halo.cx}`}
-                className="login-halo"
-                style={{ animationDuration: `${halo.duration}ms`, animationDelay: `${halo.delay}ms`, opacity: halo.opacity }}
-                cx={halo.cx}
-                cy={halo.cy}
-                r={halo.r}
+            {/* Gói hồ sơ chạy dọc đường: lớp rộng mờ đi sau cùng làm đuôi, lớp mảnh
+                sáng nhất là đầu vệt. */}
+            {PACKET_LAYERS.map(layer => (
+              <path
+                key={`packet-${layer.lag}`}
+                className="login-packet"
+                style={{ animationDuration: `${PACKET_CYCLE_MS}ms`, animationDelay: `${PACKET_START_MS + layer.lag}ms` }}
+                d={PANEL_LINE}
                 fill="none"
-                stroke={halo.color}
+                stroke={layer.color}
+                strokeOpacity={layer.opacity}
+                strokeWidth={layer.width}
+                strokeLinecap="round"
+              />
+            ))}
+
+            {/* Vòng sáng bật ra khỏi chốt đúng lúc gói chạy tới. */}
+            {PANEL_NODES.map(node => (
+              <circle
+                key={`halo-${node.cx}`}
+                className="login-halo"
+                style={{ animationDuration: `${PACKET_CYCLE_MS}ms`, animationDelay: `${PACKET_START_MS + node.arrive}ms` }}
+                cx={node.cx}
+                cy={node.cy}
+                r={node.r}
+                fill="none"
+                stroke={node.halo}
                 strokeWidth="1.5"
               />
             ))}
@@ -182,11 +208,11 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onForgotPassword 
                 key={`${node.cx}-${node.cy}`}
                 className="login-node"
                 style={{
-                  // Hai animation nối nhau: bung vào rồi thở nhẹ. Nhịp thở bắt đầu sau
-                  // khi nhịp bung đã kết thúc nên hai transform không giẫm lên nhau.
-                  animationDelay: `${node.delay}ms, ${node.delay + 900}ms`,
-                  animationDuration: `520ms, ${node.float}ms`,
-                  '--login-node-swell': node.swell,
+                  // Hai animation nối nhau: bung vào lúc mở trang, rồi nảy một cái mỗi
+                  // lần gói hồ sơ chạy qua. Nhịp nảy là animation đứng sau nên nó thắng
+                  // quyền ghi `transform` — đúng thứ mình muốn sau khi nhịp bung xong.
+                  animationDelay: `${node.delay}ms, ${PACKET_START_MS + node.arrive}ms`,
+                  animationDuration: `520ms, ${PACKET_CYCLE_MS}ms`,
                 } as React.CSSProperties}
                 cx={node.cx}
                 cy={node.cy}
