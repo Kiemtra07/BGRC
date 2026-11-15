@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { app } from '../../server/src/app';
+import { acceptAllSubItems } from './review-helpers';
 
 const adminHeaders = { 'x-user-id': 'user-admin' };
 let createdUsers = 0;
@@ -176,7 +177,8 @@ describe('bàn giao hồ sơ khi một người rời vị trí', () => {
     });
     expect(retry.json()).toMatchObject({ moved: 0, remaining: 0 });
 
-    const newApprover = await post('/api/v1/findings/find-002/actions/branch-control-approve', controllerB, 'handover-new', { expectedVersion: version + 1 });
+    const reviewedVersion = await acceptAllSubItems(app, 'find-002', controllerB);
+    const newApprover = await post('/api/v1/findings/find-002/actions/branch-control-approve', controllerB, 'handover-new', { expectedVersion: reviewedVersion });
     expect(newApprover.statusCode, newApprover.body).toBe(200);
 
     const lock = await app.inject({ method: 'PATCH', url: `/api/v1/admin/users/${controllerA}`, headers: adminHeaders, payload: { isActive: false } });

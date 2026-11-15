@@ -79,14 +79,23 @@ export const FindingDetailPage: React.FC<Props> = ({
 
   const finding = useMemo(() => items.find(item => item.id === selectedId) || items[0], [items, selectedId]);
   const isBranchInput = currentUser.roles.includes('BRANCH_INPUT');
-  const isBranchController = currentUser.roles.includes('BRANCH_CONTROLLER');
-  const isBranchLeader = currentUser.roles.includes('BRANCH_LEADER');
+  const hasControllerRole = currentUser.roles.includes('BRANCH_CONTROLLER');
+  const hasLeaderRole = currentUser.roles.includes('BRANCH_LEADER');
+  const hasInternalReviewerRole = currentUser.roles.some(role => ['SUPERVISOR', 'INTERNAL_APPROVER'].includes(role));
+  // Bước đã ghim một người thì chỉ người đó duyệt được; chưa ghim (Hội sở) thì ai đủ quyền cũng nhận được.
+  const route = finding?.approvalRoute;
+  const isAssignedTo = (pinnedUserId?: string) => !pinnedUserId || pinnedUserId === currentUser.id;
+  const isBranchController = hasControllerRole && isAssignedTo(route?.branchControllerUserId);
+  const isBranchLeader = hasLeaderRole && isAssignedTo(route?.branchLeaderUserId);
   const status = finding?.workflowStatus;
   const canForward = (isBranchInput && (status === 'PENDING' || status === 'REJECTED'))
     || (isBranchController && status === 'SUBMITTED_BRANCH')
     || (isBranchLeader && status === 'SUBMITTED_BRANCH_LEADER');
   const nextApproverUserId = nextApproverId || undefined;
-  const isInternalReviewer = currentUser.roles.some(role => ['SUPERVISOR', 'INTERNAL_APPROVER'].includes(role));
+  const isInternalReviewer = hasInternalReviewerRole && isAssignedTo(route?.internalApproverUserId);
+  const waitingForSomeoneElse = (status === 'SUBMITTED_BRANCH' && hasControllerRole && !isBranchController)
+    || (status === 'SUBMITTED_BRANCH_LEADER' && hasLeaderRole && !isBranchLeader)
+    || (status === 'SUBMITTED_INTERNAL' && hasInternalReviewerRole && !isInternalReviewer);
   const canManageWorkspace = currentUser.roles.some(role => ['INTERNAL_OFFICER', 'SUPERVISOR', 'INTERNAL_APPROVER', 'BRANCH_INPUT', 'BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(role));
   const canFlagSpecialCase = currentUser.roles.some(role => ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'BRANCH_INPUT'].includes(role));
   const customerIsSpecialCase = items.some(item => item.isSpecialCase);
@@ -447,6 +456,8 @@ export const FindingDetailPage: React.FC<Props> = ({
               <RecipientSelect recipients={recipients} value={nextApproverId} onChange={setNextApproverId} disabled={busy} />
               <button disabled={busy || !hasAvailableEvidence || resolutionNotes.trim().length < 5} onClick={() => commit(() => api.submitBranch(finding.id, { expectedVersion: finding.version, resolutionNotes, nextApproverUserId }))} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.submitBranch} <ArrowRight className="h-4 w-4" /></button>
             </ActionPanel>}
+
+            {waitingForSomeoneElse && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">Hồ sơ này đã giao cho người duyệt khác. Chỉ người đó duyệt hoặc trả được ở bước này.</p>}
 
             {finding.workflowStatus === 'SUBMITTED_BRANCH' && isBranchController && <ActionPanel title="Kiểm soát chi nhánh">
               <textarea value={rejectReason} onChange={event => setRejectReason(event.target.value)} rows={3} placeholder="Nhập lý do nếu cần chuyển trả hồ sơ..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-brand-500 focus:outline-none" />

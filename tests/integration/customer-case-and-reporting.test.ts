@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import JSZip from 'jszip';
 import { app } from '../../server/src/app';
+import { acceptAllSubItems } from './review-helpers';
 
 const adminHeaders = { 'x-user-id': 'user-admin' };
 
@@ -80,11 +81,11 @@ describe('customer case, branch control, import and reporting', () => {
       method: 'POST',
       url: '/api/v1/findings/find-002/actions/branch-control-approve',
       headers: { 'x-user-id': controller.json().user.id, 'idempotency-key': 'approve-own-branch-428' },
-      payload: { expectedVersion: 2, notes: 'Hồ sơ và chứng cứ phù hợp, chuyển cán bộ kiểm tra.' },
+      payload: { expectedVersion: await acceptAllSubItems(app, 'find-002', controller.json().user.id), notes: 'Hồ sơ và chứng cứ phù hợp, chuyển cán bộ kiểm tra.' },
     });
 
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ workflowStatus: 'SUBMITTED_INTERNAL', version: 3 });
+    expect(response.json()).toMatchObject({ workflowStatus: 'SUBMITTED_INTERNAL', version: 4 });
   });
 
   it('blocks branch control approval when no available evidence exists', async () => {

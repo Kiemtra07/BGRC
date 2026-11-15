@@ -1943,6 +1943,9 @@ function eligibleRecipientsForStage(finding, stage, actorUserId, route, users) {
   if (stage === "INTERNAL_APPROVER" && route?.branchLeaderUserId) taken.add(route.branchLeaderUserId);
   return pool2.filter((user) => !taken.has(user.id));
 }
+function pinnedApproverForStage(route, stage) {
+  return route?.[fieldByStage[stage]];
+}
 function pinStageApprover(route, stage, userId, assignedAt) {
   const base = route ?? {
     requiresBranchLeaderApproval: stage === "BRANCH_LEADER",
@@ -6935,6 +6938,17 @@ async function addWorkspaceTarget(collection, dto, user) {
   }
   return projectWorkspaceTarget(record, user);
 }
+function requireAllSubItemsAccepted(finding) {
+  const subItems = finding.subItems ?? [];
+  if (subItems.some((item) => item.status !== "ACCEPTED")) {
+    throw new HttpProblem(
+      409,
+      "SUB_ITEMS_NOT_ACCEPTED",
+      "Ch\u01B0a ch\u1EA5p nh\u1EADn \u0111\u1EE7 c\xE1c \xFD sai s\xF3t",
+      "M\u1ECDi \xFD sai s\xF3t ph\u1EA3i \u0111\u01B0\u1EE3c ng\u01B0\u1EDDi duy\u1EC7t ch\u1EA5p nh\u1EADn tr\u01B0\u1EDBc khi chuy\u1EC3n ti\u1EBFp ho\u1EB7c \u0111\xF3ng l\u1ED7i. H\xE3y \u0111\xE1nh gi\xE1 t\u1EEBng \xFD r\u1ED3i th\u1EED l\u1EA1i."
+    );
+  }
+}
 function requireAvailableEvidence(finding) {
   if (!reportPresentationForFinding(finding).evidenceRequired) return;
   if (availableEvidencesForFinding(finding.id).length === 0) {
@@ -10721,6 +10735,11 @@ var init_app = __esm({
       if (!branchReview && !branchLeaderReview && !internalReview) {
         throw new HttpProblem(409, "SUB_ITEM_REVIEW_NOT_ALLOWED", "Ch\u01B0a \u0111\u1EBFn b\u01B0\u1EDBc \u0111\xE1nh gi\xE1 \xFD sai s\xF3t", "T\xE0i kho\u1EA3n ho\u1EB7c tr\u1EA1ng th\xE1i h\u1ED3 s\u01A1 kh\xF4ng ph\xF9 h\u1EE3p \u0111\u1EC3 \u0111\xE1nh gi\xE1 t\u1EEBng \xFD sai s\xF3t.");
       }
+      const reviewStage = approvalStageForStatus(finding.workflowStatus);
+      const assignedReviewer = reviewStage ? pinnedApproverForStage(finding.approvalRoute, reviewStage) : void 0;
+      if (assignedReviewer && assignedReviewer !== user.id) {
+        throw new HttpProblem(403, "APPROVER_NOT_ASSIGNED", "H\u1ED3 s\u01A1 \u0111\xE3 giao cho ng\u01B0\u1EDDi kh\xE1c", "Ch\u1EC9 ng\u01B0\u1EDDi \u0111\u01B0\u1EE3c giao duy\u1EC7t b\u01B0\u1EDBc n\xE0y m\u1EDBi \u0111\xE1nh gi\xE1 \u0111\u01B0\u1EE3c c\xE1c \xFD sai s\xF3t.");
+      }
       const dto = ReviewFindingSubItemsSchema.parse(req.body);
       const subItems = finding.subItems ?? [];
       const decisionIds = new Set(dto.decisions.map((item) => item.subItemId));
@@ -11253,6 +11272,7 @@ var init_app = __esm({
       try {
         const updated = workflowService.executeBranchControlApprove(finding, dto, user);
         requireAvailableEvidence(finding);
+        requireAllSubItemsAccepted(finding);
         pinChosenRecipient(updated, dto.nextApproverUserId, user);
         Object.assign(finding, updated);
         recordWorkflowEvent({
@@ -11312,6 +11332,7 @@ var init_app = __esm({
       try {
         const updated = workflowService.executeBranchLeaderApprove(finding, dto, user);
         requireAvailableEvidence(finding);
+        requireAllSubItemsAccepted(finding);
         pinChosenRecipient(updated, dto.nextApproverUserId, user);
         Object.assign(finding, updated);
         recordWorkflowEvent({
@@ -11371,6 +11392,7 @@ var init_app = __esm({
       try {
         const updated = workflowService.executeInternalWaive(finding, dto, user);
         requireAvailableEvidence(finding);
+        requireAllSubItemsAccepted(finding);
         Object.assign(finding, updated);
         recordWorkflowEvent({
           id: `evt-${crypto9.randomUUID()}`,

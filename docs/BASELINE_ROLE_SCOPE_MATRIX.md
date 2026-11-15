@@ -46,6 +46,7 @@ Capability hiện hành phải giữ đúng như sau: `CONFIGURE_CATALOG` = ADMI
 2. Chỉ admin mới giao lại, chỉ đúng bước đang chờ, phải có `expectedVersion`, lý do, người nhận hoạt động/đúng scope và event audit. Bàn giao hàng loạt (`POST /admin/handovers`) dùng cùng cơ chế, được chuyển cả bước còn ở phía sau, cần xác thực lại mật khẩu và ghi event `HANDOVER_APPROVAL` cùng một sự kiện an ninh `ADMIN_HANDOVER_EXECUTED`.
 3. `workflowStatus` và `slaStatus` độc lập. Không được dùng SLA để chuyển trạng thái workflow.
 4. Evidence phải `AVAILABLE` trước submit, approve hoặc close; `REJECTED`, `SCANNING`, `QUARANTINED`, `FAILED` và `REVOKED` không thỏa điều kiện này.
+4a. Duyệt, chuyển tiếp và đóng lỗi chỉ khi mọi ý sai sót đã được chấp nhận (409 `SUB_ITEMS_NOT_ACCEPTED`), và chỉ người được ghim ở bước đang chờ mới đánh giá ý sai sót (403 `APPROVER_NOT_ASSIGNED`). Giao diện khóa nút theo cùng điều kiện, nhưng máy chủ là nơi quyết định.
 5. Tệp evidence chỉ qua `GET /api/v1/evidence/:driveFileId/content`; không trả URL Drive riêng tư cho trình duyệt.
 
 ## Ma trận nghiệm thu bắt buộc

@@ -126,6 +126,7 @@ import {
   approvalStageForStatus,
   approvalStagesHeldBy,
   eligibleRecipientsForStage,
+  pinnedApproverForStage,
   pinStageApprover,
   reassignApprovalStage,
   resolveApprovalRoute,
@@ -2712,6 +2713,19 @@ async function addWorkspaceTarget(collection: WorkspaceTargetRecord[], dto: Work
     await persistLocalState();
   }
   return projectWorkspaceTarget(record, user)!;
+}
+
+/** Duyệt hoặc đóng lỗi chỉ khi mọi ý sai sót đã được chấp nhận; giao diện cũng khóa nút theo đúng điều kiện này. */
+function requireAllSubItemsAccepted(finding: Finding): void {
+  const subItems = finding.subItems ?? [];
+  if (subItems.some(item => item.status !== 'ACCEPTED')) {
+    throw new HttpProblem(
+      409,
+      'SUB_ITEMS_NOT_ACCEPTED',
+      'Chưa chấp nhận đủ các ý sai sót',
+      'Mọi ý sai sót phải được người duyệt chấp nhận trước khi chuyển tiếp hoặc đóng lỗi. Hãy đánh giá từng ý rồi thử lại.',
+    );
+  }
 }
 
 function requireAvailableEvidence(finding: Finding): void {
@@ -5531,6 +5545,11 @@ app.post('/api/v1/findings/:id/sub-items/review', async (req: FastifyRequest<{ P
   if (!branchReview && !branchLeaderReview && !internalReview) {
     throw new HttpProblem(409, 'SUB_ITEM_REVIEW_NOT_ALLOWED', 'Chưa đến bước đánh giá ý sai sót', 'Tài khoản hoặc trạng thái hồ sơ không phù hợp để đánh giá từng ý sai sót.');
   }
+  const reviewStage = approvalStageForStatus(finding.workflowStatus);
+  const assignedReviewer = reviewStage ? pinnedApproverForStage(finding.approvalRoute, reviewStage) : undefined;
+  if (assignedReviewer && assignedReviewer !== user.id) {
+    throw new HttpProblem(403, 'APPROVER_NOT_ASSIGNED', 'Hồ sơ đã giao cho người khác', 'Chỉ người được giao duyệt bước này mới đánh giá được các ý sai sót.');
+  }
   const dto = ReviewFindingSubItemsSchema.parse(req.body);
   const subItems = finding.subItems ?? [];
   const decisionIds = new Set(dto.decisions.map(item => item.subItemId));
@@ -6430,6 +6449,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-approve', async (req: Fast
   try {
     const updated = workflowService.executeBranchControlApprove(finding, dto, user);
     requireAvailableEvidence(finding);
+    requireAllSubItemsAccepted(finding);
     pinChosenRecipient(updated, dto.nextApproverUserId, user);
     Object.assign(finding, updated);
 
@@ -6498,6 +6518,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-approve', async (req: Fasti
   try {
     const updated = workflowService.executeBranchLeaderApprove(finding, dto, user);
     requireAvailableEvidence(finding);
+    requireAllSubItemsAccepted(finding);
     pinChosenRecipient(updated, dto.nextApproverUserId, user);
     Object.assign(finding, updated);
     recordWorkflowEvent({
@@ -6561,6 +6582,7 @@ app.post('/api/v1/findings/:id/actions/internal-waive', async (req: FastifyReque
   try {
     const updated = workflowService.executeInternalWaive(finding, dto, user);
     requireAvailableEvidence(finding);
+    requireAllSubItemsAccepted(finding);
     Object.assign(finding, updated);
 
     recordWorkflowEvent({

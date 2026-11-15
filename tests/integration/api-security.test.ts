@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { app } from '../../server/src/app';
+import { acceptAllSubItems } from './review-helpers';
 
 const adminHeaders = { 'x-user-id': 'user-admin' };
 
@@ -282,7 +283,7 @@ describe('API security boundaries', () => {
       'idempotency-key': 'approve-find-002-once',
     };
     const payload = {
-      expectedVersion: 2,
+      expectedVersion: await acceptAllSubItems(app, 'find-002', controller.json().user.id),
       notes: 'Kiểm soát đồng ý hồ sơ có minh chứng hợp lệ.',
     };
 

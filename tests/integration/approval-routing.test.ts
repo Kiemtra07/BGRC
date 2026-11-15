@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { app } from '../../server/src/app';
+import { acceptAllSubItems } from './review-helpers';
 
 const adminHeaders = { 'x-user-id': 'user-admin' };
 
@@ -115,7 +116,7 @@ describe('automatic approval routing + special-case flag', () => {
     });
     expect(submitPlain.statusCode, submitPlain.body).toBe(200);
     expect(submitPlain.json().approvalRoute).toMatchObject({ requiresBranchLeaderApproval: false });
-    version = submitPlain.json().version;
+    version = await acceptAllSubItems(app, 'find-002', branchController);
 
     const approvePlain = await app.inject({
       method: 'POST',
@@ -157,7 +158,7 @@ describe('automatic approval routing + special-case flag', () => {
     });
     expect(submitStar.statusCode, submitStar.body).toBe(200);
     expect(submitStar.json().approvalRoute).toMatchObject({ requiresBranchLeaderApproval: true });
-    version = submitStar.json().version;
+    version = await acceptAllSubItems(app, 'find-002', branchController);
 
     const approveStar = await app.inject({
       method: 'POST',

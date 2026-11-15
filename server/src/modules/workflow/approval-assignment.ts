@@ -107,6 +107,11 @@ export function eligibleRecipientsForStage(
   return pool.filter(user => !taken.has(user.id));
 }
 
+/** Người được ghim ở một bước của tuyến; `undefined` khi bước đó chưa chỉ định ai (Hội sở dùng hàng chờ chung). */
+export function pinnedApproverForStage(route: FindingApprovalRoute | undefined, stage: ApprovalAssignmentStage): string | undefined {
+  return route?.[fieldByStage[stage]];
+}
+
 /** Ghi người nhận vào đúng bước của tuyến, giữ nguyên người nộp và lịch sử giao lại. */
 export function pinStageApprover(
   route: FindingApprovalRoute | undefined,

@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { app } from '../../server/src/app';
+import { acceptAllSubItems } from './review-helpers';
 import { FindingApprovalRouteView } from '../../shared/contracts';
 
 const adminHeaders = { 'x-user-id': 'user-admin' };
@@ -75,6 +76,7 @@ describe('finding approval route view', () => {
   it('reports a closed finding with no waiting step', async () => {
     const [waiting] = await findingsFor(adminHeaders, 'SUBMITTED_INTERNAL');
     expect(waiting, 'cần một hồ sơ đang chờ Hội sở').toBeDefined();
+    await acceptAllSubItems(app, waiting!.id, approverHeaders['x-user-id']);
     await act(waiting!.id, 'internal-waive', approverHeaders, { decisionNumber: 'QD-TEST-01' });
 
     const route = await routeOf(waiting!.id);

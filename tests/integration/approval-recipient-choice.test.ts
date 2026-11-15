@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { app } from '../../server/src/app';
+import { acceptAllSubItems } from './review-helpers';
 
 const adminHeaders = { 'x-user-id': 'user-admin' };
 let createdUsers = 0;
@@ -101,7 +102,7 @@ describe('chọn người nhận ở từng chặng của tuyến duyệt', () =
     expect(options.json().options.map((option: { id: string }) => option.id)).toContain('user-internal-supervisor');
     expect(options.json().options.map((option: { id: string }) => option.id)).not.toContain(controllerB);
 
-    const version = (await app.inject({ method: 'GET', url: '/api/v1/findings/find-002', headers: adminHeaders })).json().version as number;
+    const version = await acceptAllSubItems(app, 'find-002', controllerB);
     const ineligible = await post('/api/v1/findings/find-002/actions/branch-control-approve', controllerB, 'choice-hq-ineligible', {
       expectedVersion: version, nextApproverUserId: input,
     });
