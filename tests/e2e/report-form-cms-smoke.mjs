@@ -10,10 +10,10 @@ page.on('pageerror', error => pageErrors.push(error.message));
 
 try {
   await loginAs(page, 'admin');
-  await page.getByRole('button', { name: 'Quản trị', exact: true }).click();
+  await page.getByRole('button', { name: 'Cấu hình', exact: true }).click();
   await page.getByRole('button', { name: 'Loại báo cáo', exact: true }).click();
   await page.getByRole('button', { name: 'Tạo loại báo cáo', exact: true }).click();
-  await page.getByRole('button', { name: /Mẫu form/ }).click();
+  await page.getByRole('button', { name: /Biểu mẫu/ }).click();
   const cms = page.getByTestId('report-form-cms');
   await cms.getByText('Thư viện block', { exact: true }).waitFor();
   await cms.getByText('Khung mẫu báo cáo', { exact: true }).waitFor();

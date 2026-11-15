@@ -29,7 +29,8 @@ try {
       && response.request().method() === 'POST'
       && response.status() === 200,
     );
-    await workspace.getByRole('button', { name: format, exact: true }).click();
+    await workspace.getByText('Xuất báo cáo', { exact: true }).click();
+    await workspace.getByRole('button', { name: `Xuất ${format}`, exact: true }).click();
     const response = await exportResponse;
     assert.ok(response.headers()['content-type'], `Xuất ${format} thiếu Content-Type.`);
   }

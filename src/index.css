@@ -57,6 +57,19 @@ dialog::backdrop {
   overscroll-behavior: contain;
 }
 
+/* Màn cảm ứng hoặc hẹp: mọi nút, tab và ô chọn cao tối thiểu 2,5rem để bấm chắc tay. */
+@media (pointer: coarse), (max-width: 767px) {
+  button,
+  [role="tab"],
+  [role="menuitem"],
+  [role="menuitemcheckbox"],
+  summary,
+  select {
+    min-height: 2.5rem !important;
+    min-width: 2.5rem;
+  }
+}
+
 /* Counts, CIF, mã lỗi and dates all sit in columns; proportional digits make
    them jitter between rows. */
 table,

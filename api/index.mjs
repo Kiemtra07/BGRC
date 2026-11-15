@@ -802,7 +802,7 @@ function formatReportMetricValue(value, format) {
   const text = value.toLocaleString("vi-VN", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   return format?.suffix ? `${text} ${format.suffix}` : text;
 }
-var ReportFilterSchema, ReportColumnSchema, REPORT_FIELD_KEYS, ReportFieldKeySchema, REPORT_OPERATOR_KEYS, ReportOperatorKeySchema, REPORT_METRIC_KEYS, ReportMetricKeySchema, TEXT_OPERATORS, ENUM_OPERATORS, RANGE_OPERATORS, REPORT_FIELD_CATALOG, REPORT_OPERATOR_CATALOG, REPORT_METRIC_CATALOG, firstDuplicateLabel, ReportCatalogFieldConfigurationInputSchema, ReportCatalogMetricConfigurationInputSchema, UpdateReportCatalogConfigurationSchema, ReportRuleValueSchema, ReportFilterRuleSchema, ReportRunRequestSchema, REPORT_HIGHLIGHT_TONES, ReportMetricFormatSchema, ReportPresentationOptionsSchema, ReportExportSectionSchema, ReportExportRequestSchema, REPORT_DEFINITION_VISIBILITIES, ReportDefinitionVisibilitySchema, ReportShareRoleSchema, CreateReportDefinitionSchema, CreateDashboardDefinitionSchema, ReportDrillRequestSchema, preset, REPORT_PRESETS;
+var ReportFilterSchema, ReportColumnSchema, REPORT_FIELD_KEYS, ReportFieldKeySchema, REPORT_OPERATOR_KEYS, ReportOperatorKeySchema, REPORT_METRIC_KEYS, ReportMetricKeySchema, TEXT_OPERATORS, ENUM_OPERATORS, RANGE_OPERATORS, REPORT_FIELD_CATALOG, REPORT_OPERATOR_CATALOG, isHiddenForRoles, REPORT_METRIC_CATALOG, firstDuplicateLabel, ReportHiddenRoleSchema, ReportCatalogFieldConfigurationInputSchema, ReportCatalogMetricConfigurationInputSchema, UpdateReportCatalogConfigurationSchema, ReportRuleValueSchema, ReportFilterRuleSchema, ReportRunRequestSchema, REPORT_HIGHLIGHT_TONES, ReportMetricFormatSchema, ReportPresentationOptionsSchema, ReportExportSectionSchema, ReportExportRequestSchema, REPORT_DEFINITION_VISIBILITIES, ReportDefinitionVisibilitySchema, ReportShareRoleSchema, CreateReportDefinitionSchema, UpdateReportDefinitionSchema, CreateDashboardDefinitionSchema, ReportDrillRequestSchema, preset, REPORT_PRESETS;
 var init_dashboards = __esm({
   "shared/contracts/dashboards.ts"() {
     "use strict";
@@ -928,6 +928,10 @@ var init_dashboards = __esm({
       { key: "op.is_true", label: "\u0110\xFAng", requires: "NONE" },
       { key: "op.is_false", label: "Sai", requires: "NONE" }
     ];
+    isHiddenForRoles = (item, roles) => {
+      const hidden = item.hiddenForRoles ?? [];
+      return roles.length > 0 && !roles.includes("ADMIN") && roles.every((role) => hidden.includes(role));
+    };
     REPORT_METRIC_CATALOG = [
       { key: "metric.customer_count", label: "Kh\xE1ch h\xE0ng", unit: "COUNT" },
       { key: "metric.finding_count", label: "M\xE3 l\u1ED7i", unit: "COUNT" },
@@ -948,6 +952,15 @@ var init_dashboards = __esm({
       }
       return void 0;
     };
+    ReportHiddenRoleSchema = z12.enum([
+      "SUPERVISOR",
+      "INTERNAL_APPROVER",
+      "INTERNAL_OFFICER",
+      "BRANCH_CONTROLLER",
+      "BRANCH_LEADER",
+      "BRANCH_INPUT",
+      "VIEWER"
+    ]);
     ReportCatalogFieldConfigurationInputSchema = z12.object({
       key: ReportFieldKeySchema,
       label: z12.string().trim().min(1).max(100),
@@ -956,13 +969,15 @@ var init_dashboards = __esm({
       groupable: z12.boolean(),
       exportable: z12.boolean(),
       defaultExport: z12.boolean(),
-      sortOrder: z12.number().int().min(0).max(999)
+      sortOrder: z12.number().int().min(0).max(999),
+      hiddenForRoles: z12.array(ReportHiddenRoleSchema).max(8).default([])
     });
     ReportCatalogMetricConfigurationInputSchema = z12.object({
       key: ReportMetricKeySchema,
       label: z12.string().trim().min(1).max(100),
       isActive: z12.boolean(),
-      sortOrder: z12.number().int().min(0).max(999)
+      sortOrder: z12.number().int().min(0).max(999),
+      hiddenForRoles: z12.array(ReportHiddenRoleSchema).max(8).default([])
     });
     UpdateReportCatalogConfigurationSchema = z12.object({
       expectedVersion: z12.number().int().min(1),
@@ -1000,6 +1015,13 @@ var init_dashboards = __esm({
       }
       if (!configuration.metrics.some((metric) => metric.isActive)) {
         context.addIssue({ code: z12.ZodIssueCode.custom, path: ["metrics"], message: "C\u1EA7n \xEDt nh\u1EA5t m\u1ED9t ch\u1EC9 s\u1ED1 \u0111ang b\u1EADt" });
+      }
+      for (const role of ReportHiddenRoleSchema.options) {
+        const hasGroup = configuration.fields.some((field) => field.isActive && field.groupable && !field.hiddenForRoles.includes(role));
+        const hasMetric = configuration.metrics.some((metric) => metric.isActive && !metric.hiddenForRoles.includes(role));
+        if (!hasGroup || !hasMetric) {
+          context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields"], message: `Vai tr\xF2 ${role} c\u1EA7n c\xF2n \xEDt nh\u1EA5t m\u1ED9t tr\u01B0\u1EDDng \u0111\u1EC3 nh\xF3m v\xE0 m\u1ED9t ch\u1EC9 s\u1ED1; hi\u1EC7n \u0111ang b\u1ECB \u1EA9n h\u1EBFt.` });
+        }
       }
       const duplicateFieldLabel = firstDuplicateLabel(configuration.fields.filter((field) => field.isActive).map((field) => field.label));
       if (duplicateFieldLabel) {
@@ -1136,6 +1158,18 @@ var init_dashboards = __esm({
         context.addIssue({ code: z12.ZodIssueCode.custom, path: ["exportColumns"], message: "Ph\u1EA3i ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t c\u1ED9t xu\u1EA5t b\xE1o c\xE1o" });
       }
       if (definition.visibility === "ROLE_SHARED" && definition.sharedWithRoles.length === 0) {
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem b\xE1o c\xE1o chia s\u1EBB" });
+      }
+    });
+    UpdateReportDefinitionSchema = z12.object({
+      name: z12.string().trim().min(3).max(150).optional(),
+      description: z12.string().trim().max(500).optional(),
+      visibility: ReportDefinitionVisibilitySchema.optional(),
+      sharedWithRoles: z12.array(ReportShareRoleSchema).max(8).optional(),
+      /** Chỉ quản trị viên được đặt; máy chủ từ chối với người khác. */
+      isStandard: z12.boolean().optional()
+    }).superRefine((update, context) => {
+      if (update.visibility === "ROLE_SHARED" && (update.sharedWithRoles?.length ?? 0) === 0) {
         context.addIssue({ code: z12.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem b\xE1o c\xE1o chia s\u1EBB" });
       }
     });
@@ -6143,12 +6177,14 @@ function createDefaultReportCatalogConfiguration() {
       isActive: true,
       filterable: DEFAULT_REPORT_FILTER_FIELDS.has(field.key),
       defaultExport: DEFAULT_REPORT_EXPORT_FIELDS.has(field.key),
-      sortOrder: index
+      sortOrder: index,
+      hiddenForRoles: []
     })),
     metrics: REPORT_METRIC_CATALOG.map((metric, index) => ({
       ...metric,
       isActive: DEFAULT_REPORT_METRICS.has(metric.key),
-      sortOrder: index
+      sortOrder: index,
+      hiddenForRoles: []
     }))
   };
 }
@@ -7284,7 +7320,8 @@ function normalizedReportCatalogConfiguration() {
         groupable: base.groupable && (configured?.groupable ?? base.groupable),
         exportable: base.exportable && (configured?.exportable ?? base.exportable),
         defaultExport: configured?.defaultExport ?? DEFAULT_REPORT_EXPORT_FIELDS.has(base.key),
-        sortOrder: configured?.sortOrder ?? index
+        sortOrder: configured?.sortOrder ?? index,
+        hiddenForRoles: configured?.hiddenForRoles ?? []
       };
     }).sort((left, right) => left.sortOrder - right.sortOrder || left.label.localeCompare(right.label, "vi-VN")),
     metrics: REPORT_METRIC_CATALOG.map((base, index) => {
@@ -7293,14 +7330,16 @@ function normalizedReportCatalogConfiguration() {
         ...base,
         label: configured?.label || base.label,
         isActive: configured?.isActive ?? DEFAULT_REPORT_METRICS.has(base.key),
-        sortOrder: configured?.sortOrder ?? index
+        sortOrder: configured?.sortOrder ?? index,
+        hiddenForRoles: configured?.hiddenForRoles ?? []
       };
     }).sort((left, right) => left.sortOrder - right.sortOrder || left.label.localeCompare(right.label, "vi-VN"))
   };
 }
-function buildReportCatalog(items) {
+function buildReportCatalog(items, roles) {
   const configuration = normalizedReportCatalogConfiguration();
-  const fields = configuration.fields.filter((field) => field.isActive).map((field) => {
+  const visible = (item) => !roles || !isHiddenForRoles(item, roles);
+  const fields = configuration.fields.filter((field) => field.isActive && visible(field)).map((field) => {
     if (field.valueType !== "ENUM") return { ...field };
     const options = /* @__PURE__ */ new Map();
     for (const finding of items) {
@@ -7317,13 +7356,27 @@ function buildReportCatalog(items) {
     version: "report-keys.v1",
     fields,
     operators: REPORT_OPERATOR_CATALOG,
-    metrics: configuration.metrics.filter((metric) => metric.isActive)
+    metrics: configuration.metrics.filter((metric) => metric.isActive && visible(metric))
   };
 }
-function assertReportConfigurationAvailable(query, columns) {
+function assertSharedRolesCanRun(query, columns, roles) {
+  if (!query) return;
+  for (const role of roles) {
+    try {
+      assertReportConfigurationAvailable(query, columns, [role]);
+    } catch (reason) {
+      if (reason instanceof HttpProblem && reason.status === 422) {
+        throw new HttpProblem(422, "REPORT_NOT_AVAILABLE_FOR_ROLE", "B\xE1o c\xE1o d\xF9ng tr\u01B0\u1EDDng vai tr\xF2 n\xE0y kh\xF4ng \u0111\u01B0\u1EE3c xem", `Vai tr\xF2 ${role} kh\xF4ng \u0111\u01B0\u1EE3c xem m\u1ED9t tr\u01B0\u1EDDng ho\u1EB7c ch\u1EC9 s\u1ED1 c\u1EE7a b\xE1o c\xE1o n\xE0y. H\xE3y b\u1ECF vai tr\xF2 \u0111\xF3 ho\u1EB7c b\u1EADt l\u1EA1i tr\u01B0\u1EDDng trong c\u1EA5u h\xECnh tr\u01B0\u1EDDng b\xE1o c\xE1o.`);
+      }
+      throw reason;
+    }
+  }
+}
+function assertReportConfigurationAvailable(query, columns, roles) {
   const configuration = normalizedReportCatalogConfiguration();
-  const fields = new Map(configuration.fields.map((field) => [field.key, field]));
-  const metrics = new Map(configuration.metrics.map((metric) => [metric.key, metric]));
+  const offered = (item) => roles && isHiddenForRoles(item, roles) ? { ...item, isActive: false } : item;
+  const fields = new Map(configuration.fields.map((field) => [field.key, offered(field)]));
+  const metrics = new Map(configuration.metrics.map((metric) => [metric.key, offered(metric)]));
   const unavailableRule = query.rules.find((rule) => !fields.get(rule.key)?.isActive || !fields.get(rule.key)?.filterable);
   if (unavailableRule) {
     throw new HttpProblem(422, "REPORT_FIELD_DISABLED", "Tr\u01B0\u1EDDng b\xE1o c\xE1o \u0111\xE3 t\u1EAFt", "B\u1ED9 l\u1ECDc \u0111ang d\xF9ng m\u1ED9t tr\u01B0\u1EDDng kh\xF4ng c\xF2n \u0111\u01B0\u1EE3c qu\u1EA3n tr\u1ECB vi\xEAn cho ph\xE9p.");
@@ -8303,6 +8356,22 @@ async function getDashboardSummaryForUser(user, query = {}) {
     remediationRatePercent: scoped.length ? Math.round(resolved.length / scoped.length * 100) : 0
   };
   return summary;
+}
+function reportDefinitionOwnedBy(user, definition) {
+  return user.roles.includes("ADMIN") || definition.createdByUserId === user.id;
+}
+function requireManagedReportDefinition(id, user) {
+  const definition = reportDefinitions.find((item) => item.id === id);
+  if (!definition || !canAccessReportDefinition(user, definition)) {
+    throw new HttpProblem(404, "REPORT_DEFINITION_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y b\xE1o c\xE1o", "B\xE1o c\xE1o kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c b\u1EA1n kh\xF4ng c\xF3 quy\u1EC1n xem.");
+  }
+  if (definition.isStandard && !user.roles.includes("ADMIN")) {
+    throw new HttpProblem(403, "REPORT_DEFINITION_STANDARD_LOCKED", "B\xE1o c\xE1o chu\u1EA9n do qu\u1EA3n tr\u1ECB vi\xEAn qu\u1EA3n l\xFD", "B\xE1o c\xE1o chu\u1EA9n ch\u1EC9 qu\u1EA3n tr\u1ECB vi\xEAn \u0111\u01B0\u1EE3c s\u1EEDa hay x\xF3a. H\xE3y l\u01B0u m\u1ED9t b\u1EA3n sao c\u1EE7a ri\xEAng b\u1EA1n n\u1EBFu c\u1EA7n ch\u1EC9nh.");
+  }
+  if (!reportDefinitionOwnedBy(user, definition)) {
+    throw new HttpProblem(403, "REPORT_DEFINITION_NOT_OWNER", "Kh\xF4ng c\xF3 quy\u1EC1n s\u1EEDa b\xE1o c\xE1o", "Ch\u1EC9 ng\u01B0\u1EDDi t\u1EA1o ho\u1EB7c qu\u1EA3n tr\u1ECB vi\xEAn \u0111\u01B0\u1EE3c s\u1EEDa hay x\xF3a b\xE1o c\xE1o n\xE0y.");
+  }
+  return definition;
 }
 function isProductionScannerEndpoint(value) {
   if (!value) return false;
@@ -11644,6 +11713,7 @@ var init_app = __esm({
       const user = getCurrentUser(req);
       const body = CreateReportDefinitionSchema.parse(req.body);
       if (body.query) assertReportConfigurationAvailable(body.query, body.exportColumns);
+      assertSharedRolesCanRun(body.query, body.exportColumns, body.visibility === "ROLE_SHARED" ? body.sharedWithRoles : []);
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const definition = {
         id: `report-${crypto9.randomUUID()}`,
@@ -11665,6 +11735,44 @@ var init_app = __esm({
       reportDefinitions.unshift(definition);
       await persistLocalState();
       return reply.code(201).send(definition);
+    });
+    app.patch("/api/v1/reports/definitions/:id", async (req) => {
+      const user = getCurrentUser(req);
+      const definition = requireManagedReportDefinition(req.params.id, user);
+      const body = UpdateReportDefinitionSchema.parse(req.body);
+      if (body.isStandard !== void 0 && !user.roles.includes("ADMIN")) {
+        throw new HttpProblem(403, "REPORT_STANDARD_ADMIN_ONLY", "Ch\u1EC9 qu\u1EA3n tr\u1ECB vi\xEAn \u0111\u1EB7t b\xE1o c\xE1o chu\u1EA9n", "Ch\u1EC9 qu\u1EA3n tr\u1ECB vi\xEAn \u0111\u01B0\u1EE3c xu\u1EA5t b\u1EA3n ho\u1EB7c thu h\u1ED3i b\xE1o c\xE1o chu\u1EA9n.");
+      }
+      const next = { ...definition };
+      if (body.name !== void 0) next.name = body.name;
+      if (body.description !== void 0) next.description = body.description;
+      if (body.visibility !== void 0) {
+        next.visibility = body.visibility;
+        next.sharedWithRoles = body.visibility === "PRIVATE" ? [] : body.sharedWithRoles ?? definition.sharedWithRoles;
+      } else if (body.sharedWithRoles !== void 0 && definition.visibility === "ROLE_SHARED") {
+        next.sharedWithRoles = body.sharedWithRoles;
+      }
+      if (next.visibility === "ROLE_SHARED" && next.sharedWithRoles.length === 0) {
+        throw new HttpProblem(422, "VALIDATION_ERROR", "D\u1EEF li\u1EC7u kh\xF4ng h\u1EE3p l\u1EC7", "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem b\xE1o c\xE1o chia s\u1EBB.");
+      }
+      if (body.isStandard === true && next.visibility !== "ROLE_SHARED") {
+        throw new HttpProblem(422, "REPORT_STANDARD_NEEDS_ROLES", "Ch\u1ECDn vai tr\xF2 \u0111\u01B0\u1EE3c xem", "B\xE1o c\xE1o chu\u1EA9n ph\u1EA3i \u0111\u01B0\u1EE3c chia s\u1EBB cho \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2.");
+      }
+      if (body.isStandard !== void 0) next.isStandard = body.isStandard || void 0;
+      if (next.visibility !== "ROLE_SHARED") next.isStandard = void 0;
+      if (next.visibility === "ROLE_SHARED") assertSharedRolesCanRun(next.query, next.exportColumns, next.sharedWithRoles);
+      next.updatedAt = (/* @__PURE__ */ new Date()).toISOString();
+      Object.assign(definition, next);
+      if (!next.isStandard) delete definition.isStandard;
+      await persistLocalState();
+      return definition;
+    });
+    app.delete("/api/v1/reports/definitions/:id", async (req, reply) => {
+      const user = getCurrentUser(req);
+      const definition = requireManagedReportDefinition(req.params.id, user);
+      reportDefinitions = reportDefinitions.filter((item) => item.id !== definition.id);
+      await persistLocalState();
+      return reply.code(204).send();
     });
     app.get("/api/v1/reports/dashboards", async (req) => {
       const user = getCurrentUser(req);
@@ -11724,24 +11832,26 @@ var init_app = __esm({
     });
     app.get("/api/v1/reports/catalog", async (req) => {
       const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
-      return buildReportCatalog(scoped);
+      return buildReportCatalog(scoped, getCurrentUser(req).roles);
     });
     app.post("/api/v1/reports/runs", async (req) => {
       const query = ReportRunRequestSchema.parse(req.body);
-      assertReportConfigurationAvailable(query);
-      const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
+      const runningUser = getCurrentUser(req);
+      assertReportConfigurationAvailable(query, void 0, runningUser.roles);
+      const scoped = await readScopedFindingsForAnalytics(runningUser);
       return executeReportRun(scoped, query);
     });
     app.post("/api/v1/reports/drill", async (req) => {
       const request = ReportDrillRequestSchema.parse(req.body);
-      assertReportConfigurationAvailable(request.query);
-      const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
+      const drillingUser = getCurrentUser(req);
+      assertReportConfigurationAvailable(request.query, void 0, drillingUser.roles);
+      const scoped = await readScopedFindingsForAnalytics(drillingUser);
       return executeReportDrill(scoped, request);
     });
     app.post("/api/v1/reports/exports", async (req, reply) => {
       const exportingUser = getCurrentUser(req);
       const request = ReportExportRequestSchema.parse(req.body);
-      assertReportConfigurationAvailable(request.query, request.columns);
+      assertReportConfigurationAvailable(request.query, request.columns, exportingUser.roles);
       const scoped = await readScopedFindingsForAnalytics(exportingUser);
       const rows = applyCanonicalReportRules(scoped, request.query.rules, request.query.match);
       if (rows.length > REPORT_EXPORT_MAX_ROWS) {

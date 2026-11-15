@@ -178,14 +178,14 @@ export const AuditTrailViewer: React.FC = () => {
               {logs.map(log => (
                 <article key={log.id} className="space-y-3 p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <span className="rounded-md bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-700">{eventLabel(log.eventType)}</span>
-                    <time className="text-right font-mono text-[10px] text-slate-500">{formatTimestamp(log.timestamp)}</time>
+                    <span className="rounded-md bg-slate-100 px-2 py-1 text-[0.75rem] font-bold text-slate-700">{eventLabel(log.eventType)}</span>
+                    <time className="text-right font-mono text-[0.75rem] text-slate-500">{formatTimestamp(log.timestamp)}</time>
                   </div>
                   <div>
                     <p className="text-sm font-bold text-brand-600">{log.targetEntity}</p>
                     <p className="mt-1 text-xs leading-5 text-slate-600">{log.details}</p>
                   </div>
-                  <p className="text-[11px] text-slate-500">
+                  <p className="text-[0.75rem] text-slate-500">
                     <span className="font-bold text-slate-700">{log.actorName}</span> · <span>{roleLabel(log.actorRole)}</span>
                   </p>
                 </article>
@@ -206,13 +206,13 @@ export const AuditTrailViewer: React.FC = () => {
                 <tbody className="divide-y divide-slate-100 text-slate-800">
                   {logs.map(log => (
                     <tr key={log.id} className="hover:bg-slate-50/70">
-                      <td className="whitespace-nowrap px-5 py-3.5 font-mono text-[11px] text-slate-500">{formatTimestamp(log.timestamp)}</td>
+                      <td className="whitespace-nowrap px-5 py-3.5 font-mono text-[0.75rem] text-slate-500">{formatTimestamp(log.timestamp)}</td>
                       <td className="px-5 py-3.5">
-                        <span className="rounded-md bg-slate-100 px-2.5 py-1 text-[10px] font-bold text-slate-700">{eventLabel(log.eventType)}</span>
+                        <span className="rounded-md bg-slate-100 px-2.5 py-1 text-[0.75rem] font-bold text-slate-700">{eventLabel(log.eventType)}</span>
                       </td>
                       <td className="px-5 py-3.5">
                         <div className="font-bold text-slate-900">{log.actorName}</div>
-                        <div className="mt-0.5 text-[10px] text-slate-400">{roleLabel(log.actorRole)}</div>
+                        <div className="mt-0.5 text-[0.75rem] text-slate-400">{roleLabel(log.actorRole)}</div>
                       </td>
                       <td className="px-5 py-3.5 font-bold text-brand-600">{log.targetEntity}</td>
                       <td className="max-w-md px-5 py-3.5 leading-5 text-slate-600">{log.details}</td>

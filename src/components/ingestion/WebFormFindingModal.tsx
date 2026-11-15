@@ -257,7 +257,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
     return <label className={span}>
       <ReportFieldLabel label={field.label} required={field.isRequired && field.dataType !== 'file'} emphasized={field.isEmphasized} />
       <span className="mt-1 block">{renderCustomControl(field)}</span>
-      {field.helpText && <span className="mt-1 block text-[11px] font-normal text-slate-500">{field.helpText}</span>}
+      {field.helpText && <span className="mt-1 block text-[0.75rem] font-normal text-slate-500">{field.helpText}</span>}
     </label>;
   };
 
@@ -268,8 +268,8 @@ export const WebFormFindingModal: React.FC<Props> = ({
   const hasCampaignBlock = formTemplate?.blocks.some(block => block.type === 'CAMPAIGN_CONTEXT') ?? false;
   const renderCampaignContext = () => <section className={`rounded-xl border border-brand-200 bg-brand-50 p-3 ${REPORT_FORM_WIDTH_CLASS.FULL}`}>
     <label className="text-xs font-black text-brand-600">Chuyên đề áp dụng<select value={effectiveCampaignId} onChange={event => setCampaignId(event.target.value)} required className="mt-1.5 min-h-10 w-full rounded-lg border border-brand-200 bg-white px-3 text-xs font-semibold text-slate-800"><option value="">Chọn chuyên đề</option>{eligibleCampaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.code} · {campaign.name}</option>)}</select></label>
-    {selectedCampaign && <dl className="mt-3 grid gap-2 text-[11px] text-slate-700 sm:grid-cols-3"><div><dt className="font-bold text-slate-500">Quyết định</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.decisionNo}</dd></div><div><dt className="font-bold text-slate-500">Thời gian</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.startDate} – {selectedCampaign.endDate}</dd></div><div><dt className="font-bold text-slate-500">Phạm vi</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.branchCodes.length} chi nhánh</dd></div></dl>}
-    {!eligibleCampaigns.length && <p className="mt-2 text-[11px] font-semibold text-red-700">Không có chuyên đề phù hợp loại báo cáo và chi nhánh đã chọn.</p>}
+    {selectedCampaign && <dl className="mt-3 grid gap-2 text-[0.75rem] text-slate-700 sm:grid-cols-3"><div><dt className="font-bold text-slate-500">Quyết định</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.decisionNo}</dd></div><div><dt className="font-bold text-slate-500">Thời gian</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.startDate} – {selectedCampaign.endDate}</dd></div><div><dt className="font-bold text-slate-500">Phạm vi</dt><dd className="mt-0.5 font-semibold">{selectedCampaign.branchCodes.length} chi nhánh</dd></div></dl>}
+    {!eligibleCampaigns.length && <p className="mt-2 text-[0.75rem] font-semibold text-red-700">Không có chuyên đề phù hợp loại báo cáo và chi nhánh đã chọn.</p>}
   </section>;
 
   if (!isOpen) return null;
@@ -292,15 +292,15 @@ export const WebFormFindingModal: React.FC<Props> = ({
             <div className="flex flex-wrap items-center justify-between gap-3">
               <div>
                 <p className="text-xs font-black text-brand-600">Tách hồ sơ từ tiểu biên bản</p>
-                <p className="mt-1 text-[11px] text-slate-600">Tải .xlsx, .xls, .docx hoặc PDF có OCR để tự tách nhiều mã sai sót. Vẫn có thể nhập tay bên dưới.</p>
+                <p className="mt-1 text-[0.75rem] text-slate-600">Tải .xlsx, .xls, .docx hoặc PDF có OCR để tự tách nhiều mã sai sót. Vẫn có thể nhập tay bên dưới.</p>
               </div>
-              <label className="inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-[11px] font-bold text-white hover:bg-brand-600">
+              <label className="inline-flex min-h-10 cursor-pointer items-center gap-1.5 rounded-lg bg-brand-500 px-3 py-2 text-[0.75rem] font-bold text-white hover:bg-brand-600">
                 {importBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : /\.(docx|pdf)$/i.test(importFileName) ? <FileText className="h-4 w-4" /> : <FileSpreadsheet className="h-4 w-4" />}
                 {importBusy ? 'Đang đọc và tách dữ liệu...' : 'Chọn tệp'}
                 <input type="file" accept=".xlsx,.xls,.docx,.pdf" className="hidden" onChange={handleSourceUpload} disabled={importBusy} />
               </label>
             </div>
-            {importFileName && importedRows.length > 0 && <p className="mt-2 text-[11px] font-semibold text-brand-700">{importFileName} · {importedRows.length} hồ sơ đã sẵn sàng tạo.</p>}
+            {importFileName && importedRows.length > 0 && <p className="mt-2 text-[0.75rem] font-semibold text-brand-700">{importFileName} · {importedRows.length} hồ sơ đã sẵn sàng tạo.</p>}
           </section>
           {!hasCampaignBlock && renderCampaignContext()}
           <div>
@@ -406,7 +406,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
           {/* Grading and provenance the đoàn kiểm tra assigned in CoPlus, kept with the finding so a
               sai sót lifted from a Tiểu biên bản arrives here complete. */}
           <fieldset className="rounded-xl border border-rule bg-slate-50 p-4">
-            <legend className="px-1 text-[11px] font-black text-brand-600">Nguồn kiểm tra và mức độ</legend>
+            <legend className="px-1 text-[0.75rem] font-black text-brand-600">Nguồn kiểm tra và mức độ</legend>
             <div className="grid grid-cols-1 gap-3 sm:grid-cols-6">
               <label className={REPORT_FORM_WIDTH_CLASS.THIRD}>
                 <ReportFieldLabel label="Loại nghiệp vụ" required />
@@ -436,7 +436,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
           </fieldset>
 
           {schemaConfig && formTemplate && (customFields.length > 0 || hasCampaignBlock) && <div className="rounded-xl border border-rule bg-slate-50 p-4" data-presentation-mode={presentationMode}>
-            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 className="text-xs font-extrabold text-slate-800">{formTemplate.name}</h4><span className="rounded-full bg-white px-2 py-1 text-[10px] font-bold text-slate-500 ring-1 ring-slate-200">{presentationMode === 'EXCEL_GRID' ? 'Nhập theo bảng' : presentationMode === 'FORM_ONLY' ? 'Nhập theo form' : 'Hồ sơ kiểm soát'}</span></div>
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h4 className="text-xs font-extrabold text-slate-800">{formTemplate.name}</h4><span className="rounded-full bg-white px-2 py-1 text-[0.75rem] font-bold text-slate-500 ring-1 ring-slate-200">{presentationMode === 'EXCEL_GRID' ? 'Nhập theo bảng' : presentationMode === 'FORM_ONLY' ? 'Nhập theo form' : 'Hồ sơ kiểm soát'}</span></div>
             <ReportFormBlockLayout
               schema={schemaConfig}
               template={formTemplate}
@@ -444,7 +444,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
               renderGridCell={renderCustomControl}
               renderCampaignContext={renderCampaignContext}
             />
-            {!allowEvidenceAttachments && <p className="mt-3 rounded-lg bg-white px-3 py-2 text-[11px] font-semibold text-slate-600">Loại báo cáo này xử lý bằng dữ liệu trên form, không yêu cầu tài liệu đính kèm.</p>}
+            {!allowEvidenceAttachments && <p className="mt-3 rounded-lg bg-white px-3 py-2 text-[0.75rem] font-semibold text-slate-600">Loại báo cáo này xử lý bằng dữ liệu trên form, không yêu cầu tài liệu đính kèm.</p>}
           </div>}
 
           <div>

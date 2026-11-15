@@ -55,12 +55,15 @@ import {
   ReportFilterQuery,
   ReportFilterSchema,
   CreateReportDefinitionSchema,
+  UpdateReportDefinitionSchema,
   CreateDashboardDefinitionSchema,
   inferCoPlusRole,
   businessLineLabels,
   riskLevelLabels,
   REPORT_FIELD_CATALOG,
   REPORT_METRIC_CATALOG,
+  isHiddenForRoles,
+  UserRole,
   formatReportMetricValue,
   REPORT_OPERATOR_CATALOG,
   ReportCatalog,
@@ -1143,11 +1146,13 @@ function createDefaultReportCatalogConfiguration(): ReportCatalogConfiguration {
       filterable: DEFAULT_REPORT_FILTER_FIELDS.has(field.key),
       defaultExport: DEFAULT_REPORT_EXPORT_FIELDS.has(field.key),
       sortOrder: index,
+      hiddenForRoles: [],
     })),
     metrics: REPORT_METRIC_CATALOG.map((metric, index) => ({
       ...metric,
       isActive: DEFAULT_REPORT_METRICS.has(metric.key),
       sortOrder: index,
+      hiddenForRoles: [],
     })),
   };
 }
@@ -3126,6 +3131,7 @@ function normalizedReportCatalogConfiguration(): ReportCatalogConfiguration {
         exportable: base.exportable && (configured?.exportable ?? base.exportable),
         defaultExport: configured?.defaultExport ?? DEFAULT_REPORT_EXPORT_FIELDS.has(base.key),
         sortOrder: configured?.sortOrder ?? index,
+        hiddenForRoles: configured?.hiddenForRoles ?? [],
       };
     }).sort((left, right) => left.sortOrder - right.sortOrder || left.label.localeCompare(right.label, 'vi-VN')),
     metrics: REPORT_METRIC_CATALOG.map((base, index) => {
@@ -3135,14 +3141,20 @@ function normalizedReportCatalogConfiguration(): ReportCatalogConfiguration {
         label: configured?.label || base.label,
         isActive: configured?.isActive ?? DEFAULT_REPORT_METRICS.has(base.key),
         sortOrder: configured?.sortOrder ?? index,
+        hiddenForRoles: configured?.hiddenForRoles ?? [],
       };
     }).sort((left, right) => left.sortOrder - right.sortOrder || left.label.localeCompare(right.label, 'vi-VN')),
   };
 }
 
-function buildReportCatalog(items: Finding[]): ReportCatalog {
+/**
+ * `roles` undefined means the full catalog (labels for an export the caller already passed the
+ * availability check for); a role list narrows it to what those roles may see.
+ */
+function buildReportCatalog(items: Finding[], roles?: readonly UserRole[]): ReportCatalog {
   const configuration = normalizedReportCatalogConfiguration();
-  const fields = configuration.fields.filter(field => field.isActive).map(field => {
+  const visible = (item: { hiddenForRoles?: readonly UserRole[] }) => !roles || !isHiddenForRoles(item, roles);
+  const fields = configuration.fields.filter(field => field.isActive && visible(field)).map(field => {
     if (field.valueType !== 'ENUM') return { ...field };
     const options = new Map<string, string>();
     for (const finding of items) {
@@ -3159,14 +3171,37 @@ function buildReportCatalog(items: Finding[]): ReportCatalog {
     version: 'report-keys.v1',
     fields,
     operators: REPORT_OPERATOR_CATALOG,
-    metrics: configuration.metrics.filter(metric => metric.isActive),
+    metrics: configuration.metrics.filter(metric => metric.isActive && visible(metric)),
   };
 }
 
-function assertReportConfigurationAvailable(query: ReportRunRequest, columns?: ReportFieldKey[]): void {
+/**
+ * Publishing a report to a role that cannot see one of its fields would hand that role a report
+ * that fails on open, so refuse it at the moment of sharing.
+ */
+function assertSharedRolesCanRun(query: ReportRunRequest | undefined, columns: ReportFieldKey[] | undefined, roles: readonly UserRole[]): void {
+  if (!query) return;
+  for (const role of roles) {
+    try {
+      assertReportConfigurationAvailable(query, columns, [role]);
+    } catch (reason) {
+      if (reason instanceof HttpProblem && reason.status === 422) {
+        throw new HttpProblem(422, 'REPORT_NOT_AVAILABLE_FOR_ROLE', 'Báo cáo dùng trường vai trò này không được xem', `Vai trò ${role} không được xem một trường hoặc chỉ số của báo cáo này. Hãy bỏ vai trò đó hoặc bật lại trường trong cấu hình trường báo cáo.`);
+      }
+      throw reason;
+    }
+  }
+}
+
+function assertReportConfigurationAvailable(query: ReportRunRequest, columns?: ReportFieldKey[], roles?: readonly UserRole[]): void {
   const configuration = normalizedReportCatalogConfiguration();
-  const fields = new Map(configuration.fields.map(field => [field.key, field]));
-  const metrics = new Map(configuration.metrics.map(metric => [metric.key, metric]));
+  // A field hidden from the caller's roles is treated exactly like a switched-off one, so the
+  // server never runs or exports what the catalog would not have offered.
+  const offered = <T extends { isActive: boolean; hiddenForRoles?: readonly UserRole[] }>(item: T): T => (
+    roles && isHiddenForRoles(item, roles) ? { ...item, isActive: false } : item
+  );
+  const fields = new Map(configuration.fields.map(field => [field.key, offered(field)]));
+  const metrics = new Map(configuration.metrics.map(metric => [metric.key, offered(metric)]));
   const unavailableRule = query.rules.find(rule => !fields.get(rule.key)?.isActive || !fields.get(rule.key)?.filterable);
   if (unavailableRule) {
     throw new HttpProblem(422, 'REPORT_FIELD_DISABLED', 'Trường báo cáo đã tắt', 'Bộ lọc đang dùng một trường không còn được quản trị viên cho phép.');
@@ -7067,6 +7102,7 @@ app.post('/api/v1/reports/definitions', async (req: FastifyRequest<{ Body: any }
   const user = getCurrentUser(req);
   const body = CreateReportDefinitionSchema.parse(req.body);
   if (body.query) assertReportConfigurationAvailable(body.query, body.exportColumns);
+  assertSharedRolesCanRun(body.query, body.exportColumns, body.visibility === 'ROLE_SHARED' ? body.sharedWithRoles : []);
   const now = new Date().toISOString();
   const definition: ReportDefinition = {
     id: `report-${crypto.randomUUID()}`,
@@ -7088,6 +7124,68 @@ app.post('/api/v1/reports/definitions', async (req: FastifyRequest<{ Body: any }
   reportDefinitions.unshift(definition);
   await persistLocalState();
   return reply.code(201).send(definition);
+});
+
+/** Chỉ người tạo hoặc quản trị viên được đổi hay xóa một báo cáo đã lưu. */
+function reportDefinitionOwnedBy(user: UserProfile, definition: ReportDefinition): boolean {
+  return user.roles.includes('ADMIN') || definition.createdByUserId === user.id;
+}
+
+function requireManagedReportDefinition(id: string, user: UserProfile): ReportDefinition {
+  const definition = reportDefinitions.find(item => item.id === id);
+  if (!definition || !canAccessReportDefinition(user, definition)) {
+    throw new HttpProblem(404, 'REPORT_DEFINITION_NOT_FOUND', 'Không tìm thấy báo cáo', 'Báo cáo không tồn tại hoặc bạn không có quyền xem.');
+  }
+  if (definition.isStandard && !user.roles.includes('ADMIN')) {
+    throw new HttpProblem(403, 'REPORT_DEFINITION_STANDARD_LOCKED', 'Báo cáo chuẩn do quản trị viên quản lý', 'Báo cáo chuẩn chỉ quản trị viên được sửa hay xóa. Hãy lưu một bản sao của riêng bạn nếu cần chỉnh.');
+  }
+  if (!reportDefinitionOwnedBy(user, definition)) {
+    throw new HttpProblem(403, 'REPORT_DEFINITION_NOT_OWNER', 'Không có quyền sửa báo cáo', 'Chỉ người tạo hoặc quản trị viên được sửa hay xóa báo cáo này.');
+  }
+  return definition;
+}
+
+app.patch('/api/v1/reports/definitions/:id', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
+  const user = getCurrentUser(req);
+  const definition = requireManagedReportDefinition(req.params.id, user);
+  const body = UpdateReportDefinitionSchema.parse(req.body);
+  if (body.isStandard !== undefined && !user.roles.includes('ADMIN')) {
+    throw new HttpProblem(403, 'REPORT_STANDARD_ADMIN_ONLY', 'Chỉ quản trị viên đặt báo cáo chuẩn', 'Chỉ quản trị viên được xuất bản hoặc thu hồi báo cáo chuẩn.');
+  }
+  // Build the next state on a copy and validate it whole; the stored report only changes once
+  // every rule has passed, so a refused edit can never leave a half-applied report behind.
+  const next: ReportDefinition = { ...definition };
+  if (body.name !== undefined) next.name = body.name;
+  if (body.description !== undefined) next.description = body.description;
+  if (body.visibility !== undefined) {
+    next.visibility = body.visibility;
+    next.sharedWithRoles = body.visibility === 'PRIVATE' ? [] : body.sharedWithRoles ?? definition.sharedWithRoles;
+  } else if (body.sharedWithRoles !== undefined && definition.visibility === 'ROLE_SHARED') {
+    next.sharedWithRoles = body.sharedWithRoles;
+  }
+  if (next.visibility === 'ROLE_SHARED' && next.sharedWithRoles.length === 0) {
+    throw new HttpProblem(422, 'VALIDATION_ERROR', 'Dữ liệu không hợp lệ', 'Chọn ít nhất một vai trò được xem báo cáo chia sẻ.');
+  }
+  if (body.isStandard === true && next.visibility !== 'ROLE_SHARED') {
+    throw new HttpProblem(422, 'REPORT_STANDARD_NEEDS_ROLES', 'Chọn vai trò được xem', 'Báo cáo chuẩn phải được chia sẻ cho ít nhất một vai trò.');
+  }
+  if (body.isStandard !== undefined) next.isStandard = body.isStandard || undefined;
+  // A standard report is published to roles by definition, so making it private withdraws it.
+  if (next.visibility !== 'ROLE_SHARED') next.isStandard = undefined;
+  if (next.visibility === 'ROLE_SHARED') assertSharedRolesCanRun(next.query, next.exportColumns, next.sharedWithRoles);
+  next.updatedAt = new Date().toISOString();
+  Object.assign(definition, next);
+  if (!next.isStandard) delete definition.isStandard;
+  await persistLocalState();
+  return definition;
+});
+
+app.delete('/api/v1/reports/definitions/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
+  const user = getCurrentUser(req);
+  const definition = requireManagedReportDefinition(req.params.id, user);
+  reportDefinitions = reportDefinitions.filter(item => item.id !== definition.id);
+  await persistLocalState();
+  return reply.code(204).send();
 });
 
 app.get('/api/v1/reports/dashboards', async (req) => {
@@ -7155,27 +7253,29 @@ app.put('/api/v1/admin/report-catalog', async (req: FastifyRequest<{ Body: any }
 
 app.get('/api/v1/reports/catalog', async (req) => {
   const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
-  return buildReportCatalog(scoped);
+  return buildReportCatalog(scoped, getCurrentUser(req).roles);
 });
 
 app.post('/api/v1/reports/runs', async (req: FastifyRequest<{ Body: any }>) => {
   const query = ReportRunRequestSchema.parse(req.body);
-  assertReportConfigurationAvailable(query);
-  const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
+  const runningUser = getCurrentUser(req);
+  assertReportConfigurationAvailable(query, undefined, runningUser.roles);
+  const scoped = await readScopedFindingsForAnalytics(runningUser);
   return executeReportRun(scoped, query);
 });
 
 app.post('/api/v1/reports/drill', async (req: FastifyRequest<{ Body: any }>) => {
   const request = ReportDrillRequestSchema.parse(req.body);
-  assertReportConfigurationAvailable(request.query);
-  const scoped = await readScopedFindingsForAnalytics(getCurrentUser(req));
+  const drillingUser = getCurrentUser(req);
+  assertReportConfigurationAvailable(request.query, undefined, drillingUser.roles);
+  const scoped = await readScopedFindingsForAnalytics(drillingUser);
   return executeReportDrill(scoped, request);
 });
 
 app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, reply) => {
   const exportingUser = getCurrentUser(req);
   const request = ReportExportRequestSchema.parse(req.body);
-  assertReportConfigurationAvailable(request.query, request.columns);
+  assertReportConfigurationAvailable(request.query, request.columns, exportingUser.roles);
   const scoped = await readScopedFindingsForAnalytics(exportingUser);
   const rows = applyCanonicalReportRules(scoped, request.query.rules, request.query.match);
   // A serverless response body is capped (~4.5MB on Vercel) and the function has a wall clock, so

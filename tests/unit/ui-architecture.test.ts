@@ -149,11 +149,15 @@ describe('UI and business terminology architecture', () => {
     expect(reports).toContain('Mẫu báo cáo');
     expect(reports).toContain('Xem theo');
     expect(reports).toContain('data-testid="cognos-authoring-workspace"');
-    expect(reports).toContain('data-testid="report-data-panel"');
+    expect(reports).toContain('data-testid="report-picker"');
+    expect(reports).toContain('data-testid="report-preset-list"');
+    expect(reports).toContain("useState<'design' | 'result'>('result')");
     expect(reports).toContain('data-testid="report-canvas"');
-    expect(reports).toContain('Hàng');
-    expect(reports).toContain('Cột');
-    expect(reports).toContain('Giá trị');
+    expect(reports).toContain('Nhóm theo');
+    expect(reports).toContain('Chia cột theo');
+    expect(reports).toContain('designer-advanced');
+    expect(reports).toContain('report-standard-list');
+    expect(reports).toContain('Đo bằng');
     expect(reports).not.toContain('Trường dữ liệu');
     expect(reports).not.toContain('Thiết lập báo cáo');
     expect(reports).toContain('Xuất HTML');
@@ -187,7 +191,8 @@ describe('UI and business terminology architecture', () => {
     expect(fieldChips).toContain('overflow-y-auto');
     expect(fieldChips).not.toContain('role="menu"');
     expect(reports).toContain('clickZone={clickZone}');
-    expect(fieldChips).toContain('Bấm để thêm vào');
+    expect(fieldChips).toContain('Bấm một trường sẽ đưa vào');
+    expect(fieldChips).toContain('FIELD_GROUPS');
   });
 
   it('exposes separate report and dashboard design/preview states', () => {

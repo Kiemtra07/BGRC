@@ -165,11 +165,11 @@ export const ExcelTemplateImporterModal: React.FC<Props> = ({ isOpen, onClose, o
                     <CheckCircle2 className="w-4 h-4 text-emerald-500" />
                     Đã đọc {detectedHeaders.length} cột
                   </span>
-                  <span className="text-[11px] text-slate-500 font-mono">{file?.name}</span>
+                  <span className="text-[0.75rem] text-slate-500 font-mono">{file?.name}</span>
                 </div>
                 <div className="flex flex-wrap gap-1.5 p-3 bg-slate-50 rounded-xl border border-rule max-h-36 overflow-y-auto">
                   {detectedHeaders.map((header, idx) => (
-                    <span key={idx} className="px-2.5 py-1 bg-white text-slate-700 border border-rule rounded-md text-[11px] font-semibold flex items-center gap-1">
+                    <span key={idx} className="px-2.5 py-1 bg-white text-slate-700 border border-rule rounded-md text-[0.75rem] font-semibold flex items-center gap-1">
                       <span className="w-1.5 h-1.5 rounded-full bg-info-surface0"></span>
                       {header}
                     </span>

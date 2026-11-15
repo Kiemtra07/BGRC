@@ -20,8 +20,8 @@ const sharesHorizontalBand = (first, second) => Boolean(first && second && Math.
 
 try {
   await loginAs(page, 'admin');
-  await page.getByText('AUDIT BGS', { exact: true }).waitFor();
-  const appBrandBox = await page.getByText('AUDIT BGS', { exact: true }).locator('..').boundingBox();
+  await page.getByText('AUDIT MONITORING', { exact: true }).waitFor();
+  const appBrandBox = await page.getByText('AUDIT MONITORING', { exact: true }).locator('..').boundingBox();
   const primaryNavigationBox = await page.getByRole('navigation', { name: 'Điều hướng chính' }).boundingBox();
   if (!sharesHorizontalBand(appBrandBox, primaryNavigationBox)) throw new Error('Primary navigation must share the app brand header row on desktop.');
   await page.getByTestId('channel-sidebar').waitFor();
@@ -164,7 +164,7 @@ try {
   await page.setViewportSize({ width: 1440, height: 1000 });
   await loginAs(page, 'admin');
   await page.getByText('Đang tải dữ liệu...', { exact: true }).waitFor({ state: 'hidden' });
-  await page.getByRole('button', { name: 'Quản trị', exact: true }).click();
+  await page.getByRole('button', { name: 'Cấu hình', exact: true }).click();
   await page.getByRole('heading', { name: 'Quản trị', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Loại báo cáo', exact: true }).click();
   await page.getByRole('button', { name: 'Sửa', exact: true }).first().click();

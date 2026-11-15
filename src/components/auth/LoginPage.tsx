@@ -241,21 +241,21 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onForgotPassword 
               <ShieldCheck className="h-5 w-5 sm:h-6 sm:w-6" strokeWidth={2.2} />
             </div>
             <div>
-              <div className="text-[13px] font-black tracking-[0.12em] text-white sm:text-[15px]">AUDIT MONITORING</div>
-              <div className="mt-0.5 text-[11px] font-medium text-teal-100/75 sm:text-xs">Quản lý hồ sơ kiểm tra</div>
+              <div className="text-[0.8125rem] font-black tracking-[0.12em] text-white sm:text-[0.9375rem]">AUDIT MONITORING</div>
+              <div className="mt-0.5 text-[0.75rem] font-medium text-teal-100/75 sm:text-xs">Quản lý hồ sơ kiểm tra</div>
             </div>
           </div>
 
           <div className="login-panel-copy relative mt-auto max-w-xl pt-5 sm:pt-24 lg:pt-36">
-            <h1 className="login-panel-title max-w-[12ch] text-[26px] font-black leading-[1.06] tracking-[-0.03em] text-white sm:text-4xl sm:tracking-[-0.04em] lg:text-5xl lg:leading-[1.04]">Quản lý hồ sơ kiểm tra</h1>
+            <h1 className="login-panel-title max-w-[12ch] text-[1.625rem] font-black leading-[1.06] tracking-[-0.03em] text-white sm:text-4xl sm:tracking-[-0.04em] lg:text-5xl lg:leading-[1.04]">Quản lý hồ sơ kiểm tra</h1>
             {/* Câu này lặp ý với câu highlight ngay dưới; trên mobile chỗ đứng quý hơn nên bỏ hẳn. */}
-            <p className="login-panel-lede mt-4 hidden max-w-md text-sm leading-6 text-teal-50/75 sm:block sm:text-[15px]">
+            <p className="login-panel-lede mt-4 hidden max-w-md text-sm leading-6 text-teal-50/75 sm:block sm:text-[0.9375rem]">
               Đăng nhập để tiếp tục theo dõi hồ sơ, bằng chứng và phê duyệt.
             </p>
 
             {/* `key` đổi theo câu đang hiện để React gắn lại node và animation chạy lại từ đầu. */}
             <div className="login-panel-highlight mt-3 min-h-[40px] max-w-md border-l-2 border-teal-200/25 pl-3 sm:mt-7 sm:min-h-[78px] sm:pl-4">
-              <p key={`title-${highlightIndex}`} className="login-rise text-[13px] font-bold text-white sm:text-sm">{highlight.title}</p>
+              <p key={`title-${highlightIndex}`} className="login-rise text-[0.8125rem] font-bold text-white sm:text-sm">{highlight.title}</p>
               <p key={`detail-${highlightIndex}`} className="login-panel-detail login-rise mt-1.5 hidden text-sm leading-6 text-teal-50/70 sm:block" style={{ animationDelay: '90ms' }}>{highlight.detail}</p>
             </div>
 
@@ -276,7 +276,7 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onForgotPassword 
           <div className="w-full max-w-[430px]">
             <div className="login-form-head mb-5 sm:mb-8">
               <div>
-                <p className="text-[10px] font-black uppercase tracking-[0.2em] text-brand-600">Audit Monitoring</p>
+                <p className="text-[0.75rem] font-black uppercase tracking-[0.2em] text-brand-600">Audit Monitoring</p>
                 <h2 className="login-form-title mt-2 text-2xl font-black tracking-[-0.04em] text-slate-950 sm:mt-3 sm:text-3xl">Đăng nhập</h2>
               </div>
             </div>
@@ -288,21 +288,21 @@ export const LoginPage: React.FC<LoginPageProps> = ({ onLogin, onForgotPassword 
                 <LogIn className="h-4 w-4 text-brand-600" />Đăng nhập với Google
               </button>}
 
-              {googleLoginEnabled && <div className="flex items-center gap-3 text-[11px] font-semibold text-slate-400"><span className="h-px flex-1 bg-slate-200" />Hoặc email và mật khẩu<span className="h-px flex-1 bg-slate-200" /></div>}
+              {googleLoginEnabled && <div className="flex items-center gap-3 text-[0.75rem] font-semibold text-slate-400"><span className="h-px flex-1 bg-slate-200" />Hoặc email và mật khẩu<span className="h-px flex-1 bg-slate-200" /></div>}
 
               <label className="block text-sm font-bold text-slate-800">
-                <span className="mb-1.5 flex items-center justify-between gap-3 sm:mb-2">Email đăng nhập <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Bắt buộc</span></span>
+                <span className="mb-1.5 flex items-center justify-between gap-3 sm:mb-2">Email đăng nhập <span className="text-[0.75rem] font-semibold uppercase tracking-[0.12em] text-slate-400">Bắt buộc</span></span>
                 <span className="login-field group flex min-h-12 items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 sm:min-h-14 transition-colors focus-within:border-brand-500/70 focus-within:ring-0">
                   <UserRound className="h-4 w-4 shrink-0 text-slate-400 transition-colors group-focus-within:text-brand-600" />
-                  <input type="email" autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} className="min-w-0 flex-1 bg-transparent text-[15px] font-medium text-slate-900 outline-none placeholder:text-slate-400 focus-visible:outline-none" placeholder="Nhập email doanh nghiệp" autoFocus />
+                  <input type="email" autoComplete="username" value={username} onChange={event => setUsername(event.target.value)} className="min-w-0 flex-1 bg-transparent text-[0.9375rem] font-medium text-slate-900 outline-none placeholder:text-slate-400 focus-visible:outline-none" placeholder="Nhập email doanh nghiệp" autoFocus />
                 </span>
               </label>
 
               <label className="block text-sm font-bold text-slate-800">
-                <span className="mb-1.5 flex items-center justify-between gap-3 sm:mb-2">Mật khẩu <span className="text-[10px] font-semibold uppercase tracking-[0.12em] text-slate-400">Bắt buộc</span></span>
+                <span className="mb-1.5 flex items-center justify-between gap-3 sm:mb-2">Mật khẩu <span className="text-[0.75rem] font-semibold uppercase tracking-[0.12em] text-slate-400">Bắt buộc</span></span>
                 <span className="login-field group flex min-h-12 items-center gap-3 rounded-2xl border border-slate-200 bg-white px-4 sm:min-h-14 transition-colors focus-within:border-brand-500/70 focus-within:ring-0">
                   <LockKeyhole className="h-4 w-4 shrink-0 text-slate-400 transition-colors group-focus-within:text-brand-600" />
-                  <input type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} className="min-w-0 flex-1 bg-transparent text-[15px] font-medium text-slate-900 outline-none placeholder:text-slate-400 focus-visible:outline-none" placeholder="Nhập mật khẩu" />
+                  <input type={showPassword ? 'text' : 'password'} autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} className="min-w-0 flex-1 bg-transparent text-[0.9375rem] font-medium text-slate-900 outline-none placeholder:text-slate-400 focus-visible:outline-none" placeholder="Nhập mật khẩu" />
                   <button type="button" aria-label={showPassword ? 'Ẩn mật khẩu' : 'Hiện mật khẩu'} aria-pressed={showPassword} onClick={() => setShowPassword(value => !value)} className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-slate-500 transition-colors hover:bg-slate-100 hover:text-brand-600">
                     {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                   </button>

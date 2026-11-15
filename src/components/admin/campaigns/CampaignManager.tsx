@@ -140,21 +140,21 @@ export const CampaignManager: React.FC<Props> = ({ canProvisionDrive, campaigns,
           <button type="button" role="tab" aria-selected={layout === 'CARD'} onClick={() => setLayout('CARD')} className={`flex min-h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-bold transition-colors ${layout === 'CARD' ? 'bg-white text-brand-600 shadow-panel' : 'text-slate-600 hover:text-slate-900'}`}><LayoutGrid className="h-4 w-4" />Thẻ</button>
           <button type="button" role="tab" aria-selected={layout === 'LIST'} onClick={() => setLayout('LIST')} className={`flex min-h-9 items-center gap-1.5 rounded-lg px-3 text-xs font-bold transition-colors ${layout === 'LIST' ? 'bg-white text-brand-600 shadow-panel' : 'text-slate-600 hover:text-slate-900'}`}><List className="h-4 w-4" />Danh sách</button>
         </div>
-        <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-slate-500"><Filter className="h-3.5 w-3.5" />Lọc</span>
-        <select aria-label="Lọc theo trạng thái chuyên đề" value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="min-h-9 rounded-lg border border-rule bg-white px-2.5 text-[11px] font-semibold text-slate-700 outline-none focus:border-brand-500">
+        <span className="inline-flex items-center gap-1.5 text-[0.75rem] font-bold text-slate-500"><Filter className="h-3.5 w-3.5" />Lọc</span>
+        <select aria-label="Lọc theo trạng thái chuyên đề" value={statusFilter} onChange={event => setStatusFilter(event.target.value)} className="min-h-9 rounded-lg border border-rule bg-white px-2.5 text-[0.75rem] font-semibold text-slate-700 outline-none focus:border-brand-500">
           <option value="ALL">Mọi trạng thái</option>
           <option value="DRAFT">Nháp</option>
           <option value="ACTIVE">Đang chạy</option>
           <option value="CLOSED">Đã đóng</option>
         </select>
-        {(statusFilter !== 'ALL' || search.trim()) && <button type="button" onClick={() => { setStatusFilter('ALL'); setSearch(''); }} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-rule px-2.5 text-[11px] font-bold text-slate-600 hover:border-red-200 hover:text-red-700">Bỏ lọc</button>}
+        {(statusFilter !== 'ALL' || search.trim()) && <button type="button" onClick={() => { setStatusFilter('ALL'); setSearch(''); }} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-rule px-2.5 text-[0.75rem] font-bold text-slate-600 hover:border-red-200 hover:text-red-700">Bỏ lọc</button>}
       </div>
       <label className="relative block w-full md:max-w-xs">
         <span className="sr-only">Tìm chuyên đề</span>
         <Search className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-slate-400" />
         <input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Tìm mã, tên, số quyết định..." className="min-h-10 w-full rounded-xl border border-rule bg-white pl-10 pr-4 text-xs font-medium outline-none focus:border-brand-500" />
       </label>
-      <span data-numeric className="shrink-0 text-[11px] font-semibold text-slate-500">{visibleCampaigns.length}/{campaigns.length} chuyên đề</span>
+      <span data-numeric className="shrink-0 text-[0.75rem] font-semibold text-slate-500">{visibleCampaigns.length}/{campaigns.length} chuyên đề</span>
     </div>
 
     {!visibleCampaigns.length && <div className="rounded-2xl border border-rule bg-white p-10 text-center text-sm font-semibold text-slate-600 shadow-panel">Không có chuyên đề nào khớp bộ lọc.</div>}
@@ -162,7 +162,7 @@ export const CampaignManager: React.FC<Props> = ({ canProvisionDrive, campaigns,
     {layout === 'LIST' && visibleCampaigns.length > 0 && <section aria-label="Danh sách chuyên đề" className="overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[860px] text-left text-xs">
-          <thead className="border-b border-rule bg-slate-50/80 text-[11px] font-semibold text-slate-500">
+          <thead className="border-b border-rule bg-slate-50/80 text-[0.75rem] font-semibold text-slate-500">
             <tr>
               <th scope="col" className="px-4 py-2.5 font-semibold">Mã</th>
               <th scope="col" className="px-4 py-2.5 font-semibold">Tên chuyên đề</th>
@@ -175,17 +175,17 @@ export const CampaignManager: React.FC<Props> = ({ canProvisionDrive, campaigns,
           </thead>
           <tbody className="divide-y divide-rule">
             {visibleCampaigns.map(campaign => <tr key={campaign.id} className="transition-colors hover:bg-brand-50/50">
-              <td className="px-4 py-3 font-mono text-[11px] font-bold text-brand-600">{campaign.code}</td>
+              <td className="px-4 py-3 font-mono text-[0.75rem] font-bold text-brand-600">{campaign.code}</td>
               <td className="px-4 py-3 font-bold text-slate-900">{campaign.name}</td>
-              <td className="px-4 py-3 text-[11px] text-slate-600">{campaign.decisionNo}</td>
-              <td className="px-4 py-3 text-[11px] text-slate-600">{campaign.startDate} – {campaign.endDate}</td>
-              <td data-numeric className="px-4 py-3 text-[11px] text-slate-600">{campaign.members.length} thành viên</td>
-              <td className="px-4 py-3"><span className={`inline-flex items-center rounded-md border px-1.5 py-[2px] text-[10px] font-bold ${campaignStatusTone[campaign.status] || 'border-idle-border bg-idle-surface text-idle'}`}>{campaignStatusLabel[campaign.status] || campaign.status}</span></td>
+              <td className="px-4 py-3 text-[0.75rem] text-slate-600">{campaign.decisionNo}</td>
+              <td className="px-4 py-3 text-[0.75rem] text-slate-600">{campaign.startDate} – {campaign.endDate}</td>
+              <td data-numeric className="px-4 py-3 text-[0.75rem] text-slate-600">{campaign.members.length} thành viên</td>
+              <td className="px-4 py-3"><span className={`inline-flex items-center rounded-md border px-1.5 py-[2px] text-[0.75rem] font-bold ${campaignStatusTone[campaign.status] || 'border-idle-border bg-idle-surface text-idle'}`}>{campaignStatusLabel[campaign.status] || campaign.status}</span></td>
               <td className="px-4 py-3">
                 <div className="flex justify-end gap-1.5">
-                  <button type="button" onClick={() => beginEdit(campaign)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-rule px-2 text-[11px] font-bold text-slate-700 hover:border-brand-300 hover:text-brand-600"><Pencil className="h-3.5 w-3.5" />Sửa</button>
-                  {canProvisionDrive && <button type="button" onClick={() => onProvisionDrive(campaign.id)} disabled={campaign.driveProvisionStatus === 'PROVISIONING'} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-brand-200 px-2 text-[11px] font-bold text-brand-600 hover:bg-brand-50 disabled:opacity-50"><FolderCog className="h-3.5 w-3.5" />Drive</button>}
-                  <button type="button" onClick={() => remove(campaign)} disabled={busy || campaign.status !== 'DRAFT'} title={campaign.status !== 'DRAFT' ? 'Chỉ xóa được chuyên đề nháp.' : undefined} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-red-200 px-2 text-[11px] font-bold text-red-700 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" />Xóa</button>
+                  <button type="button" onClick={() => beginEdit(campaign)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-rule px-2 text-[0.75rem] font-bold text-slate-700 hover:border-brand-300 hover:text-brand-600"><Pencil className="h-3.5 w-3.5" />Sửa</button>
+                  {canProvisionDrive && <button type="button" onClick={() => onProvisionDrive(campaign.id)} disabled={campaign.driveProvisionStatus === 'PROVISIONING'} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-brand-200 px-2 text-[0.75rem] font-bold text-brand-600 hover:bg-brand-50 disabled:opacity-50"><FolderCog className="h-3.5 w-3.5" />Drive</button>}
+                  <button type="button" onClick={() => remove(campaign)} disabled={busy || campaign.status !== 'DRAFT'} title={campaign.status !== 'DRAFT' ? 'Chỉ xóa được chuyên đề nháp.' : undefined} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-red-200 px-2 text-[0.75rem] font-bold text-red-700 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" />Xóa</button>
                 </div>
               </td>
             </tr>)}
@@ -196,10 +196,10 @@ export const CampaignManager: React.FC<Props> = ({ canProvisionDrive, campaigns,
 
     {layout === 'CARD' && <div className="grid gap-3 lg:grid-cols-2">
       {visibleCampaigns.map(campaign => <article key={campaign.id} className="rounded-2xl border border-rule bg-white p-4 shadow-panel">
-        <div className="flex items-start justify-between gap-3"><div><span className="font-mono text-[10px] font-black text-brand-600">{campaign.code}</span><h3 className="mt-1 text-sm font-black text-slate-900">{campaign.name}</h3><p className="mt-1 text-xs text-slate-500">{campaign.decisionNo}</p></div><span className="rounded-full bg-brand-50 px-2 py-1 text-[10px] font-black text-brand-600">{campaign.status}</span></div>
-        <div className="mt-3 grid grid-cols-2 gap-2 text-[11px] text-slate-600"><span className="flex items-center gap-1"><CalendarRange className="h-3.5 w-3.5" />{campaign.startDate} – {campaign.endDate}</span><span className="flex items-center gap-1"><UsersRound className="h-3.5 w-3.5" />{campaign.members.length} thành viên</span></div>
+        <div className="flex items-start justify-between gap-3"><div><span className="font-mono text-[0.75rem] font-black text-brand-600">{campaign.code}</span><h3 className="mt-1 text-sm font-black text-slate-900">{campaign.name}</h3><p className="mt-1 text-xs text-slate-500">{campaign.decisionNo}</p></div><span className="rounded-full bg-brand-50 px-2 py-1 text-[0.75rem] font-black text-brand-600">{campaign.status}</span></div>
+        <div className="mt-3 grid grid-cols-2 gap-2 text-[0.75rem] text-slate-600"><span className="flex items-center gap-1"><CalendarRange className="h-3.5 w-3.5" />{campaign.startDate} – {campaign.endDate}</span><span className="flex items-center gap-1"><UsersRound className="h-3.5 w-3.5" />{campaign.members.length} thành viên</span></div>
         {campaign.description && <p className="mt-3 text-xs text-slate-600">{campaign.description}</p>}
-        {campaign.driveLastError && <p className="mt-3 rounded-lg bg-red-50 px-2.5 py-2 text-[11px] font-semibold text-red-700">{campaign.driveLastError}</p>}
+        {campaign.driveLastError && <p className="mt-3 rounded-lg bg-red-50 px-2.5 py-2 text-[0.75rem] font-semibold text-red-700">{campaign.driveLastError}</p>}
         {campaign.driveRootUrl && <a href={campaign.driveRootUrl} target="_blank" rel="noreferrer" className="mt-3 block text-xs font-bold text-brand-600 underline">Mở thư mục chuyên đề</a>}
         <div className={`mt-4 grid gap-2 ${canProvisionDrive ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}><button type="button" onClick={() => beginEdit(campaign)} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-rule px-3 text-xs font-bold text-slate-700"><Pencil className="h-3.5 w-3.5" />Sửa chuyên đề</button><button type="button" onClick={() => remove(campaign)} disabled={busy || campaign.status !== 'DRAFT'} title={campaign.status !== 'DRAFT' ? 'Chỉ xóa được chuyên đề nháp.' : undefined} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-red-200 px-3 text-xs font-bold text-red-700 disabled:cursor-not-allowed disabled:opacity-40"><Trash2 className="h-3.5 w-3.5" />Xóa chuyên đề</button>{canProvisionDrive && <button type="button" onClick={() => onProvisionDrive(campaign.id)} disabled={campaign.driveProvisionStatus === 'PROVISIONING'} className="inline-flex min-h-10 items-center justify-center gap-1 rounded-xl border border-brand-500 px-3 text-xs font-bold text-brand-600 disabled:opacity-50"><FolderCog className="h-3.5 w-3.5" />{campaign.driveProvisionStatus === 'PROVISIONING' ? 'Đang tạo...' : campaign.driveProvisionStatus === 'READY' ? <><Check className="h-3.5 w-3.5" />Đồng bộ Drive</> : 'Tạo kho dữ liệu Drive'}</button>}</div>
       </article>)}

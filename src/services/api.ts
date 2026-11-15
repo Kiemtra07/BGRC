@@ -5,7 +5,7 @@ import {
   InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO, StageFindingImportDTO, CommitStagedFindingImportDTO, ScheduleStagedFindingImportDTO, ImportBatch, StagingRow,
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, CreateDashboardDefinitionDTO, DashboardDefinition, ReportFilterQuery,
   AuditLogPage, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
-  FindingApprovalRouteView, NextApprovalRecipients, ExecuteHandoverDTO, HandoverResult, UserOpenItems,
+  FindingApprovalRouteView, NextApprovalRecipients, UpdateReportDefinitionDTO, ExecuteHandoverDTO, HandoverResult, UserOpenItems,
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest, ReportDrillRequest, ReportDrillResult,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness, CreateReportSpreadsheetDTO, ReportSpreadsheetResult,
@@ -259,6 +259,12 @@ export class ApiService {
   );
   public createReportDefinition = (data: CreateReportDefinitionDTO): Promise<ReportDefinition> => (
     this.request('/reports/definitions', { method: 'POST', body: JSON.stringify(data) })
+  );
+  public updateReportDefinition = (id: string, data: UpdateReportDefinitionDTO): Promise<ReportDefinition> => (
+    this.request(`/reports/definitions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify(data) })
+  );
+  public deleteReportDefinition = (id: string): Promise<void> => (
+    this.request(`/reports/definitions/${encodeURIComponent(id)}`, { method: 'DELETE' })
   );
   public getFindingApprovalRoute = (findingId: string): Promise<FindingApprovalRouteView> => (
     this.request(`/findings/${encodeURIComponent(findingId)}/approval-route`)

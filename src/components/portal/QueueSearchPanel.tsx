@@ -84,7 +84,7 @@ const dateClass = 'min-h-10 w-full rounded-lg border border-rule bg-white px-2.5
 
 const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <label className="block min-w-0">
-    <span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</span>
+    <span className="mb-1 block text-[0.75rem] font-bold uppercase tracking-wide text-slate-400">{label}</span>
     {children}
   </label>
 );
@@ -199,7 +199,7 @@ export const QueueSearchPanel: React.FC<QueueSearchPanelProps> = ({
         >
           <SlidersHorizontal className="h-3.5 w-3.5" />
           <span className="hidden sm:inline">Bộ lọc</span>
-          {advancedCount > 0 && <span data-numeric className="rounded bg-brand-500 px-1 text-[10px] font-black text-white">{advancedCount}</span>}
+          {advancedCount > 0 && <span data-numeric className="rounded bg-brand-500 px-1 text-[0.75rem] font-black text-white">{advancedCount}</span>}
         </button>
         {anyCriteria && (
           <button type="button" onClick={onReset} title="Xoá điều kiện" aria-label="Xoá điều kiện" className="grid h-10 w-10 shrink-0 place-items-center rounded-lg border border-rule text-slate-500 transition-colors hover:border-slate-400 hover:text-slate-800">

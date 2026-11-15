@@ -18,6 +18,7 @@ import { ButtonPermissionMatrix } from './ButtonPermissionMatrix';
 import { SecuritySettingsPanel } from './SecuritySettingsPanel';
 import { AuditTrailViewer } from './AuditTrailViewer';
 import { ReportCatalogManager } from './ReportCatalogManager';
+import { SavedReportsManager } from './SavedReportsManager';
 import { CampaignManager } from './campaigns/CampaignManager';
 
 interface Props {
@@ -50,7 +51,7 @@ interface Props {
   onBackToPortal?: () => void;
 }
 
-type AdminTab = 'CAMPAIGNS' | 'CHANNELS' | 'REPORT_CATALOG' | 'ORGANIZATION' | 'USERS' | 'PERMISSIONS' | 'SECURITY' | 'AUDIT_LOG';
+type AdminTab = 'CAMPAIGNS' | 'CHANNELS' | 'REPORT_CATALOG' | 'SAVED_REPORTS' | 'ORGANIZATION' | 'USERS' | 'PERMISSIONS' | 'SECURITY' | 'AUDIT_LOG';
 
 export const AdminPortal: React.FC<Props> = ({
   isSystemAdmin,
@@ -87,6 +88,7 @@ export const AdminPortal: React.FC<Props> = ({
     { id: 'CAMPAIGNS', label: 'Chuyên đề', icon: ClipboardCheck },
     { id: 'CHANNELS', label: 'Loại báo cáo', icon: FileSpreadsheet },
     { id: 'REPORT_CATALOG', label: 'Trường báo cáo', icon: Database, adminOnly: true },
+    { id: 'SAVED_REPORTS', label: 'Báo cáo đã lưu', icon: FileSpreadsheet, adminOnly: true },
     { id: 'ORGANIZATION', label: 'Đơn vị', icon: Building2, adminOnly: true },
     { id: 'USERS', label: 'Người dùng', icon: Users, adminOnly: true },
     { id: 'PERMISSIONS', label: 'Quyền thao tác', icon: Sliders },
@@ -155,6 +157,7 @@ export const AdminPortal: React.FC<Props> = ({
           {activeTab === 'REPORT_CATALOG' && (
             <ReportCatalogManager />
           )}
+          {activeTab === 'SAVED_REPORTS' && <SavedReportsManager />}
 
           {activeTab === 'USERS' && (
             <UserManager users={users} orgUnits={orgUnits} loading={adminCatalogLoading} onUserCreated={onUserCreated} onUsersImported={onUsersImported} onAuthenticatorChange={onAuthenticatorChange} onAuthenticatorConfirm={onAuthenticatorConfirm} onUserUpdated={onUserUpdated} onUserDeleted={onUserDeleted} onUserPasswordReset={onUserPasswordReset} onUserPasswordResetEmail={onUserPasswordResetEmail} />

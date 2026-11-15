@@ -536,11 +536,11 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
             {availableCampaigns.map(campaign => <option key={campaign.id} value={campaign.id}>{campaign.name}</option>)}
           </select>
         </label>
-        <p className="text-[11px] text-slate-500 md:col-span-2">Có thể chọn tệp trước; chỉ cần chọn Chuyên đề trước khi lưu dữ liệu vào hệ thống.</p>
+        <p className="text-[0.75rem] text-slate-500 md:col-span-2">Có thể chọn tệp trước; chỉ cần chọn Chuyên đề trước khi lưu dữ liệu vào hệ thống.</p>
       </div>
 
       {campaignDraft && <section className="border-b border-amber-200 bg-amber-50 p-4" aria-label="Tạo chuyên đề từ tiểu biên bản">
-        <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-black text-amber-950">Tạo chuyên đề từ tiểu biên bản</h3><p className="mt-1 text-[11px] text-amber-800">Chưa chọn chuyên đề. Hệ thống đã điền trước thông tin đọc được; kiểm tra rồi tạo để tiếp tục nhập.</p></div>{campaignDraftSource?.warnings.length ? <span className="text-[10px] font-bold text-amber-700">{campaignDraftSource.warnings.length} mục cần kiểm tra</span> : null}</div>
+        <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="text-sm font-black text-amber-950">Tạo chuyên đề từ tiểu biên bản</h3><p className="mt-1 text-[0.75rem] text-amber-800">Chưa chọn chuyên đề. Hệ thống đã điền trước thông tin đọc được; kiểm tra rồi tạo để tiếp tục nhập.</p></div>{campaignDraftSource?.warnings.length ? <span className="text-[0.75rem] font-bold text-amber-700">{campaignDraftSource.warnings.length} mục cần kiểm tra</span> : null}</div>
         <div className="grid gap-2 md:grid-cols-5">
           <input aria-label="Mã chuyên đề" value={campaignDraft.code} onChange={event => setCampaignDraft({ ...campaignDraft, code: event.target.value })} placeholder="Mã chuyên đề" className="input" />
           <input aria-label="Tên chuyên đề" value={campaignDraft.name} onChange={event => setCampaignDraft({ ...campaignDraft, name: event.target.value })} placeholder="Tên chuyên đề" className="input md:col-span-2" />
@@ -800,7 +800,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
               {uploadResults.map(result => <div key={result.fileName} className={`rounded-xl border p-3 text-xs ${result.status === 'ERROR' ? 'border-red-200 bg-red-50 text-red-800' : result.status === 'WARNING' ? 'border-amber-200 bg-amber-50 text-amber-800' : 'border-emerald-200 bg-emerald-50 text-emerald-900'}`}>
                 <div className="font-black">{result.fileName}</div>
                 <div className="mt-1 leading-5">{result.message}</div>
-                <div className="mt-1 text-[11px] opacity-80">{result.branchDetected} · QĐ {result.decisionNoDetected}</div>
+                <div className="mt-1 text-[0.75rem] opacity-80">{result.branchDetected} · QĐ {result.decisionNoDetected}</div>
               </div>)}
             </div>
 
@@ -827,11 +827,11 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
                       <td className="p-3">
                         <div className="flex gap-1 flex-wrap">
                           {cust.errors.map(err => (
-                            <span key={err.id} className="px-1.5 py-0.5 rounded bg-brand-50 text-brand-700 font-mono font-bold text-[11px] border border-brand-200">
+                            <span key={err.id} className="px-1.5 py-0.5 rounded bg-brand-50 text-brand-700 font-mono font-bold text-[0.75rem] border border-brand-200">
                               {err.errorCode}
                             </span>
                           ))}
-                          {cust.errors.length === 0 && <span className="rounded bg-slate-100 px-2 py-1 text-[10px] font-bold text-slate-500">Không có mã lỗi</span>}
+                          {cust.errors.length === 0 && <span className="rounded bg-slate-100 px-2 py-1 text-[0.75rem] font-bold text-slate-500">Không có mã lỗi</span>}
                         </div>
                       </td>
                       <td className="p-3 text-slate-600">{cust.officerName}</td>

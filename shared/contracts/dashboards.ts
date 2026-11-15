@@ -214,12 +214,25 @@ export interface ReportCatalogFieldConfiguration extends ReportFieldDefinition {
   filterable: boolean;
   defaultExport: boolean;
   sortOrder: number;
+  /** Vai trò không thấy trường này trong báo cáo. Quản trị viên luôn thấy mọi trường. */
+  hiddenForRoles: UserRole[];
 }
 
 export interface ReportCatalogMetricConfiguration extends ReportMetricDefinition {
   isActive: boolean;
   sortOrder: number;
+  /** Vai trò không thấy chỉ số này trong báo cáo. Quản trị viên luôn thấy mọi chỉ số. */
+  hiddenForRoles: UserRole[];
 }
+
+/**
+ * Trường hoặc chỉ số có bị ẩn với người này không. Một người giữ nhiều vai trò chỉ bị ẩn khi mọi
+ * vai trò của họ đều bị ẩn, và quản trị viên không bao giờ bị ẩn.
+ */
+export const isHiddenForRoles = (item: { hiddenForRoles?: readonly UserRole[] }, roles: readonly UserRole[]): boolean => {
+  const hidden = item.hiddenForRoles ?? [];
+  return roles.length > 0 && !roles.includes('ADMIN') && roles.every(role => hidden.includes(role));
+};
 
 export interface ReportCatalogConfiguration {
   version: number;
@@ -252,6 +265,12 @@ export const firstDuplicateLabel = (labels: string[]): string | undefined => {
   return undefined;
 };
 
+/** Quản trị viên không thể bị ẩn trường, nên không có trong danh sách vai trò bị ẩn. */
+const ReportHiddenRoleSchema = z.enum([
+  'SUPERVISOR', 'INTERNAL_APPROVER', 'INTERNAL_OFFICER',
+  'BRANCH_CONTROLLER', 'BRANCH_LEADER', 'BRANCH_INPUT', 'VIEWER',
+]);
+
 const ReportCatalogFieldConfigurationInputSchema = z.object({
   key: ReportFieldKeySchema,
   label: z.string().trim().min(1).max(100),
@@ -261,6 +280,7 @@ const ReportCatalogFieldConfigurationInputSchema = z.object({
   exportable: z.boolean(),
   defaultExport: z.boolean(),
   sortOrder: z.number().int().min(0).max(999),
+  hiddenForRoles: z.array(ReportHiddenRoleSchema).max(8).default([]),
 });
 
 const ReportCatalogMetricConfigurationInputSchema = z.object({
@@ -268,6 +288,7 @@ const ReportCatalogMetricConfigurationInputSchema = z.object({
   label: z.string().trim().min(1).max(100),
   isActive: z.boolean(),
   sortOrder: z.number().int().min(0).max(999),
+  hiddenForRoles: z.array(ReportHiddenRoleSchema).max(8).default([]),
 });
 
 export const UpdateReportCatalogConfigurationSchema = z.object({
@@ -306,6 +327,14 @@ export const UpdateReportCatalogConfigurationSchema = z.object({
   }
   if (!configuration.metrics.some(metric => metric.isActive)) {
     context.addIssue({ code: z.ZodIssueCode.custom, path: ['metrics'], message: 'Cần ít nhất một chỉ số đang bật' });
+  }
+  // A role left with no group field or no metric could open Reports but never run anything.
+  for (const role of ReportHiddenRoleSchema.options) {
+    const hasGroup = configuration.fields.some(field => field.isActive && field.groupable && !field.hiddenForRoles.includes(role));
+    const hasMetric = configuration.metrics.some(metric => metric.isActive && !metric.hiddenForRoles.includes(role));
+    if (!hasGroup || !hasMetric) {
+      context.addIssue({ code: z.ZodIssueCode.custom, path: ['fields'], message: `Vai trò ${role} cần còn ít nhất một trường để nhóm và một chỉ số; hiện đang bị ẩn hết.` });
+    }
   }
   // Excel table columns must be uniquely named; two report fields sharing a label produce a
   // workbook Excel refuses to open and repairs by dropping the table.
@@ -527,6 +556,8 @@ export interface ReportDefinition {
   presentation?: ReportPresentationOptions;
   visibility: ReportDefinitionVisibility;
   sharedWithRoles: UserRole[];
+  /** Báo cáo chuẩn do quản trị viên xuất bản; người dùng chỉ xem và chạy, không sửa hay xóa. */
+  isStandard?: boolean;
   sourceReportDefinitionId?: string;
   createdByUserId: string;
   createdByName: string;
@@ -562,6 +593,21 @@ export const CreateReportDefinitionSchema = z.object({
   }
 });
 export type CreateReportDefinitionDTO = z.input<typeof CreateReportDefinitionSchema>;
+
+/** Đổi tên và đổi người được xem của một báo cáo đã lưu; phần truy vấn không sửa tại chỗ. */
+export const UpdateReportDefinitionSchema = z.object({
+  name: z.string().trim().min(3).max(150).optional(),
+  description: z.string().trim().max(500).optional(),
+  visibility: ReportDefinitionVisibilitySchema.optional(),
+  sharedWithRoles: z.array(ReportShareRoleSchema).max(8).optional(),
+  /** Chỉ quản trị viên được đặt; máy chủ từ chối với người khác. */
+  isStandard: z.boolean().optional(),
+}).superRefine((update, context) => {
+  if (update.visibility === 'ROLE_SHARED' && (update.sharedWithRoles?.length ?? 0) === 0) {
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['sharedWithRoles'], message: 'Chọn ít nhất một vai trò được xem báo cáo chia sẻ' });
+  }
+});
+export type UpdateReportDefinitionDTO = z.input<typeof UpdateReportDefinitionSchema>;
 
 export interface DashboardDefinition {
   id: string;

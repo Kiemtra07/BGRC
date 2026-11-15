@@ -70,7 +70,7 @@ export const ButtonPermissionMatrix: React.FC = () => (
           <thead className="border-b border-rule bg-slate-50 text-slate-700">
             <tr>
               <th className="sticky left-0 z-10 min-w-64 bg-slate-50 px-5 py-4 font-bold">Hành động</th>
-              {roles.map(role => <th key={role.key} className="px-3 py-4 text-center font-mono text-[10px] font-bold">{role.label}</th>)}
+              {roles.map(role => <th key={role.key} className="px-3 py-4 text-center font-mono text-[0.75rem] font-bold">{role.label}</th>)}
             </tr>
           </thead>
           <tbody className="divide-y divide-slate-100">
@@ -78,7 +78,7 @@ export const ButtonPermissionMatrix: React.FC = () => (
               <tr key={row.id} className="hover:bg-slate-50/70">
                 <td className="sticky left-0 z-10 bg-white px-5 py-3.5">
                   <div className="font-bold text-slate-900">{row.label}</div>
-                  <div className="mt-0.5 text-[11px] text-slate-500">{row.description}</div>
+                  <div className="mt-0.5 text-[0.75rem] text-slate-500">{row.description}</div>
                 </td>
                 {roles.map(role => (
                   <td key={role.key} className="px-3 py-3.5 text-center">
@@ -90,7 +90,7 @@ export const ButtonPermissionMatrix: React.FC = () => (
           </tbody>
         </table>
       </div>
-      <p className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-[11px] leading-5 text-slate-500">
+      <p className="border-t border-slate-100 bg-slate-50 px-5 py-3 text-[0.75rem] leading-5 text-slate-500">
         Dữ liệu hiển thị vẫn theo phạm vi được cấp.
       </p>
     </section>

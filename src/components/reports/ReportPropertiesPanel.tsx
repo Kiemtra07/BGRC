@@ -33,7 +33,7 @@ const inputClass = 'min-h-9 w-full rounded-lg border border-rule bg-white px-2.5
 
 const Row: React.FC<{ label: string; children: React.ReactNode }> = ({ label, children }) => (
   <label className="block">
-    <span className="mb-1 block text-[10px] font-bold uppercase tracking-wide text-slate-400">{label}</span>
+    <span className="mb-1 block text-[0.75rem] font-bold uppercase tracking-wide text-slate-400">{label}</span>
     {children}
   </label>
 );
@@ -117,7 +117,7 @@ export const ReportPropertiesPanel: React.FC<ReportPropertiesPanelProps> = ({
                 className={inputClass}
               />
             </Row>
-            <p className="rounded-lg bg-white px-2.5 py-2 text-[10px] leading-relaxed text-slate-500">
+            <p className="rounded-lg bg-white px-2.5 py-2 text-[0.75rem] leading-relaxed text-slate-500">
               Tiêu đề và tên cột đi cùng tệp khi xuất, nên bản tải về trùng với bản đang xem.
             </p>
           </>
@@ -144,7 +144,7 @@ export const ReportPropertiesPanel: React.FC<ReportPropertiesPanelProps> = ({
             </div>
 
             <fieldset className="rounded-lg border border-rule bg-white p-2.5">
-              <legend className="px-1 text-[10px] font-bold uppercase tracking-wide text-slate-400">Tô màu theo ngưỡng</legend>
+              <legend className="px-1 text-[0.75rem] font-bold uppercase tracking-wide text-slate-400">Tô màu theo ngưỡng</legend>
               <label className="flex items-center gap-2 text-xs font-semibold text-slate-700">
                 <input
                   type="checkbox"
@@ -176,13 +176,13 @@ export const ReportPropertiesPanel: React.FC<ReportPropertiesPanelProps> = ({
             {/* Xem trước ngay tại chỗ: đặt số lẻ và hậu tố mà phải chạy lại báo cáo mới biết ra sao
                 thì mỗi lần thử là một vòng chờ. */}
             <div className="rounded-lg bg-white px-2.5 py-2">
-              <span className="block text-[10px] font-bold uppercase tracking-wide text-slate-400">Xem trước</span>
+              <span className="block text-[0.75rem] font-bold uppercase tracking-wide text-slate-400">Xem trước</span>
               <span data-numeric className={`mt-1 inline-block rounded px-1.5 text-sm font-black tabular-nums ${HIGHLIGHT_TONES.find(tone => tone.value === highlight?.tone)?.swatch ?? 'text-slate-900'}`}>
                 {formatReportMetricValue(sample, format)}
               </span>
             </div>
 
-            <button type="button" onClick={() => setMetricFormat(null)} className="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-rule bg-white text-[11px] font-bold text-slate-600 transition-colors hover:border-slate-400">
+            <button type="button" onClick={() => setMetricFormat(null)} className="inline-flex min-h-9 w-full items-center justify-center gap-1.5 rounded-lg border border-rule bg-white text-[0.75rem] font-bold text-slate-600 transition-colors hover:border-slate-400">
               <RotateCcw className="h-3 w-3" />Về mặc định
             </button>
           </>

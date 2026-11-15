@@ -40,21 +40,21 @@ export const ApprovalRouteStepper: React.FC<Props> = ({ findingId, refreshToken 
   return <section data-testid="approval-route-stepper" className="rounded-2xl border border-rule bg-white p-4 shadow-panel" aria-label="Tuyến duyệt hồ sơ">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
       <h3 className="text-xs font-black text-slate-800">Tuyến duyệt</h3>
-      <span className="text-[11px] font-semibold text-slate-500">
+      <span className="text-[0.75rem] font-semibold text-slate-500">
         {route.isClosed ? 'Đã hoàn tất' : currentStep ? `Bước ${route.currentStepIndex + 1}/${total}` : 'Chưa xác định'}
       </span>
     </div>
 
-    {route.returnedFromStageName && <p className="mb-3 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[11px] font-bold text-red-800">
+    {route.returnedFromStageName && <p className="mb-3 flex items-center gap-2 rounded-xl border border-red-200 bg-red-50 px-3 py-2 text-[0.75rem] font-bold text-red-800">
       <CornerUpLeft className="h-3.5 w-3.5 shrink-0" />Đã chuyển trả từ {route.returnedFromStageName}.
     </p>}
 
     <div data-testid="approval-route-step" className="rounded-xl border border-brand-500/30 bg-brand-50/60 px-3 py-3" aria-live="polite">
       {route.isClosed ? <>
         <p className="text-xs font-bold text-slate-900">Đã hoàn tất tuyến duyệt</p>
-        <p className="mt-1 text-[11px] text-slate-600">Không còn bước chờ xử lý.</p>
+        <p className="mt-1 text-[0.75rem] text-slate-600">Không còn bước chờ xử lý.</p>
       </> : currentStep ? <>
-        <p className="text-[10px] font-black text-brand-600">{currentStep.stageName}</p>
+        <p className="text-[0.75rem] font-black text-brand-600">{currentStep.stageName}</p>
         {(currentStep.assigneeName || currentStep.statusCode !== 'PENDING') && <p className="mt-1 text-xs font-bold text-slate-900">
           {currentStep.assigneeName || (currentStep.statusCode === 'SUBMITTED_INTERNAL' ? 'Hàng chờ chung, ai tiếp nhận thì duyệt' : 'Chưa phân công người duyệt')}
         </p>}

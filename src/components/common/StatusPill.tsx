@@ -45,7 +45,7 @@ const workflowStep: Record<Finding['workflowStatus'], number> = {
   WAIVED_RESOLVED: 4,
 };
 
-const base = 'inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-[3px] text-[10px] font-bold leading-4 whitespace-nowrap';
+const base = 'inline-flex shrink-0 items-center gap-1 rounded-md border px-1.5 py-[3px] text-[0.75rem] font-bold leading-4 whitespace-nowrap';
 
 export const SlaPill: React.FC<{ status: SlaStatus; className?: string }> = ({ status, className = '' }) => {
   const Icon = slaIcon[status];
@@ -74,7 +74,7 @@ export const WorkflowPill: React.FC<{ status: Finding['workflowStatus']; showRou
           ))}
         </span>
       )}
-      <span className={`min-w-0 truncate text-[11px] font-semibold ${labelClass[tone]}`}>{workflowStatusLabels[status]}</span>
+      <span className={`min-w-0 truncate text-[0.75rem] font-semibold ${labelClass[tone]}`}>{workflowStatusLabels[status]}</span>
     </span>
   );
 };
@@ -88,7 +88,7 @@ const labelClass: Record<Tone, string> = {
 
 /** A quiet outline chip for reference data — mã lỗi, CIF, chi nhánh. */
 export const CodeChip: React.FC<{ children: React.ReactNode; title?: string; className?: string }> = ({ children, title, className = '' }) => (
-  <span title={title} className={`inline-flex items-center rounded border border-brand-200 bg-brand-50 px-1.5 py-[2px] font-mono text-[10px] font-bold leading-4 text-brand-700 ${className}`}>
+  <span title={title} className={`inline-flex items-center rounded border border-brand-200 bg-brand-50 px-1.5 py-[2px] font-mono text-[0.75rem] font-bold leading-4 text-brand-700 ${className}`}>
     {children}
   </span>
 );

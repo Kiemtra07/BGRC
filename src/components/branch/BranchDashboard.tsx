@@ -262,31 +262,31 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
                       <h3 className="font-bold text-slate-900 text-sm">
                         {cust.customerName}
                       </h3>
-                      <div className="text-[11px] font-mono font-semibold text-brand-600 mt-0.5">
+                      <div className="text-[0.75rem] font-mono font-semibold text-brand-600 mt-0.5">
                         CIF: {cust.cif} • {cust.loanGroup}
                       </div>
                     </div>
                     {allResolved ? (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
+                      <span className="px-2 py-0.5 rounded-full text-[0.75rem] font-bold bg-emerald-100 text-emerald-800 border border-emerald-200">
                         Đã Xong
                       </span>
                     ) : hasWaitingCluster ? (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-800 border border-amber-200">
+                      <span className="px-2 py-0.5 rounded-full text-[0.75rem] font-bold bg-amber-100 text-amber-800 border border-amber-200">
                         Chờ Kiểm soát chi nhánh
                       </span>
                     ) : hasWaitingInternal ? (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-info-surface text-info border border-info-border">
+                      <span className="px-2 py-0.5 rounded-full text-[0.75rem] font-bold bg-info-surface text-info border border-info-border">
                         Chờ Khối Duyệt
                       </span>
                     ) : (
-                      <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-red-100 text-red-800 border border-red-200">
+                      <span className="px-2 py-0.5 rounded-full text-[0.75rem] font-bold bg-red-100 text-red-800 border border-red-200">
                         Cần Khắc Phục
                       </span>
                     )}
                   </div>
 
                   {/* Branch & Officer Info */}
-                  <div className="mt-3 bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-[11px] text-slate-600 space-y-1">
+                  <div className="mt-3 bg-slate-50 p-2.5 rounded-xl border border-slate-100 text-[0.75rem] text-slate-600 space-y-1">
                     <div className="flex justify-between">
                       <span className="text-slate-400">Phòng/PGD:</span>
                       <span className="font-medium text-slate-800 truncate max-w-[170px]">{cust.department}</span>
@@ -303,7 +303,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
 
                   {/* Errors Badges */}
                   <div className="mt-3">
-                    <span className="text-[10px] font-bold text-slate-400 block mb-1">
+                    <span className="text-[0.75rem] font-bold text-slate-400 block mb-1">
                       Danh sách sai sót ({cust.errors.length}):
                     </span>
                     <div className="space-y-1.5">
@@ -312,13 +312,13 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
                           key={err.id}
                           className="flex items-center justify-between p-1.5 rounded-lg bg-slate-50 border border-rule text-xs"
                         >
-                          <span className="font-mono font-bold text-brand-700 bg-white px-1.5 py-0.5 rounded border border-rule text-[10px]">
+                          <span className="font-mono font-bold text-brand-700 bg-white px-1.5 py-0.5 rounded border border-rule text-[0.75rem]">
                             {err.errorCode}
                           </span>
-                          <span className="text-[11px] text-slate-700 truncate max-w-[150px]" title={err.errorTitle}>
+                          <span className="text-[0.75rem] text-slate-700 truncate max-w-[150px]" title={err.errorTitle}>
                             {err.errorTitle}
                           </span>
-                          <span className="text-[10px] font-semibold text-slate-400">
+                          <span className="text-[0.75rem] font-semibold text-slate-400">
                             {err.attachments.length} file
                           </span>
                         </div>
@@ -329,7 +329,7 @@ export const BranchDashboard: React.FC<BranchDashboardProps> = ({
 
                 {/* Card Footer Actions */}
                 <div className="mt-5 pt-3 border-t border-slate-100 flex items-center justify-between">
-                  <div className="flex items-center gap-1 text-[11px] text-slate-500">
+                  <div className="flex items-center gap-1 text-[0.75rem] text-slate-500">
                     <HardDrive className="w-3.5 h-3.5 text-brand-600" />
                     <span>{driveCount} tệp trên Drive</span>
                   </div>

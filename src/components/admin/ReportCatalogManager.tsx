@@ -6,14 +6,25 @@ import {
   ReportCatalogFieldConfiguration,
   ReportCatalogMetricConfiguration,
   UpdateReportCatalogConfigurationSchema,
+  UserRole,
 } from '../../../shared/contracts';
 import { api } from '../../services/api';
+import { ReportRoleMatrix } from './ReportRoleMatrix';
+
+/** Bộ trường dùng cho người xem thường: đủ để nhóm theo đơn vị, tìm khách hàng và theo dõi tiến độ. */
+const COMPACT_FIELD_KEYS = new Set<string>([
+  'dimension.cluster', 'dimension.branch', 'dimension.department', 'dimension.cif', 'dimension.customer',
+  'dimension.error_code', 'dimension.workflow_status', 'dimension.sla_status', 'date.deadline', 'flag.overdue',
+]);
+const COMPACT_EXPORT_KEYS = new Set<string>([
+  'dimension.branch', 'dimension.cif', 'dimension.customer', 'dimension.error_code', 'dimension.workflow_status', 'date.deadline',
+]);
 
 const INPUT_CLASS = 'min-h-10 w-full rounded-lg border border-rule bg-white px-3 py-2 text-xs font-semibold text-slate-800 outline-none focus:border-brand-500 focus:ring-2 focus:ring-teal-100';
 
 export const ReportCatalogManager: React.FC = () => {
   const [configuration, setConfiguration] = useState<ReportCatalogConfiguration | null>(null);
-  const [view, setView] = useState<'FIELDS' | 'METRICS'>('FIELDS');
+  const [view, setView] = useState<'FIELDS' | 'METRICS' | 'ROLES'>('FIELDS');
   const [layout, setLayout] = useState<'CARD' | 'LIST'>('LIST');
   const [search, setSearch] = useState('');
   const [activeFilter, setActiveFilter] = useState('ALL');
@@ -78,6 +89,42 @@ export const ReportCatalogManager: React.FC = () => {
     } : current);
   };
 
+  const withRole = (hidden: UserRole[], role: UserRole, visible: boolean) => {
+    const rest = hidden.filter(item => item !== role);
+    return visible ? rest : [...rest, role];
+  };
+  const toggleFieldForRole = (key: ReportCatalogFieldConfiguration['key'], role: UserRole, visible: boolean) => {
+    setNotice(null);
+    setConfiguration(current => current ? {
+      ...current,
+      fields: current.fields.map(field => field.key === key ? { ...field, hiddenForRoles: withRole(field.hiddenForRoles, role, visible) } : field),
+    } : current);
+  };
+  const toggleMetricForRole = (key: ReportCatalogMetricConfiguration['key'], role: UserRole, visible: boolean) => {
+    setNotice(null);
+    setConfiguration(current => current ? {
+      ...current,
+      metrics: current.metrics.map(metric => metric.key === key ? { ...metric, hiddenForRoles: withRole(metric.hiddenForRoles, role, visible) } : metric),
+    } : current);
+  };
+  /** "Gọn" cho một vai trò: chỉ giữ bộ trường cơ bản, mọi chỉ số vẫn thấy. */
+  const compactForRole = (role: UserRole) => {
+    setNotice(null);
+    setConfiguration(current => current ? {
+      ...current,
+      fields: current.fields.map(field => ({ ...field, hiddenForRoles: withRole(field.hiddenForRoles, role, COMPACT_FIELD_KEYS.has(field.key)) })),
+      metrics: current.metrics.map(metric => ({ ...metric, hiddenForRoles: withRole(metric.hiddenForRoles, role, true) })),
+    } : current);
+  };
+  const showAllForRole = (role: UserRole) => {
+    setNotice(null);
+    setConfiguration(current => current ? {
+      ...current,
+      fields: current.fields.map(field => ({ ...field, hiddenForRoles: withRole(field.hiddenForRoles, role, true) })),
+      metrics: current.metrics.map(metric => ({ ...metric, hiddenForRoles: withRole(metric.hiddenForRoles, role, true) })),
+    } : current);
+  };
+
   const move = (kind: 'fields' | 'metrics', index: number, direction: -1 | 1) => {
     setConfiguration(current => {
       if (!current) return current;
@@ -87,6 +134,23 @@ export const ReportCatalogManager: React.FC = () => {
       [ordered[index], ordered[target]] = [ordered[target], ordered[index]];
       return { ...current, [kind]: ordered.map((item, sortOrder) => ({ ...item, sortOrder })) };
     });
+  };
+
+  /** Thiết lập nhanh: chỉ đổi trên màn hình, chưa lưu cho đến khi bấm "Lưu thay đổi". */
+  const applyFieldPreset = (preset: 'COMPACT' | 'FULL') => {
+    setNotice(null);
+    setConfiguration(current => current ? {
+      ...current,
+      fields: current.fields.map(field => {
+        const active = preset === 'FULL' || COMPACT_FIELD_KEYS.has(field.key);
+        return {
+          ...field,
+          isActive: active,
+          filterable: active,
+          defaultExport: active && field.exportable && (preset === 'FULL' ? field.defaultExport : COMPACT_EXPORT_KEYS.has(field.key)),
+        };
+      }),
+    } : current);
   };
 
   const save = async () => {
@@ -130,23 +194,30 @@ export const ReportCatalogManager: React.FC = () => {
           <div className="inline-flex rounded-xl bg-slate-100 p-1" role="tablist" aria-label="Nội dung cấu hình báo cáo">
             <TabButton active={view === 'FIELDS'} onClick={() => setView('FIELDS')} label={`Trường dữ liệu (${fields.length})`} />
             <TabButton active={view === 'METRICS'} onClick={() => setView('METRICS')} label={`Chỉ số (${metrics.length})`} />
+            <TabButton active={view === 'ROLES'} onClick={() => setView('ROLES')} label="Theo vai trò" />
           </div>
+          {view === 'FIELDS' && <div className="flex flex-wrap items-center gap-2" role="group" aria-label="Thiết lập nhanh bộ trường">
+            <span className="text-xs font-bold text-slate-600">Thiết lập nhanh:</span>
+            <button type="button" onClick={() => applyFieldPreset('COMPACT')} className="min-h-10 rounded-lg border border-rule bg-white px-3 text-xs font-bold text-slate-700 hover:bg-slate-50">Gọn ({COMPACT_FIELD_KEYS.size} trường)</button>
+            <button type="button" onClick={() => applyFieldPreset('FULL')} className="min-h-10 rounded-lg border border-rule bg-white px-3 text-xs font-bold text-slate-700 hover:bg-slate-50">Đầy đủ</button>
+            <span className="text-xs text-slate-500">Đang hiển thị {fields.filter(field => field.isActive).length}/{fields.length}. Chưa lưu cho đến khi bấm "Lưu thay đổi".</span>
+          </div>}
           {/* 25 full-width configuration cards is a scroll, not a screen. The list shows every
               field's flags at once; the cards stay for editing one in detail. */}
-          <div className="inline-flex rounded-xl bg-slate-100 p-1" role="tablist" aria-label="Kiểu hiển thị trường báo cáo">
+          {view !== 'ROLES' && <div className="inline-flex rounded-xl bg-slate-100 p-1" role="tablist" aria-label="Kiểu hiển thị trường báo cáo">
             <TabButton active={layout === 'CARD'} onClick={() => setLayout('CARD')} label="Thẻ" />
             <TabButton active={layout === 'LIST'} onClick={() => setLayout('LIST')} label="Danh sách" />
-          </div>
+          </div>}
           <label className="relative block min-w-0 flex-1 sm:max-w-xs">
             <span className="sr-only">Tìm trường hoặc chỉ số</span>
             <Search className="pointer-events-none absolute left-3.5 top-3 h-4 w-4 text-slate-400" />
             <input type="search" value={search} onChange={event => setSearch(event.target.value)} placeholder="Tìm theo tên hiển thị..." className="min-h-10 w-full rounded-xl border border-rule bg-white pl-10 pr-4 text-xs font-medium outline-none focus:border-brand-500" />
           </label>
-          <select aria-label="Lọc theo trạng thái hiển thị" value={activeFilter} onChange={event => setActiveFilter(event.target.value)} className="min-h-9 rounded-lg border border-rule bg-white px-2.5 text-[11px] font-semibold text-slate-700 outline-none focus:border-brand-500">
+          {view !== 'ROLES' && <select aria-label="Lọc theo trạng thái hiển thị" value={activeFilter} onChange={event => setActiveFilter(event.target.value)} className="min-h-9 rounded-lg border border-rule bg-white px-2.5 text-[0.75rem] font-semibold text-slate-700 outline-none focus:border-brand-500">
             <option value="ALL">Mọi trạng thái</option>
             <option value="ON">Đang hiển thị</option>
             <option value="OFF">Đang ẩn</option>
-          </select>
+          </select>}
         </div>
       </div>
 
@@ -155,6 +226,17 @@ export const ReportCatalogManager: React.FC = () => {
 
       {busy && !configuration ? (
         <div className="rounded-2xl border border-rule bg-white p-8 text-center text-xs text-slate-500">Đang tải cấu hình...</div>
+      ) : view === 'ROLES' && configuration ? (
+        <ReportRoleMatrix
+          fields={fields}
+          metrics={metrics}
+          query={search}
+          compactFieldKeys={COMPACT_FIELD_KEYS}
+          onToggleField={toggleFieldForRole}
+          onToggleMetric={toggleMetricForRole}
+          onApplyCompact={compactForRole}
+          onShowAll={showAllForRole}
+        />
       ) : layout === 'LIST' ? (
         <CatalogTable
           rows={view === 'FIELDS'
@@ -222,7 +304,7 @@ const CatalogTable: React.FC<{
     <section aria-label="Danh sách trường báo cáo" className="overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[840px] text-left text-xs">
-          <thead className="border-b border-rule bg-slate-50/80 text-[11px] font-semibold text-slate-500">
+          <thead className="border-b border-rule bg-slate-50/80 text-[0.75rem] font-semibold text-slate-500">
             <tr>
               <th scope="col" className="px-4 py-2.5 font-semibold">Tên hiển thị</th>
               {flagNames.map(name => <th key={name} scope="col" className="px-3 py-2.5 text-center font-semibold">{name}</th>)}
@@ -234,7 +316,7 @@ const CatalogTable: React.FC<{
               <tr key={row.key} className={`transition-colors hover:bg-brand-50/50 ${row.isActive ? '' : 'opacity-60'}`}>
                 <td className="px-4 py-2.5">
                   <div className="font-bold text-slate-900">{row.label}</div>
-                  <div className="font-mono text-[10px] text-slate-400">{row.key}</div>
+                  <div className="font-mono text-[0.75rem] text-slate-400">{row.key}</div>
                 </td>
                 {row.flags.map(([name, value]) => (
                   <td key={name} className="px-3 py-2.5 text-center">
@@ -272,12 +354,12 @@ const FieldConfigurationRow: React.FC<{
   const base = REPORT_FIELD_CATALOG.find(item => item.key === field.key)!;
   return <article className={`rounded-2xl border bg-white p-4 shadow-panel ${field.isActive ? 'border-rule' : 'border-rule opacity-70'}`}>
     <div className="grid gap-4 xl:grid-cols-[minmax(220px,1.4fr)_minmax(120px,.6fr)_minmax(0,1.5fr)_88px] xl:items-center">
-      <label className="space-y-1.5 text-[11px] font-bold text-slate-600">
+      <label className="space-y-1.5 text-[0.75rem] font-bold text-slate-600">
         <span>Tên hiển thị</span>
         <input value={field.label} onChange={event => onChange({ label: event.target.value })} className={INPUT_CLASS} aria-label={`Tên hiển thị ${field.label}`} />
       </label>
       <div>
-        <div className="text-[11px] font-bold text-slate-500">Kiểu dữ liệu</div>
+        <div className="text-[0.75rem] font-bold text-slate-500">Kiểu dữ liệu</div>
         <div className="mt-1.5 inline-flex min-h-10 items-center rounded-lg bg-slate-100 px-3 text-xs font-semibold text-slate-700">{valueTypeLabel(field.valueType)}</div>
       </div>
       <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-5 xl:grid-cols-3 2xl:grid-cols-5">
@@ -301,7 +383,7 @@ const MetricConfigurationRow: React.FC<{
 }> = ({ metric, index, total, onChange, onMove }) => (
   <article className={`rounded-2xl border bg-white p-4 shadow-panel ${metric.isActive ? 'border-rule' : 'border-rule opacity-70'}`}>
     <div className="grid gap-4 sm:grid-cols-[minmax(220px,1fr)_160px_88px] sm:items-end">
-      <label className="space-y-1.5 text-[11px] font-bold text-slate-600">
+      <label className="space-y-1.5 text-[0.75rem] font-bold text-slate-600">
         <span>Tên hiển thị</span>
         <input value={metric.label} onChange={event => onChange({ label: event.target.value })} className={INPUT_CLASS} aria-label={`Tên hiển thị ${metric.label}`} />
       </label>
@@ -312,7 +394,7 @@ const MetricConfigurationRow: React.FC<{
 );
 
 const CheckControl: React.FC<{ label: string; checked: boolean; disabled?: boolean; onChange: (checked: boolean) => void }> = ({ label, checked, disabled, onChange }) => (
-  <label className={`flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-[11px] font-bold ${checked ? 'border-brand-200 bg-brand-50 text-brand-600' : 'border-rule bg-white text-slate-500'} ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
+  <label className={`flex min-h-10 items-center gap-2 rounded-lg border px-3 py-2 text-[0.75rem] font-bold ${checked ? 'border-brand-200 bg-brand-50 text-brand-600' : 'border-rule bg-white text-slate-500'} ${disabled ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
     <input type="checkbox" className="h-4 w-4 accent-[#006b68]" checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} />
     <span>{label}</span>
   </label>
