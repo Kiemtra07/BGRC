@@ -400,7 +400,9 @@ export const App: React.FC = () => {
     for (const finding of findings) {
       if (!matchesFilter(finding, filter)) continue;
       const key = `${finding.branchCode}:${finding.cif}`;
-      map.set(key, [...(map.get(key) || []), finding]);
+      const group = map.get(key);
+      if (group) group.push(finding);
+      else map.set(key, [finding]);
     }
     // Late hồ sơ float to the top: the queue is worked in deadline order, not
     // alphabetical order, so the first screenful is the work that is actually due.
@@ -596,7 +598,7 @@ export const App: React.FC = () => {
           {!hasSearched ? <EmptyHint
             icon={Search}
             title="Chưa tải danh sách khách hàng"
-            hint="Chọn chuyên đề rồi bấm “Tìm kiếm”."
+            hint="Chọn chuyên đề rồi bấm 'Tìm kiếm'."
           /> : <section className={`overflow-hidden rounded-2xl border border-rule bg-white shadow-panel transition-opacity ${queueLoading ? 'opacity-60' : ''}`}>
             {/* Chỉ còn dải chip trạng thái. Ô tìm và phễu lọc từng nằm ở đây đã bị gỡ: điều kiện lọc
                 nay do khung tìm kiếm phía trên đảm nhiệm, và hai lớp lọc chồng nhau chỉ khiến người
@@ -665,7 +667,7 @@ export const App: React.FC = () => {
               icon={Search}
               title={findings.length ? 'Không có hồ sơ ở tình trạng này' : 'Không có hồ sơ nào khớp điều kiện tìm kiếm'}
               hint={findings.length
-                ? 'Chọn chip “Tất cả” để xem lại toàn bộ hồ sơ vừa tải.'
+                ? 'Chọn chip "Tất cả" để xem lại toàn bộ hồ sơ vừa tải.'
                 : 'Mở khung tìm kiếm phía trên và bỏ bớt điều kiện.'}
             />}
             </>}

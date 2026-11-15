@@ -20,11 +20,10 @@ export interface FindingSubItem {
 }
 
 /**
- * The approval route resolved for one finding at submit time. It is derived automatically from the
- * report type's workflow tier plus role scope inside the finding's branch — never picked by hand on
- * the finding. IDs are still persisted so a later role or organisational change cannot silently
- * redirect an in-flight approval. `requiresBranchLeaderApproval` is derived from `isSpecialCase`
- * (or a THREE_TIER report type), not a manual toggle.
+ * Tuyến duyệt của một hồ sơ. Các bước có mặt do loại báo cáo và dấu sao quyết định
+ * (`requiresBranchLeaderApproval` suy ra từ `isSpecialCase` hoặc luồng ba cấp). Người nhận của
+ * từng bước do người chuyển hồ sơ chọn, hoặc lấy mặc định. Mã người dùng được lưu lại để đổi vai
+ * trò hay đơn vị về sau không làm đổi người đang chờ duyệt.
  */
 export interface FindingApprovalRoute {
   branchControllerUserId?: string;
@@ -36,7 +35,7 @@ export interface FindingApprovalRoute {
   assignmentHistory?: FindingApprovalAssignment[];
 }
 
-/** A deliberate administrative reassignment of one in-flight approval stage. */
+/** Ba bước có người duyệt được chỉ định. */
 export type ApprovalAssignmentStage = 'BRANCH_CONTROLLER' | 'BRANCH_LEADER' | 'INTERNAL_APPROVER';
 
 export interface FindingApprovalAssignment {
@@ -46,7 +45,7 @@ export interface FindingApprovalAssignment {
   assignedByUserId: string;
   reason: string;
   assignedAt: string;
-  /** Optional expiry for a temporary reassignment/delegation. */
+  /** Hạn hiệu lực của lần giao lại; bỏ trống là không giới hạn thời gian. */
   validUntil?: string;
 }
 

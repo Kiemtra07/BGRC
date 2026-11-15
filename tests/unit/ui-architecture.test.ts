@@ -374,7 +374,7 @@ describe('UI and business terminology architecture', () => {
     expect(editor).toContain('Thay đổi chỉ áp dụng cho hồ sơ tạo sau khi lưu.');
 
     // A disabled block must say what unlocks it.
-    expect(formSchema).toContain('Thêm ít nhất một trường ở mục “Trường dữ liệu của form” bên dưới trước.');
+    expect(formSchema).toContain('Thêm ít nhất một trường ở mục "Trường dữ liệu của form" bên dưới trước.');
 
     // The branch-leader role exists in the routes, so the reference table must document it.
     expect(matrix).toContain("'branchLeader'");

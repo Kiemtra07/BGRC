@@ -243,7 +243,7 @@ const CatalogTable: React.FC<{
                       className="h-4 w-4 accent-brand-500"
                       checked={value}
                       onChange={event => onToggle(row.key, name, event.target.checked)}
-                      aria-label={`${name} — ${row.label}`}
+                      aria-label={`${name}: ${row.label}`}
                     />
                   </td>
                 ))}

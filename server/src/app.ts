@@ -69,6 +69,14 @@ import {
   ReportFilterRule,
   ReportMetricKey,
   FindingApprovalRouteView,
+  NextApprovalRecipients,
+  ExecuteHandoverSchema,
+  HANDOVER_MAX_ITEMS,
+  HandoverRecipientOption,
+  HandoverResult,
+  HandoverSkippedItem,
+  OpenApprovalItem,
+  UserOpenItems,
   FindingApprovalStep,
   WorkflowStatus,
   ReportDrillRequest,
@@ -113,7 +121,15 @@ import {
   hasAppCapability,
 } from '../../shared/contracts';
 import { workflowService } from './modules/workflow/workflow-service';
-import { approvalCandidatesForFinding, reassignApprovalStage, resolveApprovalRoute } from './modules/workflow/approval-assignment';
+import {
+  approvalCandidatesForFinding,
+  approvalStageForStatus,
+  approvalStagesHeldBy,
+  eligibleRecipientsForStage,
+  pinStageApprover,
+  reassignApprovalStage,
+  resolveApprovalRoute,
+} from './modules/workflow/approval-assignment';
 import { insertApprovalAssignmentHistory, type ApprovalAssignmentHistoryWrite } from './repositories/approval-assignment-history';
 import { EvidenceStorageStatus, googleDriveService } from './adapters/google-drive';
 import { appsScriptDriveGateway } from './adapters/apps-script-drive';
@@ -1221,6 +1237,7 @@ type SecurityEventType =
   | 'ADMIN_USER_DISABLED'
   | 'ADMIN_USER_DELETED'
   | 'ADMIN_USER_IMPORT_COMMITTED'
+  | 'ADMIN_HANDOVER_EXECUTED'
   | 'ADMIN_USER_PASSWORD_RESET'
   | 'ADMIN_USER_PASSWORD_RESET_EMAIL_SENT'
   | 'ADMIN_AUTHENTICATOR_TOGGLED'
@@ -1822,10 +1839,7 @@ function backfillFindingProvenance(): boolean {
   return changed;
 }
 
-/**
- * Dữ liệu cũ ghim tuyến duyệt qua cờ tay `approvalRoute.requiresBranchLeaderApproval`. Mô hình mới
- * suy tuyến từ dấu sao `isSpecialCase`, nên map cờ cũ sang dấu sao tương ứng cho hồ sơ chưa có.
- */
+/** Hồ sơ cũ chỉ có cờ `approvalRoute.requiresBranchLeaderApproval`; chuyển cờ đó sang dấu sao `isSpecialCase` cho hồ sơ chưa có. */
 function normalizeFindingSpecialCase(finding: Finding): Finding {
   if (typeof finding.isSpecialCase === 'boolean') return finding;
   return { ...finding, isSpecialCase: Boolean(finding.approvalRoute?.requiresBranchLeaderApproval) };
@@ -2719,17 +2733,17 @@ function validateDynamicPayload(channel: ReportChannel, dto: WebFormFindingDTO):
     const value = payload[field.fieldKey];
     const missing = value === undefined || value === null || value === '';
     if (field.isRequired && missing) {
-      throw new HttpProblem(422, 'DYNAMIC_FORM_INVALID', 'Form báo cáo chưa hợp lệ', `Trường “${field.label}” là bắt buộc.`);
+      throw new HttpProblem(422, 'DYNAMIC_FORM_INVALID', 'Form báo cáo chưa hợp lệ', `Trường "${field.label}" là bắt buộc.`);
     }
     if (missing) continue;
     if ((field.dataType === 'number' || field.dataType === 'currency') && (typeof value !== 'number' || !Number.isFinite(value))) {
-      throw new HttpProblem(422, 'DYNAMIC_FORM_INVALID', 'Form báo cáo chưa hợp lệ', `Trường “${field.label}” phải là số.`);
+      throw new HttpProblem(422, 'DYNAMIC_FORM_INVALID', 'Form báo cáo chưa hợp lệ', `Trường "${field.label}" phải là số.`);
     }
     if (field.dataType === 'date' && (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value))) {
-      throw new HttpProblem(422, 'DYNAMIC_FORM_INVALID', 'Form báo cáo chưa hợp lệ', `Trường “${field.label}” phải là ngày hợp lệ.`);
+      throw new HttpProblem(422, 'DYNAMIC_FORM_INVALID', 'Form báo cáo chưa hợp lệ', `Trường "${field.label}" phải là ngày hợp lệ.`);
     }
     if (field.dataType === 'select' && !field.dropdownOptions?.some(option => option.value === value)) {
-      throw new HttpProblem(422, 'DYNAMIC_FORM_INVALID', 'Form báo cáo chưa hợp lệ', `Giá trị của “${field.label}” không nằm trong danh sách cấu hình.`);
+      throw new HttpProblem(422, 'DYNAMIC_FORM_INVALID', 'Form báo cáo chưa hợp lệ', `Giá trị của "${field.label}" không nằm trong danh sách cấu hình.`);
     }
   }
 }
@@ -3005,7 +3019,9 @@ function executeReportRun(items: Finding[], query: ReportRunRequest): ReportRunR
       column.items.push(finding);
       columnGroups.set(columnKey, column);
       const row = rowGroups.get(rowKey) || { label: reportValueLabel(query.groupBy, rowValue, finding), cells: new Map<string, Finding[]>() };
-      row.cells.set(columnKey, [...(row.cells.get(columnKey) || []), finding]);
+      const cell = row.cells.get(columnKey);
+      if (cell) cell.push(finding);
+      else row.cells.set(columnKey, [finding]);
       rowGroups.set(rowKey, row);
     }
     if (columnGroups.size > 25) {
@@ -4511,6 +4527,9 @@ app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: 
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
   if (user.id === actor.id && body.isActive === false) throw new HttpProblem(409, 'USER_SELF_LOCK', 'Không thể tự khóa tài khoản', 'Hãy cấp quyền cho một quản trị viên khác trước.');
+  const changesBranch = body.branchCode !== undefined && (body.branchCode ?? undefined) !== user.branchCode;
+  if (body.isActive === false && user.isActive) assertNoOpenApprovalItems(user, 'khóa tài khoản');
+  else if (changesBranch) assertNoOpenApprovalItems(user, 'chuyển sang chi nhánh khác');
   if (body.email && appUsers.some(item => item.id !== user.id && item.email.toLocaleLowerCase('en-US') === body.email!.toLocaleLowerCase('en-US'))) {
     throw new HttpProblem(409, 'USER_EMAIL_EXISTS', 'Email đã được sử dụng', 'Đã tồn tại tài khoản với email này.');
   }
@@ -4582,6 +4601,7 @@ app.delete('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id:
   if (index < 0) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
   const user = appUsers[index];
   if (user.id === actor.id) throw new HttpProblem(409, 'USER_SELF_DELETE', 'Không thể tự xóa tài khoản', 'Hãy cấp quyền cho một quản trị viên khác trước.');
+  assertNoOpenApprovalItems(user, 'xóa tài khoản');
   if (process.env.AUTH_MODE === 'supabase' && supabaseAuthAdapter && user.authUserId) await supabaseAuthAdapter.deleteUser(user.authUserId, { shouldSoftDelete: true });
   appUsers.splice(index, 1);
   credentialDirectory = credentialDirectory.filter(entry => entry.userId !== user.id);
@@ -4591,6 +4611,169 @@ app.delete('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id:
   recordUserSecurityEvent(req, actor, { type: 'ADMIN_USER_DELETED', outcome: 'SUCCESS', subject: user.username, detail: `Xóa tài khoản ${user.fullName}.` });
   await persistLocalState();
   return reply.code(204).send();
+});
+
+/**
+ * Người đang giữ hồ sơ ở bước duyệt không được khóa, xóa hay chuyển chi nhánh: hồ sơ ghim vào họ sẽ
+ * đứng yên vì không ai khác duyệt được. Kiểm tra trên toàn bộ hồ sơ, không theo phạm vi của quản trị viên.
+ */
+function assertNoOpenApprovalItems(user: UserProfile, action: string): void {
+  const held = approvalStagesHeldBy(findings, user.id);
+  if (!held.length) return;
+  throw new HttpProblem(
+    409,
+    'USER_HAS_OPEN_ITEMS',
+    'Tài khoản còn hồ sơ đang giữ',
+    `${user.fullName} còn ${held.length} hồ sơ đang giữ ở bước duyệt. Hãy bàn giao hồ sơ trước khi ${action}.`,
+  );
+}
+
+const HANDOVER_INELIGIBLE_MESSAGE = 'Người nhận không đủ điều kiện: thiếu vai trò, ngoài phạm vi, hoặc đã giữ một bước khác của hồ sơ này.';
+const handoverStageLabels = {
+  BRANCH_CONTROLLER: 'Kiểm soát chi nhánh',
+  BRANCH_LEADER: 'Lãnh đạo chi nhánh',
+  INTERNAL_APPROVER: 'Phê duyệt HT',
+} as const;
+
+function requireHandoverUser(id: string, label: string): UserProfile {
+  const found = appUsers.find(candidate => candidate.id === id);
+  if (!found) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', `${label} không tồn tại.`);
+  return found;
+}
+
+/** Hồ sơ người dùng đang giữ, giới hạn trong phạm vi của người xem; có người nhận thì đánh dấu hồ sơ nào chuyển được. */
+function openItemsOf(user: UserProfile, viewer: UserProfile, recipient?: UserProfile): UserOpenItems {
+  const held = approvalStagesHeldBy(findings, user.id);
+  const visible = held.filter(entry => hasFindingAccess(viewer, entry.finding));
+  const eligibleCounts = new Map<string, number>();
+  const items: OpenApprovalItem[] = [];
+  for (const { finding, stage, isCurrentStage } of visible) {
+    const eligible = eligibleRecipientsForStage(finding, stage, user.id, finding.approvalRoute, appUsers);
+    for (const candidate of eligible) eligibleCounts.set(candidate.id, (eligibleCounts.get(candidate.id) ?? 0) + 1);
+    const transferable = recipient ? eligible.some(candidate => candidate.id === recipient.id) : undefined;
+    items.push({
+      findingId: finding.id,
+      cif: finding.cif,
+      customerName: finding.customerName,
+      errorCode: finding.errorCode,
+      branchCode: finding.branchCode,
+      branchName: finding.branchName,
+      workflowStatus: finding.workflowStatus,
+      deadlineDate: finding.deadlineDate,
+      version: finding.version,
+      stage,
+      isCurrentStage,
+      ...(recipient ? { transferable, blockedReason: transferable ? undefined : HANDOVER_INELIGIBLE_MESSAGE } : {}),
+    });
+  }
+  items.sort((left, right) => left.deadlineDate.localeCompare(right.deadlineDate) || left.cif.localeCompare(right.cif));
+  const recipientOptions: HandoverRecipientOption[] = appUsers
+    .filter(candidate => eligibleCounts.has(candidate.id))
+    .map(candidate => ({
+      id: candidate.id,
+      fullName: candidate.fullName,
+      department: candidate.department,
+      eligibleCount: eligibleCounts.get(candidate.id)!,
+    }))
+    .sort((left, right) => right.eligibleCount - left.eligibleCount || left.fullName.localeCompare(right.fullName, 'vi'));
+  return {
+    userId: user.id,
+    fullName: user.fullName,
+    items: items.slice(0, HANDOVER_MAX_ITEMS),
+    total: held.length,
+    hiddenOutOfScope: held.length - visible.length,
+    recipientOptions,
+    acceptedTargets: workspaceAccepted.filter(target => target.userId === user.id).length,
+    watchTargets: workspaceWatchTargets.filter(target => target.userId === user.id).length,
+  };
+}
+
+app.get('/api/v1/admin/users/:id/open-items', async (req: FastifyRequest<{ Params: { id: string }; Querystring: { toUserId?: string } }>): Promise<UserOpenItems> => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  const user = requireHandoverUser(req.params.id, 'Tài khoản');
+  const toUserId = typeof req.query?.toUserId === 'string' && req.query.toUserId ? req.query.toUserId : undefined;
+  return openItemsOf(user, actor, toUserId ? requireHandoverUser(toUserId, 'Người nhận') : undefined);
+});
+
+/**
+ * Bàn giao hàng loạt các bước duyệt đang giữ sang một người, dùng chính cơ chế giao lại của tuyến
+ * duyệt. Cả lô ghi trong một lần lưu; hồ sơ đã đổi sau khi xem trước hoặc người nhận không đủ điều
+ * kiện được bỏ qua và báo riêng, không làm hỏng cả lô. Chạy lại cùng yêu cầu là vô hại vì hồ sơ đã
+ * chuyển không còn thuộc người cũ.
+ */
+app.post('/api/v1/admin/handovers', async (req: FastifyRequest<{ Body: unknown }>): Promise<HandoverResult> => {
+  const actor = getCurrentUser(req);
+  requireAdmin(actor);
+  requireRecentStepUp(req);
+  const dto = ExecuteHandoverSchema.parse(req.body);
+  const from = requireHandoverUser(dto.fromUserId, 'Người bàn giao');
+  const to = requireHandoverUser(dto.toUserId, 'Người nhận');
+  if (from.id === to.id) {
+    throw new HttpProblem(422, 'HANDOVER_SAME_USER', 'Người nhận trùng người bàn giao', 'Hãy chọn một người nhận khác.');
+  }
+  if (!to.isActive) {
+    throw new HttpProblem(422, 'HANDOVER_RECIPIENT_INELIGIBLE', 'Người nhận không phù hợp', 'Người nhận phải là tài khoản đang hoạt động.');
+  }
+
+  const now = new Date().toISOString();
+  const skipped: HandoverSkippedItem[] = [];
+  const assignmentWrites: ApprovalAssignmentHistoryWrite[] = [];
+  let moved = 0;
+  for (const item of dto.items) {
+    const skip = (code: HandoverSkippedItem['code'], message: string) => skipped.push({ findingId: item.findingId, stage: item.stage, code, message });
+    const finding = findings.find(candidate => candidate.id === item.findingId);
+    if (!finding || !hasFindingAccess(actor, finding)) {
+      skip('FINDING_NOT_FOUND', 'Hồ sơ không tồn tại hoặc nằm ngoài phạm vi của bạn.');
+      continue;
+    }
+    const route = finding.approvalRoute;
+    const stillHeld = Boolean(route) && approvalStagesHeldBy([finding], from.id).some(entry => entry.stage === item.stage);
+    if (!route || !stillHeld || finding.version !== item.expectedVersion) {
+      skip('HANDOVER_ITEM_CHANGED', 'Hồ sơ đã thay đổi sau khi xem trước; hãy tải lại danh sách.');
+      continue;
+    }
+    const eligible = eligibleRecipientsForStage(finding, item.stage, from.id, route, appUsers);
+    if (!eligible.some(candidate => candidate.id === to.id)) {
+      skip('HANDOVER_RECIPIENT_INELIGIBLE', HANDOVER_INELIGIBLE_MESSAGE);
+      continue;
+    }
+    finding.approvalRoute = reassignApprovalStage(route, item.stage, to.id, {
+      actorUserId: actor.id,
+      reason: `Bàn giao: ${dto.reason}`,
+      assignedAt: now,
+    });
+    finding.version += 1;
+    finding.updatedAt = now;
+    const assignment = finding.approvalRoute.assignmentHistory?.at(-1);
+    if (!assignment) throw new Error('APPROVAL_ASSIGNMENT_HISTORY_MISSING');
+    const eventId = `evt-${crypto.randomUUID()}`;
+    recordWorkflowEvent({
+      id: eventId,
+      findingId: finding.id,
+      command: 'HANDOVER_APPROVAL',
+      fromStatus: finding.workflowStatus,
+      toStatus: finding.workflowStatus,
+      actorUserId: actor.id,
+      actorName: actor.fullName,
+      actorRole: actor.primaryRole,
+      notes: `Bàn giao bước ${handoverStageLabels[item.stage]} từ ${from.fullName} sang ${to.fullName}: ${dto.reason}`,
+      createdAt: now,
+    });
+    assignmentWrites.push({ eventId, findingId: finding.id, assignment });
+    moved += 1;
+  }
+
+  if (moved > 0) {
+    recordUserSecurityEvent(req, actor, {
+      type: 'ADMIN_HANDOVER_EXECUTED',
+      outcome: 'SUCCESS',
+      subject: from.username,
+      detail: `Bàn giao ${moved} bước duyệt từ ${from.fullName} sang ${to.fullName}; bỏ qua ${skipped.length}.`,
+    });
+    await persistLocalState({ approvalAssignmentHistory: assignmentWrites });
+  }
+  return { moved, skipped, remaining: approvalStagesHeldBy(findings, from.id).length };
 });
 
 /** Chính sách bảo mật chung: quyết định ai phải nhập mã Google Authenticator khi đăng nhập. */
@@ -4666,7 +4849,7 @@ app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Pa
   // Revoking the secret of an account the policy still covers would lock that person out at the
   // next login with no way back in, so refuse instead of creating the dead end.
   if (!body.enabled && mfaPolicyCovers(securitySettings.mfaPolicy, user.portal)) {
-    throw new HttpProblem(409, 'MFA_REQUIRED_BY_POLICY', 'Chính sách đang bắt buộc Authenticator', `Không thể thu hồi mã của ${user.fullName} khi chính sách hệ thống là “${mfaPolicyLabels[securitySettings.mfaPolicy]}”. Hãy đổi chính sách trước.`);
+    throw new HttpProblem(409, 'MFA_REQUIRED_BY_POLICY', 'Chính sách đang bắt buộc Authenticator', `Không thể thu hồi mã của ${user.fullName} khi chính sách hệ thống là "${mfaPolicyLabels[securitySettings.mfaPolicy]}". Hãy đổi chính sách trước.`);
   }
 
   let setup: UpdateAuthenticatorResponse['setup'];
@@ -5895,10 +6078,66 @@ app.post('/api/v1/imports/findings/document-preview', async (req, reply) => {
 // WORKFLOW COMMAND ACTIONS (P0-01 to P0-09)
 // ----------------------------------------------------
 
-app.get('/api/v1/findings/:id/approval-candidates', async (req: FastifyRequest<{ Params: { id: string } }>) => {
+function workflowTypeOf(finding: Finding): 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER' {
+  const pinnedVersion = reportChannelVersions.find(version => version.id === finding.channelVersionId);
+  return pinnedVersion?.snapshot.workflowConfig?.workflowType
+    ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.workflowType
+    ?? 'TWO_TIER';
+}
+
+/** Người được chọn làm người nhận phải nằm trong danh sách hợp lệ của bước; bỏ trống thì dùng mặc định. */
+function requireEligibleRecipient(requestedUserId: string | undefined, eligible: UserProfile[]): string | undefined {
+  if (!requestedUserId) return undefined;
+  if (!eligible.some(candidate => candidate.id === requestedUserId)) {
+    throw new HttpProblem(422, 'APPROVAL_ASSIGNEE_INELIGIBLE', 'Người nhận không phù hợp', 'Người nhận phải đang hoạt động, đúng vai trò và đúng phạm vi của bước phê duyệt, và chưa giữ bước nào khác của hồ sơ này.');
+  }
+  return requestedUserId;
+}
+
+/**
+ * Sau khi lệnh duyệt đã tính xong trạng thái mới, ghi người nhận được chọn vào bước vừa mở. Việc
+ * kiểm tra chạy trước khi hồ sơ bị sửa nên người nhận sai không để lại thay đổi nào.
+ */
+function pinChosenRecipient(next: Finding, requestedUserId: string | undefined, actor: UserProfile): void {
+  const stage = approvalStageForStatus(next.workflowStatus);
+  if (!stage) return;
+  const eligible = eligibleRecipientsForStage(next, stage, actor.id, next.approvalRoute, appUsers);
+  const chosen = requireEligibleRecipient(requestedUserId, eligible);
+  if (chosen) next.approvalRoute = pinStageApprover(next.approvalRoute, stage, chosen, new Date().toISOString());
+}
+
+/** Tên người nhận hiện được ghim ở bước vừa mở, để dòng lịch sử cho biết hồ sơ đã chuyển cho ai. */
+function recipientNote(next: Finding): string {
+  const stage = approvalStageForStatus(next.workflowStatus);
+  const route = next.approvalRoute;
+  const userId = stage === 'BRANCH_CONTROLLER' ? route?.branchControllerUserId
+    : stage === 'BRANCH_LEADER' ? route?.branchLeaderUserId
+      : stage === 'INTERNAL_APPROVER' ? route?.internalApproverUserId : undefined;
+  const name = appUsers.find(candidate => candidate.id === userId)?.fullName;
+  return name ? ` Người nhận: ${name}.` : '';
+}
+
+app.get('/api/v1/findings/:id/next-approvers', async (req: FastifyRequest<{ Params: { id: string } }>): Promise<NextApprovalRecipients> => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
-  return approvalCandidatesForFinding(finding, appUsers);
+  const nextStatus = workflowService.nextStatusAfterForward(finding, workflowTypeOf(finding));
+  const stage = nextStatus && approvalStageForStatus(nextStatus);
+  if (!stage) return { options: [], allowSharedQueue: false };
+
+  const eligible = eligibleRecipientsForStage(finding, stage, user.id, finding.approvalRoute, appUsers);
+  const route = finding.approvalRoute;
+  const pinnedUserId = stage === 'BRANCH_CONTROLLER' ? route?.branchControllerUserId
+    : stage === 'BRANCH_LEADER' ? route?.branchLeaderUserId : route?.internalApproverUserId;
+  const isHeadOffice = stage === 'INTERNAL_APPROVER';
+  const suggestedUserId = eligible.some(candidate => candidate.id === pinnedUserId)
+    ? pinnedUserId
+    : isHeadOffice ? undefined : eligible[0]?.id;
+  return {
+    stage,
+    options: eligible.map(candidate => ({ id: candidate.id, fullName: candidate.fullName, department: candidate.department })),
+    suggestedUserId,
+    allowSharedQueue: isHeadOffice,
+  };
 });
 
 // Dấu sao thuộc về khách hàng trong một chi nhánh, không thuộc riêng từng mã lỗi.
@@ -5950,15 +6189,10 @@ app.put('/api/v1/findings/:id/special-case', async (req: FastifyRequest<{ Params
   };
 });
 
-// 1. Submit Branch (Branch nộp hồ sơ)
 /**
- * Build the display route for one finding out of the report type version pinned on it. The stage
- * names come from the administrator's configuration rather than a second hard-coded list, so what
- * the branch sees on the finding is exactly what was set up in "Luồng phê duyệt".
- *
- * The branch-leader step is conditional: a THREE_TIER type always carries it, while a TWO_TIER type
- * only routes through it when the finding is starred — that rule lives in
- * `executeBranchControlApprove`, and this must not drift from it.
+ * Tuyến duyệt hiển thị của một hồ sơ, dựng từ phiên bản loại báo cáo đã ghim trên hồ sơ nên tên
+ * bước đúng với cấu hình ở "Luồng phê duyệt". Bước Lãnh đạo chi nhánh luôn có ở luồng ba cấp và chỉ
+ * có ở luồng hai cấp khi hồ sơ có dấu sao; quy tắc này nằm ở `nextStatusAfterForward`, hàm này phải khớp.
  */
 function buildFindingApprovalRoute(finding: Finding): FindingApprovalRouteView {
   const pinnedVersion = reportChannelVersions.find(version => version.id === finding.channelVersionId);
@@ -6131,22 +6365,37 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
     if (dto.expectedVersion !== finding.version) {
       throw new HttpProblem(409, 'VERSION_CONFLICT', 'Xung đột phiên bản', `Hồ sơ đã được cập nhật bởi người khác (version hiện tại: ${finding.version}, expected: ${dto.expectedVersion}).`);
     }
-    const pinnedVersion = reportChannelVersions.find(version => version.id === finding.channelVersionId);
-    const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType
-      ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.workflowType
-      ?? 'TWO_TIER';
-    // Preserve the evidence gate as the first actionable error for branch users.
+    const workflowType = workflowTypeOf(finding);
+    // Kiểm tra bằng chứng trước để chi nhánh gặp lỗi này đầu tiên.
     requireAvailableEvidence(finding);
-    // Tuyến duyệt suy tự động theo cấu hình loại báo cáo + phân quyền vai trò trong chi nhánh;
-    // dấu sao (isSpecialCase) là thứ quyết định có chèn bước Lãnh đạo chi nhánh hay không.
+    // Không chọn người nhận thì lấy người mặc định. Dấu sao quyết định có bước Lãnh đạo chi nhánh hay không.
     if (workflowType !== 'ONE_TIER') {
-      const approvalRoute = resolveApprovalRoute(finding, workflowType, user, appUsers, new Date().toISOString());
+      const controllerUserId = requireEligibleRecipient(
+        dto.nextApproverUserId,
+        eligibleRecipientsForStage(finding, 'BRANCH_CONTROLLER', user.id, undefined, appUsers),
+      );
+      const approvalRoute = resolveApprovalRoute(finding, workflowType, user, appUsers, new Date().toISOString(), {
+        controllerUserId,
+        previous: finding.approvalRoute,
+      });
       if (!approvalRoute) {
         throw new HttpProblem(409, 'APPROVAL_ROUTE_UNRESOLVED', 'Chưa xác định được tuyến duyệt', 'Chi nhánh chưa có người kiểm soát hoặc lãnh đạo phù hợp để nhận hồ sơ. Hãy bổ sung người phụ trách trước khi nộp.');
       }
       finding.approvalRoute = approvalRoute;
     }
     const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
+    if (workflowType === 'ONE_TIER') {
+      const headOfficeUserId = requireEligibleRecipient(
+        dto.nextApproverUserId,
+        eligibleRecipientsForStage(finding, 'INTERNAL_APPROVER', user.id, undefined, appUsers),
+      );
+      if (headOfficeUserId) {
+        updated.approvalRoute = {
+          ...pinStageApprover(finding.approvalRoute, 'INTERNAL_APPROVER', headOfficeUserId, new Date().toISOString()),
+          assignedByUserId: user.id,
+        };
+      }
+    }
     Object.assign(finding, updated);
 
     recordWorkflowEvent({
@@ -6158,7 +6407,7 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
       actorUserId: user.id,
       actorName: user.fullName,
       actorRole: user.primaryRole,
-      notes: dto.resolutionNotes,
+      notes: `${dto.resolutionNotes}${recipientNote(updated)}`,
       createdAt: new Date().toISOString(),
     });
 
@@ -6181,6 +6430,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-approve', async (req: Fast
   try {
     const updated = workflowService.executeBranchControlApprove(finding, dto, user);
     requireAvailableEvidence(finding);
+    pinChosenRecipient(updated, dto.nextApproverUserId, user);
     Object.assign(finding, updated);
 
     recordWorkflowEvent({
@@ -6192,7 +6442,7 @@ app.post('/api/v1/findings/:id/actions/branch-control-approve', async (req: Fast
       actorUserId: user.id,
       actorName: user.fullName,
       actorRole: user.primaryRole,
-      notes: dto.notes || 'Kiểm soát chi nhánh đồng ý hồ sơ khắc phục.',
+      notes: `${dto.notes || 'Kiểm soát chi nhánh đồng ý hồ sơ khắc phục.'}${recipientNote(updated)}`,
       createdAt: new Date().toISOString(),
     });
 
@@ -6248,6 +6498,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-approve', async (req: Fasti
   try {
     const updated = workflowService.executeBranchLeaderApprove(finding, dto, user);
     requireAvailableEvidence(finding);
+    pinChosenRecipient(updated, dto.nextApproverUserId, user);
     Object.assign(finding, updated);
     recordWorkflowEvent({
       id: `evt-${crypto.randomUUID()}`,
@@ -6258,7 +6509,7 @@ app.post('/api/v1/findings/:id/actions/branch-leader-approve', async (req: Fasti
       actorUserId: user.id,
       actorName: user.fullName,
       actorRole: user.primaryRole,
-      notes: dto.notes || 'Lãnh đạo chi nhánh đồng ý chuyển hồ sơ lên Khối Nội Bộ.',
+      notes: `${dto.notes || 'Lãnh đạo chi nhánh đồng ý chuyển hồ sơ lên Khối Nội Bộ.'}${recipientNote(updated)}`,
       createdAt: new Date().toISOString(),
     });
     await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
@@ -7032,7 +7283,7 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
         : { columns: report.groupColumns, rows: report.groupRows };
     const header = grid.columns.map(column => csvCell(column.label)).join(',');
     const csvRows = grid.rows.map(row => row.map(csvCell).join(','));
-    const csv = `﻿${[header, ...csvRows].join('\r\n')}`;
+    const csv = `\uFEFF${[header, ...csvRows].join('\r\n')}`;
     return reply
       .header('content-type', 'text/csv; charset=utf-8')
       .header('content-disposition', `attachment; filename="audit-bgs-report-${dateStamp}.csv"`)
@@ -7059,7 +7310,9 @@ app.get('/api/v1/reports/summary', async (req: FastifyRequest<{ Querystring: any
     const groups = new Map<string, Finding[]>();
     for (const finding of scoped) {
       const key = keyOf(finding);
-      groups.set(key, [...(groups.get(key) || []), finding]);
+      const group = groups.get(key);
+      if (group) group.push(finding);
+      else groups.set(key, [finding]);
     }
     return [...groups.entries()].map(([key, items]) => ({
       key,

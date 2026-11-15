@@ -129,24 +129,25 @@ Nếu tệp DOCX không đúng cấu trúc, dùng Excel hoặc biểu mẫu web 
 3. Nhập biện pháp khắc phục và giải trình có thể kiểm chứng.
 4. Nếu báo cáo yêu cầu, tải minh chứng rồi chờ trạng thái **Khả dụng**.
 5. Có thể dùng **Tiếp nhận công việc**, **Theo dõi** và **Ưu tiên giám sát**; ba trạng thái này độc lập.
-6. Bấm **Nộp kiểm soát** hoặc **Gửi duyệt** theo nút hiện trên màn hình.
+6. Ở ô **Người nhận**, chọn người của bước kế tiếp trong danh sách; hệ thống đã chọn sẵn một người, đổi nếu cần.
+7. Bấm **Nộp kiểm soát** hoặc **Gửi duyệt** theo nút hiện trên màn hình.
 
-Sau khi nộp, nội dung và minh chứng bị khóa ở cấp chi nhánh cho tới khi hồ sơ được trả về.
+Sau khi nộp, nội dung và minh chứng bị khóa ở cấp chi nhánh cho tới khi hồ sơ được trả về. Chỉ người nhận được chọn mới duyệt được bước đó.
 
 ### 7.2 Kiểm soát chi nhánh (`BRANCH_CONTROLLER`)
 
 1. Mở nhóm **Chờ kiểm soát**.
 2. Đối chiếu từng mã lỗi, giải trình và minh chứng; không chỉ kiểm tra phần tổng quan.
-3. Hồ sơ đạt: bấm **Chuyển phê duyệt HT** hoặc **Chuyển duyệt**.
+3. Hồ sơ đạt: chọn **Người nhận** của bước kế tiếp rồi bấm **Chuyển phê duyệt HT** hoặc **Chuyển lãnh đạo chi nhánh**.
 4. Hồ sơ chưa đạt: nhập lý do cụ thể rồi bấm **Trả chi nhánh bổ sung**.
 
-Hồ sơ thường chuyển thẳng Hội sở; hồ sơ thuộc tuyến có lãnh đạo chuyển sang `SUBMITTED_BRANCH_LEADER`.
+Hồ sơ thường chuyển thẳng Hội sở; hồ sơ thuộc tuyến có lãnh đạo chuyển sang `SUBMITTED_BRANCH_LEADER`. Ở Hội sở có thể để **Hàng chờ chung**: người có quyền nào tiếp nhận trước thì duyệt.
 
 ### 7.3 Lãnh đạo chi nhánh (`BRANCH_LEADER`)
 
 1. Mở nhóm **Chờ lãnh đạo CN**.
 2. Kiểm tra ý kiến kiểm soát, nội dung khắc phục và minh chứng.
-3. Bấm **Duyệt** để chuyển Hội sở hoặc **Trả chi nhánh bổ sung** kèm lý do.
+3. Chọn **Người nhận** ở Hội sở (hoặc để hàng chờ chung) rồi bấm **Duyệt** để chuyển, hoặc **Trả chi nhánh bổ sung** kèm lý do.
 
 ### 7.4 Phê duyệt Hội sở (`SUPERVISOR` / `INTERNAL_APPROVER`)
 

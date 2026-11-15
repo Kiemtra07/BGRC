@@ -42,7 +42,7 @@ Phạm vi `ALL`, `CLUSTER`, `BRANCH`, `DEPARTMENT` được kiểm tra ở API. 
 1. Vào **Quản trị → Cơ cấu tổ chức**, kiểm tra nhóm nội bộ, cụm, chi nhánh và phòng/PGD.
 2. Vào **Quản trị → Người dùng**, tạo hoặc mời tài khoản bằng email thật.
 3. Gán đúng vai trò và phạm vi; kiểm tra người dùng chi nhánh không nhìn thấy dữ liệu ngoài phạm vi.
-4. Khi nhân sự nghỉ/chuyển vị trí, khóa hoặc thu hồi quyền trước khi thay đổi phân công.
+4. Khi nhân sự nghỉ hoặc chuyển vị trí, vào **Quản trị > Người dùng > Bàn giao** để chuyển các bước duyệt người đó đang giữ sang người khác. Hệ thống không cho khóa, xóa hoặc chuyển chi nhánh một tài khoản còn giữ hồ sơ (lỗi `USER_HAS_OPEN_ITEMS`); bàn giao xong mới khóa hoặc thu hồi quyền.
 
 ![Quản trị người dùng](./docs/assets/huong-dan/01-quan-tri-nguoi-dung.png)
 

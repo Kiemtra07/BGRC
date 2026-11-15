@@ -43,7 +43,7 @@ const FieldChip: React.FC<FieldChipProps> = ({ field, placement, defaultZone = '
     onDragStart={onDragStart}
     onClick={() => onAssign(defaultZone)}
     aria-label={`${field.label}: thêm vào ${PLACEMENT_LABEL[defaultZone]}`}
-    title={`${field.label} — bấm để thêm vào ${PLACEMENT_LABEL[defaultZone]}, hoặc kéo vào vùng bên dưới`}
+    title={`${field.label}: bấm để thêm vào ${PLACEMENT_LABEL[defaultZone]}, hoặc kéo vào vùng bên dưới`}
     className={`inline-flex min-h-8 max-w-full cursor-grab items-center gap-1.5 rounded-lg border px-2.5 text-left text-[11px] font-bold leading-tight transition-colors active:cursor-grabbing ${placement ? PLACEMENT_CLASS[placement] : 'border-rule bg-white text-slate-700 hover:border-brand-300 hover:text-brand-600'}`}
   >
     <span className="max-w-[18rem] whitespace-normal break-words">{field.label}</span>
@@ -86,7 +86,7 @@ export const ReportFieldChips: React.FC<ReportFieldChipsProps> = ({
       <div>
         <h3 className="mb-1.5 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-slate-500">
           <Columns3 className="h-3 w-3" />Chiều phân tích
-          <span className="font-semibold normal-case tracking-normal text-slate-400">— kéo vào vùng bên dưới hoặc bấm để thêm</span>
+          <span className="font-semibold normal-case tracking-normal text-slate-400">(kéo vào vùng bên dưới hoặc bấm để thêm)</span>
         </h3>
         <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-dashed border-slate-300 bg-white/70 px-2 py-1.5 text-[10px] font-bold text-slate-500">
           <span className="mr-0.5">Bấm để thêm vào:</span>
@@ -121,7 +121,7 @@ export const ReportFieldChips: React.FC<ReportFieldChipsProps> = ({
       <div>
         <h3 className="mb-1.5 flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wide text-slate-500">
           <Sigma className="h-3 w-3" />Chỉ số
-          <span className="font-semibold normal-case tracking-normal text-slate-400">— bấm để thêm hoặc bỏ khỏi vùng Giá trị</span>
+          <span className="font-semibold normal-case tracking-normal text-slate-400">(bấm để thêm hoặc bỏ khỏi vùng Giá trị)</span>
         </h3>
         <div className="flex max-h-36 min-h-10 flex-wrap content-start gap-1.5 overflow-y-auto pr-1">
           {metrics.map(metric => {

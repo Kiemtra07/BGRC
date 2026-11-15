@@ -36,7 +36,7 @@ try {
   await editablePage.setViewportSize({ width: 375, height: 812 });
   assert.equal(await editablePage.evaluate(() => document.documentElement.scrollWidth > window.innerWidth), false, 'Thanh tài liệu không được tràn ngang trên mobile');
   await editablePage.getByRole('button', { name: 'Xóa để thay thế' }).click();
-  await editablePage.getByText(/Xóa “.*” khỏi hồ sơ\?/).waitFor();
+  await editablePage.getByText(/Xóa ".*" khỏi hồ sơ\?/).waitFor();
   await editablePage.getByRole('button', { name: 'Giữ lại' }).click();
   assert.equal(pageErrors.length, 0, `Lỗi trình duyệt: ${pageErrors.join(' | ')}`);
   await editablePage.close();

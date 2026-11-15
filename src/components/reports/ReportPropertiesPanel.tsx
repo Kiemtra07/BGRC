@@ -17,9 +17,9 @@ import {
  */
 
 const HIGHLIGHT_TONES: ReadonlyArray<{ value: 'risk' | 'warn' | 'ok'; label: string; swatch: string }> = [
-  { value: 'risk', label: 'Đỏ — cần xử lý', swatch: 'bg-risk-surface text-risk' },
-  { value: 'warn', label: 'Vàng — theo dõi', swatch: 'bg-amber-50 text-amber-800' },
-  { value: 'ok', label: 'Xanh — đạt', swatch: 'bg-ok-surface text-ok' },
+  { value: 'risk', label: 'Đỏ: cần xử lý', swatch: 'bg-risk-surface text-risk' },
+  { value: 'warn', label: 'Vàng: theo dõi', swatch: 'bg-amber-50 text-amber-800' },
+  { value: 'ok', label: 'Xanh: đạt', swatch: 'bg-ok-surface text-ok' },
 ];
 
 const OPERATORS: ReadonlyArray<{ value: 'gt' | 'gte' | 'lt' | 'lte'; label: string }> = [

@@ -4,9 +4,9 @@ import {
   FileText, ListChecks, Loader2, PanelRightClose, PanelRightOpen, Paperclip, Plus,
   RefreshCw, ShieldCheck, Star, Trash2, UploadCloud, XCircle,
 } from 'lucide-react';
-import { RiskLevel, businessLineLabels, canManageEvidenceAtBranch, EvidenceObject, Finding, MyWorkQueue, riskLevelLabels, UserProfile, WorkspaceTargetCommandDTO, WorkspaceTargetType } from '../../../shared/contracts';
+import { RiskLevel, businessLineLabels, canManageEvidenceAtBranch, EvidenceObject, Finding, MyWorkQueue, NextApprovalRecipients, riskLevelLabels, UserProfile, WorkspaceTargetCommandDTO, WorkspaceTargetType } from '../../../shared/contracts';
 import { api } from '../../services/api';
-import { slaStatusLabels, workflowActionLabels, workflowEventLabels, workflowStatusLabels } from '../../content/ui-copy';
+import { slaStatusLabels, userRoleLabels, workflowActionLabels, workflowEventLabels, workflowStatusLabels } from '../../content/ui-copy';
 import { EvidenceViewer } from '../evidence/EvidenceViewer';
 import { ApprovalRouteStepper } from './ApprovalRouteStepper';
 
@@ -74,11 +74,18 @@ export const FindingDetailPage: React.FC<Props> = ({
   const [acceptedSubItemIds, setAcceptedSubItemIds] = useState<Set<string>>(new Set());
   const [newSubItem, setNewSubItem] = useState('');
   const [reviewNote, setReviewNote] = useState('');
+  const [recipients, setRecipients] = useState<NextApprovalRecipients | null>(null);
+  const [nextApproverId, setNextApproverId] = useState('');
 
   const finding = useMemo(() => items.find(item => item.id === selectedId) || items[0], [items, selectedId]);
   const isBranchInput = currentUser.roles.includes('BRANCH_INPUT');
   const isBranchController = currentUser.roles.includes('BRANCH_CONTROLLER');
   const isBranchLeader = currentUser.roles.includes('BRANCH_LEADER');
+  const status = finding?.workflowStatus;
+  const canForward = (isBranchInput && (status === 'PENDING' || status === 'REJECTED'))
+    || (isBranchController && status === 'SUBMITTED_BRANCH')
+    || (isBranchLeader && status === 'SUBMITTED_BRANCH_LEADER');
+  const nextApproverUserId = nextApproverId || undefined;
   const isInternalReviewer = currentUser.roles.some(role => ['SUPERVISOR', 'INTERNAL_APPROVER'].includes(role));
   const canManageWorkspace = currentUser.roles.some(role => ['INTERNAL_OFFICER', 'SUPERVISOR', 'INTERNAL_APPROVER', 'BRANCH_INPUT', 'BRANCH_CONTROLLER', 'BRANCH_LEADER'].includes(role));
   const canFlagSpecialCase = currentUser.roles.some(role => ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'BRANCH_INPUT'].includes(role));
@@ -117,6 +124,20 @@ export const FindingDetailPage: React.FC<Props> = ({
       .finally(() => active && setLoadingFinding(false));
     return () => { active = false; };
   }, [finding?.id]);
+
+  // Thiếu danh sách người nhận thì ô chọn ẩn đi và server dùng người mặc định của bước.
+  useEffect(() => {
+    setRecipients(null);
+    setNextApproverId('');
+    if (!finding?.id || !canForward) return;
+    let active = true;
+    api.getNextApprovers(finding.id).then(result => {
+      if (!active) return;
+      setRecipients(result);
+      setNextApproverId(result.suggestedUserId ?? '');
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, [finding?.id, finding?.version, canForward]);
 
   if (!finding) return null;
 
@@ -358,7 +379,7 @@ export const FindingDetailPage: React.FC<Props> = ({
                 </button>)}
               </div>
               {pendingEvidenceRemovalId === selectedEvidence?.id && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
-                <span className="min-w-0 truncate font-semibold">Xóa “{selectedEvidence.fileName}” khỏi hồ sơ?</span>
+                <span className="min-w-0 truncate font-semibold">Xóa "{selectedEvidence.fileName}" khỏi hồ sơ?</span>
                 <span className="flex shrink-0 items-center gap-2">
                   <button type="button" onClick={() => setPendingEvidenceRemovalId(null)} disabled={busy} className="min-h-10 rounded-lg border border-rule bg-white px-3 font-bold text-slate-700 disabled:opacity-50">Giữ lại</button>
                   <button type="button" onClick={handleRevokeEvidence} disabled={busy} className="inline-flex min-h-10 items-center gap-1.5 rounded-lg bg-red-700 px-3 font-bold text-white disabled:opacity-50">
@@ -385,8 +406,7 @@ export const FindingDetailPage: React.FC<Props> = ({
                 <span className="rounded-lg bg-brand-500 px-2.5 py-1 font-mono text-xs font-black text-white">{finding.errorCode}</span>
                 <span className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold ${statusMeta[finding.workflowStatus].tone}`}>{statusMeta[finding.workflowStatus].label}</span>
                 <span aria-label={`Trạng thái SLA: ${slaStatusLabels[finding.slaStatus]}`} className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold ${slaTone[finding.slaStatus]}`}>{slaStatusLabels[finding.slaStatus]}</span>
-                {/* Risk grade the đoàn kiểm tra assigned in CoPlus; it drives how urgently a branch
-                    must act, so it sits with the status badges rather than in a collapsed panel. */}
+                {/* Mức rủi ro do đoàn kiểm tra chấm trên CoPlus, đặt cạnh các nhãn trạng thái. */}
                 {finding.riskLevel && <span aria-label={`Mức độ rủi ro: ${riskLevelLabels[finding.riskLevel]}`} className={`rounded-lg border px-2.5 py-1 text-[11px] font-bold ${riskTone[finding.riskLevel]}`}>Rủi ro {riskLevelLabels[finding.riskLevel].toLowerCase()}</span>}
               </div>
               <h2 id="finding-detail-title" className="text-sm font-black text-slate-900">Nội dung cần giải trình</h2>
@@ -395,7 +415,7 @@ export const FindingDetailPage: React.FC<Props> = ({
               <div className={`mt-2 rounded-xl border p-3 text-xs font-bold ${slaTone[finding.slaStatus]}`}>Hạn xử lý {new Date(`${finding.deadlineDate}T00:00:00`).toLocaleDateString('vi-VN')} · {deadlineNotice}</div>
             </div>
 
-            {/* `version` increments on every workflow command, so it doubles as the refresh signal. */}
+            {/* `version` tăng sau mỗi lệnh workflow nên dùng làm tín hiệu tải lại. */}
             <ApprovalRouteStepper findingId={finding.id} refreshToken={finding.version} />
 
             <SubItemReview
@@ -424,21 +444,24 @@ export const FindingDetailPage: React.FC<Props> = ({
 
             {(finding.workflowStatus === 'PENDING' || finding.workflowStatus === 'REJECTED') && isBranchInput && <ActionPanel title="Chi nhánh khắc phục">
               <textarea value={resolutionNotes} onChange={event => setResolutionNotes(event.target.value)} rows={4} placeholder="Nêu rõ nội dung đã khắc phục, tài liệu và ngày hoàn thành..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15" />
-              <button disabled={busy || !hasAvailableEvidence || resolutionNotes.trim().length < 5} onClick={() => commit(() => api.submitBranch(finding.id, { expectedVersion: finding.version, resolutionNotes }))} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.submitBranch} <ArrowRight className="h-4 w-4" /></button>
+              <RecipientSelect recipients={recipients} value={nextApproverId} onChange={setNextApproverId} disabled={busy} />
+              <button disabled={busy || !hasAvailableEvidence || resolutionNotes.trim().length < 5} onClick={() => commit(() => api.submitBranch(finding.id, { expectedVersion: finding.version, resolutionNotes, nextApproverUserId }))} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.submitBranch} <ArrowRight className="h-4 w-4" /></button>
             </ActionPanel>}
 
             {finding.workflowStatus === 'SUBMITTED_BRANCH' && isBranchController && <ActionPanel title="Kiểm soát chi nhánh">
               <textarea value={rejectReason} onChange={event => setRejectReason(event.target.value)} rows={3} placeholder="Nhập lý do nếu cần chuyển trả hồ sơ..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-brand-500 focus:outline-none" />
+              <RecipientSelect recipients={recipients} value={nextApproverId} onChange={setNextApproverId} disabled={busy} />
               <div className="grid gap-2 sm:grid-cols-2">
-                <button disabled={busy || !hasAvailableEvidence || !allSubItemsAccepted} onClick={() => commit(() => api.branchControlApprove(finding.id, { expectedVersion: finding.version, notes: 'Kiểm soát chi nhánh chuyển hồ sơ phê duyệt HT.' }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4" />{workflowActionLabels.branchApprove}</button>
+                <button disabled={busy || !hasAvailableEvidence || !allSubItemsAccepted} onClick={() => commit(() => api.branchControlApprove(finding.id, { expectedVersion: finding.version, notes: recipients?.stage === 'BRANCH_LEADER' ? 'Kiểm soát chi nhánh chuyển hồ sơ lên lãnh đạo chi nhánh.' : 'Kiểm soát chi nhánh chuyển hồ sơ phê duyệt HT.', nextApproverUserId }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4" />{recipients?.stage === 'BRANCH_LEADER' ? workflowActionLabels.branchApproveToLeader : workflowActionLabels.branchApprove}</button>
                 <button disabled={busy || rejectReason.trim().length < 5} onClick={() => commit(() => api.branchControlReject(finding.id, { expectedVersion: finding.version, reason: rejectReason }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700 disabled:opacity-50"><XCircle className="h-4 w-4" />{workflowActionLabels.returnToBranch}</button>
               </div>
             </ActionPanel>}
 
             {finding.workflowStatus === 'SUBMITTED_BRANCH_LEADER' && isBranchLeader && <ActionPanel title="Lãnh đạo chi nhánh">
               <textarea value={rejectReason} onChange={event => setRejectReason(event.target.value)} rows={3} placeholder="Nhập lý do nếu cần chuyển trả hồ sơ..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-brand-500 focus:outline-none" />
+              <RecipientSelect recipients={recipients} value={nextApproverId} onChange={setNextApproverId} disabled={busy} />
               <div className="grid gap-2 sm:grid-cols-2">
-                <button disabled={busy || !hasAvailableEvidence || !allSubItemsAccepted} onClick={() => commit(() => api.branchLeaderApprove(finding.id, { expectedVersion: finding.version, notes: 'Lãnh đạo chi nhánh chuyển hồ sơ phê duyệt nội bộ.' }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4" />Chuyển phê duyệt HT</button>
+                <button disabled={busy || !hasAvailableEvidence || !allSubItemsAccepted} onClick={() => commit(() => api.branchLeaderApprove(finding.id, { expectedVersion: finding.version, notes: 'Lãnh đạo chi nhánh chuyển hồ sơ phê duyệt nội bộ.', nextApproverUserId }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4" />Chuyển phê duyệt HT</button>
                 <button disabled={busy || rejectReason.trim().length < 5} onClick={() => commit(() => api.branchLeaderReject(finding.id, { expectedVersion: finding.version, reason: rejectReason }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700 disabled:opacity-50"><XCircle className="h-4 w-4" />{workflowActionLabels.returnToBranch}</button>
               </div>
             </ActionPanel>}
@@ -497,7 +520,24 @@ const HistoryEntry: React.FC<{ event: NonNullable<Finding['history']>[number] }>
 </li>;
 
 const Detail: React.FC<{ label: string; value: string }> = ({ label, value }) => <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className="block text-[9px] font-bold text-slate-400">{label}</span><span className="mt-1 block font-semibold text-slate-700">{value}</span></div>;
-const ActionPanel: React.FC<{ title: string; children: React.ReactNode }> = ({ title, children }) => <div className="space-y-3 border-t border-rule pt-4"><h3 className="flex items-center gap-2 text-xs font-black text-slate-900"><ShieldCheck className="h-4 w-4 text-brand-600" />{title}</h3>{children}</div>;
+const RecipientSelect: React.FC<{
+  recipients: NextApprovalRecipients | null;
+  value: string;
+  onChange: (userId: string) => void;
+  disabled: boolean;
+}> = ({ recipients, value, onChange, disabled }) => {
+  if (!recipients?.stage) return null;
+  const empty = recipients.options.length === 0 && !recipients.allowSharedQueue;
+  return <label className="block text-xs">
+    <span className="mb-1 block font-bold text-slate-700">Người nhận ({userRoleLabels[recipients.stage]})</span>
+    <select value={value} onChange={event => onChange(event.target.value)} disabled={disabled || empty} className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-xs focus:border-brand-500 focus:outline-none disabled:opacity-60">
+      {recipients.allowSharedQueue && <option value="">Hàng chờ chung, ai tiếp nhận thì duyệt</option>}
+      {recipients.options.map(option => <option key={option.id} value={option.id}>{option.fullName}{option.department ? ` · ${option.department}` : ''}</option>)}
+    </select>
+    {empty && <span className="mt-1 block font-semibold text-red-700">Chưa có người phù hợp ở bước này. Báo quản trị viên bổ sung người phụ trách.</span>}
+  </label>;
+};
+const ActionPanel: React.FC<{ title: string; children: React.ReactNode }> =({ title, children }) => <div className="space-y-3 border-t border-rule pt-4"><h3 className="flex items-center gap-2 text-xs font-black text-slate-900"><ShieldCheck className="h-4 w-4 text-brand-600" />{title}</h3>{children}</div>;
 
 interface SubItemReviewProps {
   finding: Finding;

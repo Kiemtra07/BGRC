@@ -282,7 +282,7 @@ export const ReportsWorkspace: React.FC = () => {
       setViewPresentation(preset.presentation);
       setPresentation(emptyPresentationOptions());
       if (preset.chartType) setChartType(preset.chartType);
-      setNotice(`Đang xem mẫu dựng sẵn “${preset.name}”.`);
+      setNotice(`Đang xem mẫu dựng sẵn "${preset.name}".`);
       void runReport(nextQuery);
       return;
     }
@@ -294,7 +294,7 @@ export const ReportsWorkspace: React.FC = () => {
     setQuery(nextQuery);
     setSelectedColumns(definitionColumns.length ? definitionColumns : defaultExportColumns(catalog));
     setPresentation(definition.presentation || emptyPresentationOptions());
-    setNotice(`Đang xem mẫu “${definition.name}”.`);
+    setNotice(`Đang xem mẫu "${definition.name}".`);
     void runReport(nextQuery);
   };
 
@@ -302,13 +302,13 @@ export const ReportsWorkspace: React.FC = () => {
     const parsed = ReportRunRequestSchema.safeParse(query);
     if (!parsed.success) { setError(parsed.error.issues[0]?.message || 'Điều kiện lọc chưa hợp lệ.'); return; }
     if (reportName.trim().length < 3) { setError('Tên mẫu cần ít nhất 3 ký tự.'); return; }
-    if (!selectedColumns.length) { setError('Chọn ít nhất một cột trong “Cột xuất” trước khi lưu mẫu.'); return; }
+    if (!selectedColumns.length) { setError('Chọn ít nhất một cột trong "Cột xuất" trước khi lưu mẫu.'); return; }
     try {
       setSaving(true); setError(null);
       const definition = await api.createReportDefinition({ name: reportName.trim(), filters: {}, columns: [], query: parsed.data, exportColumns: selectedColumns, presentation, visibility: reportSharedRoles.length ? 'ROLE_SHARED' : 'PRIVATE', sharedWithRoles: reportSharedRoles, sourceReportDefinitionId: copySourceId });
       setDefinitions(current => [definition, ...current.filter(item => item.id !== definition.id)]);
       setSelectedTemplateId(definition.id); setReportName(''); setReportSharedRoles([]); setCopySourceId(undefined); setShowSaveForm(false);
-      setNotice(`Đã lưu mẫu “${definition.name}”.`);
+      setNotice(`Đã lưu mẫu "${definition.name}".`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thể lưu mẫu báo cáo.'); }
     finally { setSaving(false); }
   };
@@ -319,7 +319,7 @@ export const ReportsWorkspace: React.FC = () => {
     const sourceName = preset?.name || definition?.name;
     if (!sourceName) return;
     setReportName(`Bản sao ${sourceName}`); setReportSharedRoles([]); setCopySourceId(definition?.id); setShowSaveForm(true);
-    setNotice(`Đang tạo bản sao từ “${sourceName}”.`);
+    setNotice(`Đang tạo bản sao từ "${sourceName}".`);
   };
 
   const createDashboard = async () => {
@@ -330,14 +330,14 @@ export const ReportsWorkspace: React.FC = () => {
       const dashboard = await api.createDashboardDefinition({ name: dashboardName.trim(), reportDefinitionIds: dashboardReportIds, visibility: dashboardSharedRoles.length ? 'ROLE_SHARED' : 'PRIVATE', sharedWithRoles: dashboardSharedRoles });
       setDashboards(current => [dashboard, ...current.filter(item => item.id !== dashboard.id)]);
        setSelectedDashboardId(dashboard.id); setDashboardMode('preview'); setDashboardName(''); setDashboardReportIds([]); setDashboardSharedRoles([]); setShowDashboardForm(false);
-      setNotice(`Đã lưu bảng điều khiển “${dashboard.name}”.`);
+      setNotice(`Đã lưu bảng điều khiển "${dashboard.name}".`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thể lưu bảng điều khiển.'); }
     finally { setSaving(false); }
   };
 
   const exportReport = async (format: 'csv' | 'html' | 'xlsx') => {
     const columns = selectedColumnsRef.current;
-    if (!columns.length) { setError('Chọn ít nhất một cột trong “Cột xuất” trước khi tải báo cáo.'); return; }
+    if (!columns.length) { setError('Chọn ít nhất một cột trong "Cột xuất" trước khi tải báo cáo.'); return; }
     try {
       setExporting(format); setError(null);
       // `section` đi cùng yêu cầu: máy chủ dựng tệp theo đúng thiết kế đang hiển thị, hoặc theo dòng
@@ -521,7 +521,7 @@ export const ReportsWorkspace: React.FC = () => {
           <button type="button" onClick={() => void runReport()} className="min-h-11 rounded-xl bg-brand-500 px-4 text-xs font-bold text-white hover:bg-brand-600">Xem báo cáo</button>
         </div>
 
-        {invalidQueryHint && <p role="status" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">{invalidQueryHint} — sửa xong rồi bấm “Chạy báo cáo”.</p>}
+        {invalidQueryHint && <p role="status" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">{invalidQueryHint}; sửa xong rồi bấm "Chạy báo cáo".</p>}
 
         {showSaveForm && <div className="mt-3 space-y-3 rounded-xl bg-slate-50 p-3"><div className="flex flex-col gap-2 sm:flex-row"><label className="sr-only" htmlFor="report-name">Tên mẫu báo cáo</label><input id="report-name" value={reportName} onChange={event => setReportName(event.target.value)} className={`${CONTROL_CLASS} flex-1`} placeholder="Tên mẫu, ví dụ: Tồn đọng Chi nhánh 635" /><button type="button" disabled={saving} onClick={() => void saveDefinition()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-2.5 text-xs font-bold text-white hover:bg-brand-600 disabled:opacity-50"><Save className="h-4 w-4" />{saving ? 'Đang lưu' : 'Lưu mẫu'}</button></div><RoleSharePicker selectedRoles={reportSharedRoles} onChange={setReportSharedRoles} /></div>}
         {showDashboardForm && <div className="mt-3 space-y-3 rounded-xl bg-slate-50 p-3"><div className="flex flex-col gap-2 sm:flex-row"><label className="sr-only" htmlFor="dashboard-name">Tên bảng điều khiển</label><input id="dashboard-name" value={dashboardName} onChange={event => setDashboardName(event.target.value)} className={`${CONTROL_CLASS} flex-1`} placeholder="Tên bảng điều khiển" /><button type="button" disabled={saving} onClick={() => void createDashboard()} className="min-h-11 rounded-xl bg-brand-500 px-4 text-xs font-bold text-white disabled:opacity-50">{saving ? 'Đang lưu' : 'Lưu bảng điều khiển'}</button></div><fieldset><legend className="text-xs font-bold text-slate-600">Báo cáo hiển thị</legend><div className="mt-2 grid gap-2 sm:grid-cols-2">{definitions.map(definition => <label key={definition.id} className="flex items-center gap-2 rounded-lg border border-rule bg-white p-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={dashboardReportIds.includes(definition.id)} onChange={() => setDashboardReportIds(current => current.includes(definition.id) ? current.filter(id => id !== definition.id) : [...current, definition.id])} />{definition.name}</label>)}</div></fieldset><RoleSharePicker selectedRoles={dashboardSharedRoles} onChange={setDashboardSharedRoles} /></div>}
@@ -552,11 +552,11 @@ export const ReportsWorkspace: React.FC = () => {
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-black text-slate-800">Kết quả truy vấn</h3>
         <span className="rounded-full bg-brand-500 px-2.5 py-1 text-[11px] font-bold text-white">{result.matchedFindingCount.toLocaleString('vi-VN')} dòng</span>
-        {busy && <span role="status" className="text-[11px] font-semibold text-slate-500">Đang cập nhật…</span>}
+        {busy && <span role="status" className="text-[11px] font-semibold text-slate-500">Đang cập nhật...</span>}
       </div>
       {/* CoPlus warns when the on-screen result is a truncated preview of the exportable data. */}
       {result.groups.length >= query.limit && <p role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[11px] font-semibold text-amber-900">
-        Màn hình chỉ hiển thị {query.limit} nhóm đầu tiên. Bấm “Xuất Excel” để tải toàn bộ dữ liệu chi tiết.
+        Màn hình chỉ hiển thị {query.limit} nhóm đầu tiên. Bấm "Xuất Excel" để tải toàn bộ dữ liệu chi tiết.
       </p>}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{query.metrics.map(metricKey => <MetricCard key={metricKey} metric={metricsByKey.get(metricKey)} value={result.metricValues[metricKey] || 0} onDrill={() => setDrillTarget({ page: 1 })} />)}</div>
       <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rule bg-white p-2"><div className="flex gap-1" role="tablist" aria-label="Kiểu hiển thị báo cáo"><button type="button" role="tab" aria-selected={viewPresentation === 'table'} onClick={() => setViewPresentation('table')} className={`min-h-9 rounded-lg px-3 text-xs font-bold ${viewPresentation === 'table' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Bảng</button><button type="button" role="tab" aria-selected={viewPresentation === 'pivot'} disabled={!result.pivot} onClick={() => setViewPresentation('pivot')} className={`min-h-9 rounded-lg px-3 text-xs font-bold disabled:opacity-40 ${viewPresentation === 'pivot' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Bảng chéo</button><button type="button" role="tab" aria-selected={viewPresentation === 'chart'} onClick={() => setViewPresentation('chart')} className={`min-h-9 rounded-lg px-3 text-xs font-bold ${viewPresentation === 'chart' ? 'bg-brand-500 text-white' : 'text-slate-600'}`}>Biểu đồ</button></div>{viewPresentation === 'chart' && <label className="flex items-center gap-2 px-2 text-xs font-bold text-slate-600"><span>Loại biểu đồ</span><select aria-label="Loại biểu đồ" value={chartType} onChange={event => setChartType(event.target.value as ChartType)} className="min-h-9 rounded-lg border border-rule bg-white px-2 text-xs"><option value="bar">Cột</option><option value="line">Đường</option><option value="pie">Tròn</option></select></label>}</div>
@@ -629,7 +629,7 @@ const ExportColumnPicker: React.FC<{ fields: ReportFieldDefinition[]; selected: 
   </details>;
 };
 
-const ReportPresentationLoading = () => <div className="rounded-xl border border-rule bg-white p-6 text-sm font-medium text-slate-500">Đang tải phần trình bày báo cáo…</div>;
+const ReportPresentationLoading = () => <div className="rounded-xl border border-rule bg-white p-6 text-sm font-medium text-slate-500">Đang tải phần trình bày báo cáo...</div>;
 
 const RoleSharePicker: React.FC<{ selectedRoles: UserRole[]; onChange: (roles: UserRole[]) => void }> = ({ selectedRoles, onChange }) => <fieldset>
   <legend className="text-xs font-bold text-slate-600">Chia sẻ theo vai trò</legend>
@@ -652,7 +652,7 @@ const DrillPanel: React.FC<{ groupLabel: string; loading: boolean; result: Repor
         <button type="button" onClick={onClose} className="rounded-lg border border-rule p-2 text-slate-500 hover:bg-slate-50" aria-label="Đóng hồ sơ chi tiết"><X className="h-4 w-4" /></button>
       </div>
       <div className="min-h-0 flex-1 overflow-auto">
-        {loading && <p className="p-5 text-xs font-semibold text-slate-500">Đang tải hồ sơ…</p>}
+        {loading && <p className="p-5 text-xs font-semibold text-slate-500">Đang tải hồ sơ...</p>}
         {!loading && result && result.rows.length === 0 && <p className="p-5 text-xs text-slate-500">Không có hồ sơ nào trong ô này.</p>}
         {!loading && result && result.rows.length > 0 && <table className="w-full min-w-[720px] text-left text-xs">
           <thead className="sticky top-0 bg-slate-50 text-[10px] font-bold text-slate-500"><tr>
@@ -710,7 +710,7 @@ const DashboardDesignView: React.FC<{ widgets: ReportDefinition[] }> = ({ widget
   <div className="flex flex-wrap items-center justify-between gap-2">
     <div>
       <h4 className="text-sm font-black text-slate-900">Thiết kế bảng điều khiển</h4>
-      <p className="mt-1 text-[11px] font-medium text-slate-600">Bố cục dưới đây là các báo cáo đã chọn. Chuyển sang “Xem trước bảng điều khiển” để đọc số liệu thực tế.</p>
+      <p className="mt-1 text-[11px] font-medium text-slate-600">Bố cục dưới đây là các báo cáo đã chọn. Chuyển sang "Xem trước bảng điều khiển" để đọc số liệu thực tế.</p>
     </div>
     <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-black text-brand-700">{widgets.length} khối báo cáo</span>
   </div>
@@ -743,7 +743,7 @@ const ReportDashboard: React.FC<{ dashboard: DashboardDefinition; definitions: R
   return <section data-testid="report-dashboard" className="rounded-2xl border border-rule bg-slate-50 p-4 shadow-panel sm:p-5">
     <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-black text-slate-900">{dashboard.name}</h3><span className="text-[11px] font-semibold text-slate-500">{widgets.length} báo cáo</span></div>
     {loadError && <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">{loadError}</p>}
-    {loading ? <p className="text-sm text-slate-500">Đang cập nhật bảng điều khiển…</p> : <div className="grid gap-3 lg:grid-cols-2">{widgets.map(definition => {
+    {loading ? <p className="text-sm text-slate-500">Đang cập nhật bảng điều khiển...</p> : <div className="grid gap-3 lg:grid-cols-2">{widgets.map(definition => {
       const outcome = results[definition.id];
       const metricKey = definition.query?.metrics[0];
       const metric = metricKey ? metricsByKey.get(metricKey) : undefined;

@@ -157,7 +157,7 @@ export const OrganizationManager: React.FC<Props> = ({ orgUnits, users, onOrgUni
     finally { setBusy(false); }
   };
   const remove = async (unit: OrgUnit) => {
-    if (!window.confirm(`Xóa đơn vị “${unit.name}”? Hệ thống sẽ chặn xóa nếu còn đơn vị con, người dùng, hồ sơ hoặc chuyên đề tham chiếu.`)) return;
+    if (!window.confirm(`Xóa đơn vị "${unit.name}"? Hệ thống sẽ chặn xóa nếu còn đơn vị con, người dùng, hồ sơ hoặc chuyên đề tham chiếu.`)) return;
     try { setBusy(true); setSubmitError(null); await onOrgUnitDeleted(unit.id); }
     catch (error) { setSubmitError(error instanceof Error ? error.message : 'Không thể xóa đơn vị.'); }
     finally { setBusy(false); }

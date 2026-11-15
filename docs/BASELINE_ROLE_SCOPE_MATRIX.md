@@ -42,7 +42,8 @@ Capability hiện hành phải giữ đúng như sau: `CONFIGURE_CATALOG` = ADMI
 ## Invariant tuyến duyệt và minh chứng
 
 1. Người nộp không thể là approver của chính finding. Nếu không chọn được approver độc lập, route fail-closed.
-2. Chỉ admin mới giao lại, chỉ đúng bước đang chờ, phải có `expectedVersion`, lý do, người nhận hoạt động/đúng scope và event audit.
+1a. Người nhận của bước kế tiếp do người đang chuyển chọn từ `GET /findings/:id/next-approvers`. Server loại người đang chuyển, người nộp và người đã giữ bước trước trong cùng tuyến; chọn ngoài danh sách trả 422 `APPROVAL_ASSIGNEE_INELIGIBLE` và không thay đổi hồ sơ. Bỏ trống thì dùng người mặc định; Hội sở không có mặc định mà là hàng chờ chung.
+2. Chỉ admin mới giao lại, chỉ đúng bước đang chờ, phải có `expectedVersion`, lý do, người nhận hoạt động/đúng scope và event audit. Bàn giao hàng loạt (`POST /admin/handovers`) dùng cùng cơ chế, được chuyển cả bước còn ở phía sau, cần xác thực lại mật khẩu và ghi event `HANDOVER_APPROVAL` cùng một sự kiện an ninh `ADMIN_HANDOVER_EXECUTED`.
 3. `workflowStatus` và `slaStatus` độc lập. Không được dùng SLA để chuyển trạng thái workflow.
 4. Evidence phải `AVAILABLE` trước submit, approve hoặc close; `REJECTED`, `SCANNING`, `QUARANTINED`, `FAILED` và `REVOKED` không thỏa điều kiện này.
 5. Tệp evidence chỉ qua `GET /api/v1/evidence/:driveFileId/content`; không trả URL Drive riêng tư cho trình duyệt.
@@ -53,9 +54,10 @@ Capability hiện hành phải giữ đúng như sau: `CONFIGURE_CATALOG` = ADMI
 | --- | --- | --- |
 | Scope đọc | Người cùng `BRANCH` hoặc `DEPARTMENT` khớp đọc detail/evidence/export | Branch khác; phòng khác cùng branch đối với `DEPARTMENT`; user không scope.
 | Tạo/nhập | Role có capability và finding nằm trong scope | Role thiếu capability; target ngoài scope; account chưa phân luồng.
-| Workflow | Người được route ghim xử lý đúng trạng thái với version hiện hành | Self-approval; stage sai; version cũ; approver inactive/chuyển đơn vị.
+| Workflow | Người được route ghim xử lý đúng trạng thái với version hiện hành; người chuyển chọn người nhận trong danh sách hợp lệ | Self-approval; stage sai; version cũ; approver inactive/chuyển đơn vị; người nhận ngoài vai trò/phạm vi hoặc đã giữ bước trước.
 | Reassign | Admin giao lại đúng stage, có reason, recipient hợp lệ | Non-admin; route chưa có; terminal finding; recipient là submitter; stage đã qua.
 | Evidence | Người trong scope tải evidence `AVAILABLE` qua proxy | MIME giả, checksum/signature sai, archive nguy hiểm, evidence không AVAILABLE, Drive file đổi/thu hồi.
+| Bàn giao | Admin kiểm kê và bàn giao bước duyệt đang giữ sang người đủ vai trò, phạm vi; khóa được sau khi bàn giao | Non-admin; người nhận trùng người cũ, không hoạt động hoặc không đủ điều kiện; hồ sơ đã đổi version; khóa, xóa, chuyển chi nhánh tài khoản còn giữ hồ sơ (409 `USER_HAS_OPEN_ITEMS`).
 | Admin/outbox | Admin xem và retry dead-letter | Non-admin; retry delivery không ở dead-letter.
 
 ## Điều kiện còn thiếu để chốt G0

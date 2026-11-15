@@ -311,11 +311,11 @@ export const UpdateReportCatalogConfigurationSchema = z.object({
   // workbook Excel refuses to open and repairs by dropping the table.
   const duplicateFieldLabel = firstDuplicateLabel(configuration.fields.filter(field => field.isActive).map(field => field.label));
   if (duplicateFieldLabel) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['fields'], message: `Tên hiển thị “${duplicateFieldLabel}” bị trùng; mỗi trường cần một tên riêng để xuất Excel.` });
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['fields'], message: `Tên hiển thị "${duplicateFieldLabel}" bị trùng; mỗi trường cần một tên riêng để xuất Excel.` });
   }
   const duplicateMetricLabel = firstDuplicateLabel(configuration.metrics.filter(metric => metric.isActive).map(metric => metric.label));
   if (duplicateMetricLabel) {
-    context.addIssue({ code: z.ZodIssueCode.custom, path: ['metrics'], message: `Tên hiển thị “${duplicateMetricLabel}” bị trùng; mỗi chỉ số cần một tên riêng để xuất Excel.` });
+    context.addIssue({ code: z.ZodIssueCode.custom, path: ['metrics'], message: `Tên hiển thị "${duplicateMetricLabel}" bị trùng; mỗi chỉ số cần một tên riêng để xuất Excel.` });
   }
 });
 export type UpdateReportCatalogConfigurationDTO = z.input<typeof UpdateReportCatalogConfigurationSchema>;

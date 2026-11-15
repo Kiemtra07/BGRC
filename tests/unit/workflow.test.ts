@@ -214,6 +214,40 @@ describe('WorkflowCommandService (P0 Decision Invariants)', () => {
       .toThrow('APPROVAL_ASSIGNMENT_EXPIRED');
   });
 
+  it('ignores an expired temporary assignment once another approver has been chosen', () => {
+    const chosenController: UserProfile = { ...mockBranchController, id: 'user-branch-controller-chosen-635' };
+    const findingInBranch: Finding = {
+      ...initialFinding,
+      workflowStatus: 'SUBMITTED_BRANCH',
+      version: 2,
+      approvalRoute: {
+        branchControllerUserId: chosenController.id,
+        requiresBranchLeaderApproval: false,
+        assignmentHistory: [{
+          stage: 'BRANCH_CONTROLLER',
+          assignedUserId: mockBranchController.id,
+          assignedByUserId: 'user-admin',
+          reason: 'Giao thay trong thời gian nghỉ phép.',
+          assignedAt: '2026-01-01T00:00:00.000Z',
+          validUntil: '2026-01-02T00:00:00.000Z',
+        }],
+      },
+    };
+
+    expect(service.executeBranchControlApprove(findingInBranch, { expectedVersion: 2 }, chosenController).workflowStatus)
+      .toBe('SUBMITTED_INTERNAL');
+  });
+
+  it('names the status that follows a forward from each waiting step', () => {
+    expect(service.nextStatusAfterForward({ ...initialFinding, workflowStatus: 'PENDING' }, 'ONE_TIER')).toBe('SUBMITTED_INTERNAL');
+    expect(service.nextStatusAfterForward({ ...initialFinding, workflowStatus: 'REJECTED' }, 'TWO_TIER')).toBe('SUBMITTED_BRANCH');
+    expect(service.nextStatusAfterForward({ ...initialFinding, workflowStatus: 'SUBMITTED_BRANCH' })).toBe('SUBMITTED_INTERNAL');
+    expect(service.nextStatusAfterForward({ ...initialFinding, workflowStatus: 'SUBMITTED_BRANCH', isSpecialCase: true })).toBe('SUBMITTED_BRANCH_LEADER');
+    expect(service.nextStatusAfterForward({ ...initialFinding, workflowStatus: 'SUBMITTED_BRANCH_LEADER' })).toBe('SUBMITTED_INTERNAL');
+    expect(service.nextStatusAfterForward({ ...initialFinding, workflowStatus: 'SUBMITTED_INTERNAL' })).toBeUndefined();
+    expect(service.nextStatusAfterForward({ ...initialFinding, workflowStatus: 'WAIVED_RESOLVED' })).toBeUndefined();
+  });
+
   it('P0-04: Branch control reject -> moves to REJECTED and records rejection projection', () => {
     const findingInBranch: Finding = { ...initialFinding, workflowStatus: 'SUBMITTED_BRANCH', version: 2 };
     const updated = service.executeBranchControlReject(findingInBranch, {

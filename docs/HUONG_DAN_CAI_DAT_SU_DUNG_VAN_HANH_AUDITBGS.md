@@ -11,7 +11,7 @@ AuditBGS quản lý toàn bộ vòng đời sai sót: nạp dữ liệu, giao ch
 Ba nguyên tắc cần nhớ:
 
 1. Người dùng chỉ thấy dữ liệu và nút thao tác thuộc vai trò/phạm vi được cấp.
-2. Tuyến duyệt được hệ thống tự suy từ loại báo cáo, vai trò và chi nhánh; người xử lý không chọn tay tuyến duyệt.
+2. Các bước của tuyến duyệt do loại báo cáo và dấu sao quyết định; ở mỗi lần chuyển, người chuyển chọn người nhận của bước kế tiếp trong danh sách hợp lệ.
 3. Production phải dùng PostgreSQL, Google OIDC và Google Drive thật; không dùng dữ liệu demo hoặc lưu file local.
 
 Ranh giới lưu trữ là bắt buộc: danh tính, mật khẩu, user, đơn vị, vai trò/phạm vi và audit đi qua Supabase Auth + Supabase PostgreSQL; chỉ tệp minh chứng/tiểu biên bản được chuyển qua API vào Google Drive (hoặc Apps Script Drive gateway). Không đưa secret Supabase vào trình duyệt và không ghi user/RBAC vào Drive. Nút **Tạo hồ sơ** có thể đọc Excel/Word/PDF để tách dữ liệu xem trước; sau khi tạo, tệp minh chứng vẫn dùng nút tải lên của hồ sơ để lưu đúng kho Drive.
@@ -232,7 +232,7 @@ Vào **Quản trị -> Loại báo cáo**:
 
 ![Cấu hình luồng phê duyệt](assets/huong-dan/07-luong-phe-duyet.png)
 
-*Hình 7 - Luồng phê duyệt được cấu hình ở loại báo cáo; người dùng hồ sơ không chọn tay người/tuyến duyệt.*
+*Hình 7 - Luồng phê duyệt được cấu hình ở loại báo cáo; khi xử lý hồ sơ, người chuyển chọn người nhận của bước kế tiếp.*
 
 ### 5.5 Cấu hình trường báo cáo
 

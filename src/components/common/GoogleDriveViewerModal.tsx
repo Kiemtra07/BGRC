@@ -95,9 +95,10 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
             </div>
             <button
               onClick={() => setDeleteWarning(null)}
-              className="ml-auto text-amber-500 hover:text-amber-800 text-xs font-bold"
+              aria-label="Đóng thông báo"
+              className="ml-auto text-amber-500 hover:text-amber-800"
             >
-              ✕
+              <X className="h-4 w-4" />
             </button>
           </div>
         )}

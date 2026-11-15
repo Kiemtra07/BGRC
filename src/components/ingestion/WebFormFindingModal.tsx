@@ -196,7 +196,7 @@ export const WebFormFindingModal: React.FC<Props> = ({
     // `file` fields are uploaded after the case exists, so they can never be satisfied here.
     const missing = customFields.find(field => field.isRequired && field.dataType !== 'file' && emptyValue(customPayload[field.fieldKey]));
     if (missing) {
-      setFormError(`Trường “${missing.label}” của loại báo cáo này là bắt buộc.`);
+      setFormError(`Trường "${missing.label}" của loại báo cáo này là bắt buộc.`);
       return;
     }
 

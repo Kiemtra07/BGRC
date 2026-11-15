@@ -5,14 +5,11 @@ import { api } from '../../services/api';
 
 interface Props {
   findingId: string;
-  /** Bumped by the parent after a workflow command so the route re-resolves. */
+  /** Đổi sau mỗi lệnh workflow để tải lại tuyến. */
   refreshToken: number;
 }
 
-/**
- * Where the finding stands in its approval route. Only the active hand-off is shown here; the
- * complete route is available to the workflow engine, not something operators need to scan.
- */
+/** Hồ sơ đang ở bước nào của tuyến duyệt; chỉ hiện bước hiện tại và người đang giữ. */
 export const ApprovalRouteStepper: React.FC<Props> = ({ findingId, refreshToken }) => {
   const [route, setRoute] = useState<FindingApprovalRouteView | null>(null);
   const [loading, setLoading] = useState(true);
@@ -31,11 +28,10 @@ export const ApprovalRouteStepper: React.FC<Props> = ({ findingId, refreshToken 
 
   if (loading && !route) {
     return <div className="flex items-center gap-2 rounded-2xl border border-rule bg-white p-4 text-xs font-semibold text-slate-500" role="status" data-testid="approval-route-stepper">
-      <Loader2 className="h-4 w-4 animate-spin" />Đang tải tuyến duyệt…
+      <Loader2 className="h-4 w-4 animate-spin" />Đang tải tuyến duyệt...
     </div>;
   }
-  // The route is context, not the record itself: if it cannot be resolved the rest of the finding
-  // must still be workable, so this fails quiet rather than blocking the page.
+  // Tuyến chỉ là ngữ cảnh: không tải được thì ẩn đi, phần còn lại của hồ sơ vẫn xử lý bình thường.
   if (failed || !route) return null;
 
   const total = route.steps.length;
@@ -59,7 +55,9 @@ export const ApprovalRouteStepper: React.FC<Props> = ({ findingId, refreshToken 
         <p className="mt-1 text-[11px] text-slate-600">Không còn bước chờ xử lý.</p>
       </> : currentStep ? <>
         <p className="text-[10px] font-black text-brand-600">{currentStep.stageName}</p>
-        <p className="mt-1 text-xs font-bold text-slate-900">{currentStep.assigneeName || 'Chưa phân công người duyệt'}</p>
+        {(currentStep.assigneeName || currentStep.statusCode !== 'PENDING') && <p className="mt-1 text-xs font-bold text-slate-900">
+          {currentStep.assigneeName || (currentStep.statusCode === 'SUBMITTED_INTERNAL' ? 'Hàng chờ chung, ai tiếp nhận thì duyệt' : 'Chưa phân công người duyệt')}
+        </p>}
       </> : <p className="text-xs font-semibold text-slate-600">Chưa xác định vị trí xử lý hiện tại.</p>}
     </div>
   </section>;

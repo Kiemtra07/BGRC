@@ -12,6 +12,7 @@ export const workflowStatusLabels: Record<Finding['workflowStatus'], string> = {
 export const workflowActionLabels = {
   submitBranch: 'Gửi kiểm soát chi nhánh',
   branchApprove: 'Chuyển phê duyệt HT',
+  branchApproveToLeader: 'Chuyển lãnh đạo chi nhánh',
   returnToBranch: 'Trả chi nhánh bổ sung',
   internalApprove: 'Đóng lỗi',
   saveSubItemReview: 'Lưu kết quả kiểm tra',
@@ -38,6 +39,7 @@ export const userRoleLabels: Record<UserRole, string> = {
 export const workflowEventLabels: Record<WorkflowCommand, string> = {
   SET_APPROVAL_ROUTE: 'Thiết lập tuyến duyệt',
   SET_SPECIAL_CASE: 'Đánh dấu trường hợp đặc biệt',
+  HANDOVER_APPROVAL: 'Bàn giao người duyệt',
   SUBMIT_BRANCH: workflowActionLabels.submitBranch,
   BRANCH_CONTROL_APPROVE: workflowActionLabels.branchApprove,
   BRANCH_CONTROL_REJECT: workflowActionLabels.returnToBranch,
@@ -48,11 +50,7 @@ export const workflowEventLabels: Record<WorkflowCommand, string> = {
   REVIEW_SUB_ITEMS: workflowActionLabels.saveSubItemReview,
 };
 
-/**
- * Sự kiện an ninh nằm chung dòng thời gian với sự kiện workflow trong màn hình Nhật ký xử lý.
- * Đây là những hành vi không chạm vào máy trạng thái hồ sơ nhưng lại quyết định ai vào được hệ
- * thống và dữ liệu đi ra ngoài bằng đường nào.
- */
+/** Sự kiện an ninh hiện chung dòng thời gian với sự kiện workflow trong Nhật ký xử lý; chúng không đổi trạng thái hồ sơ. */
 export const securityEventLabels: Record<string, string> = {
   AUTH_LOGIN_SUCCEEDED: 'Đăng nhập thành công',
   AUTH_LOGIN_FAILED: 'Đăng nhập thất bại',
@@ -61,6 +59,7 @@ export const securityEventLabels: Record<string, string> = {
   AUTH_OIDC_LOGIN_SUCCEEDED: 'Đăng nhập Google',
   AUTH_OIDC_LOGIN_REJECTED: 'Từ chối đăng nhập Google',
   ADMIN_USER_CREATED: 'Cấp tài khoản',
+  ADMIN_HANDOVER_EXECUTED: 'Bàn giao hồ sơ',
   ADMIN_USER_PASSWORD_RESET: 'Đặt lại mật khẩu',
   ADMIN_AUTHENTICATOR_TOGGLED: 'Cấp/thu hồi mã Authenticator',
   ADMIN_MFA_POLICY_CHANGED: 'Đổi chính sách Authenticator',

@@ -17,7 +17,8 @@ import {
   Database,
   RefreshCw,
   FolderOpen,
-  Info
+  Info,
+  X
 } from 'lucide-react';
 
 interface FastDataIngestionProps {
@@ -515,7 +516,7 @@ export const FastDataIngestion: React.FC<FastDataIngestionProps> = ({
             aria-label="Đóng"
             className="grid h-10 w-10 shrink-0 place-items-center rounded-xl text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-700"
           >
-            ✕
+            <X className="h-4 w-4" />
           </button>
         )}
       </div>

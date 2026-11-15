@@ -48,6 +48,15 @@ body {
   overflow-x: hidden;
 }
 
+/* Hộp thoại gốc: cuộn trong hộp thoại hoặc trên lớp phủ không kéo theo trang nền. */
+dialog:modal {
+  overscroll-behavior: contain;
+}
+dialog::backdrop {
+  overflow: hidden;
+  overscroll-behavior: contain;
+}
+
 /* Counts, CIF, mã lỗi and dates all sit in columns; proportional digits make
    them jitter between rows. */
 table,

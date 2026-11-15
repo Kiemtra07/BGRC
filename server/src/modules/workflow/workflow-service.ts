@@ -26,8 +26,40 @@ export class WorkflowCommandService {
     const latestAssignment = finding.approvalRoute?.assignmentHistory
       ?.filter(assignment => assignment.stage === stage)
       .at(-1);
-    if (latestAssignment?.validUntil && Date.parse(latestAssignment.validUntil) <= Date.now()) {
+    // Một lần giao tạm đã hết hạn chỉ chặn đúng người đang được giao; người mới được chọn ở lần
+    // chuyển sau không bị lịch sử cũ chặn lại.
+    if (
+      latestAssignment?.validUntil
+      && latestAssignment.assignedUserId === selectedUserId
+      && Date.parse(latestAssignment.validUntil) <= Date.now()
+    ) {
       throw new Error(`409: APPROVAL_ASSIGNMENT_EXPIRED — Thời hạn được giao cho ${label} đã kết thúc; quản trị viên phải giao lại người duyệt.`);
+    }
+  }
+
+  /**
+   * Trạng thái hồ sơ sẽ sang khi người đang giữ bước hiện tại chuyển nó đi. Các lệnh nộp và duyệt
+   * dưới đây và màn hình chọn người nhận cùng đọc hàm này nên không thể lệch nhau về việc ai nhận.
+   * Trả về `undefined` khi không có bước nào để chuyển tiếp (đã đóng, hoặc đang ở Hội sở).
+   */
+  public nextStatusAfterForward(
+    finding: Pick<Finding, 'workflowStatus' | 'isSpecialCase' | 'approvalRoute'>,
+    workflowType: 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER' = 'TWO_TIER',
+  ): WorkflowStatus | undefined {
+    switch (finding.workflowStatus) {
+      case 'PENDING':
+      case 'REJECTED':
+        return workflowType === 'ONE_TIER' ? 'SUBMITTED_INTERNAL' : 'SUBMITTED_BRANCH';
+      case 'SUBMITTED_BRANCH':
+        // Dấu sao (hoặc tuyến ba cấp đã ghim requiresBranchLeaderApproval) chèn bước Lãnh đạo chi
+        // nhánh bắt buộc; ngược lại Kiểm soát chi nhánh chuyển thẳng lên Hội sở.
+        return finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase
+          ? 'SUBMITTED_BRANCH_LEADER'
+          : 'SUBMITTED_INTERNAL';
+      case 'SUBMITTED_BRANCH_LEADER':
+        return 'SUBMITTED_INTERNAL';
+      default:
+        return undefined;
     }
   }
 
@@ -36,7 +68,6 @@ export class WorkflowCommandService {
     command: string,
     user: UserProfile
   ): void {
-    // P0-05: Terminal state cannot be modified
     if (finding.workflowStatus === 'WAIVED_RESOLVED') {
       throw new Error('409: FINDING_IS_TERMINAL — Hồ sơ đã được bỏ lỗi vĩnh viễn, không thể chỉnh sửa.');
     }
@@ -129,7 +160,7 @@ export class WorkflowCommandService {
 
     const updated: Finding = {
       ...finding,
-      workflowStatus: workflowType === 'ONE_TIER' ? 'SUBMITTED_INTERNAL' : 'SUBMITTED_BRANCH',
+      workflowStatus: this.nextStatusAfterForward(finding, workflowType)!,
       resolutionNotes: dto.resolutionNotes,
       version: finding.version + 1,
       rejectedFromStage: undefined,
@@ -148,14 +179,9 @@ export class WorkflowCommandService {
       throw new Error(`409: VERSION_CONFLICT — Version conflict (${finding.version} != ${dto.expectedVersion})`);
     }
 
-    // Dấu sao (hoặc tuyến ba cấp đã ghim requiresBranchLeaderApproval) chèn bước Lãnh đạo chi nhánh
-    // phê duyệt bắt buộc; ngược lại Kiểm soát chi nhánh chuyển thẳng lên Hội sở.
-    const routeThroughBranchLeader = Boolean(
-      finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase,
-    );
     const updated: Finding = {
       ...finding,
-      workflowStatus: routeThroughBranchLeader ? 'SUBMITTED_BRANCH_LEADER' : 'SUBMITTED_INTERNAL',
+      workflowStatus: this.nextStatusAfterForward(finding)!,
       version: finding.version + 1,
       updatedAt: new Date().toISOString(),
     };
@@ -191,7 +217,7 @@ export class WorkflowCommandService {
 
     return {
       ...finding,
-      workflowStatus: 'SUBMITTED_INTERNAL',
+      workflowStatus: this.nextStatusAfterForward(finding)!,
       version: finding.version + 1,
       updatedAt: new Date().toISOString(),
     };
@@ -238,7 +264,7 @@ export class WorkflowCommandService {
       throw new Error(`409: VERSION_CONFLICT — Version conflict (${finding.version} != ${dto.expectedVersion})`);
     }
 
-    // P0-04: Hồ sơ trả về chi nhánh; khi nộp lại phải qua Kiểm soát chi nhánh.
+    // Hồ sơ trả về chi nhánh; nộp lại phải qua Kiểm soát chi nhánh.
     const updated: Finding = {
       ...finding,
       workflowStatus: 'REJECTED',

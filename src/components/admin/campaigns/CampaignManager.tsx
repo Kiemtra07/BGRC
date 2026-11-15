@@ -104,7 +104,7 @@ export const CampaignManager: React.FC<Props> = ({ canProvisionDrive, campaigns,
   };
 
   const remove = async (campaign: AuditCampaign) => {
-    if (!window.confirm(`Xóa chuyên đề “${campaign.name}”? Chỉ chuyên đề nháp chưa có hồ sơ mới có thể xóa.`)) return;
+    if (!window.confirm(`Xóa chuyên đề "${campaign.name}"? Chỉ chuyên đề nháp chưa có hồ sơ mới có thể xóa.`)) return;
     try { setBusy(true); setError(null); await onDelete(campaign.id); }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Không thể xóa chuyên đề.'); }
     finally { setBusy(false); }

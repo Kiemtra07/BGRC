@@ -590,17 +590,20 @@ var init_evidence = __esm({
 
 // shared/contracts/workflow.ts
 import { z as z7 } from "zod";
-var SubmitBranchCommandSchema, BranchControlApproveCommandSchema, BranchControlRejectCommandSchema, BranchLeaderApproveCommandSchema, BranchLeaderRejectCommandSchema, SetFindingSpecialCaseSchema, ReassignApprovalRouteSchema, InternalWaiveCommandSchema, InternalRejectCommandSchema;
+var nextApproverUserId, SubmitBranchCommandSchema, BranchControlApproveCommandSchema, BranchControlRejectCommandSchema, BranchLeaderApproveCommandSchema, BranchLeaderRejectCommandSchema, SetFindingSpecialCaseSchema, ReassignApprovalRouteSchema, InternalWaiveCommandSchema, InternalRejectCommandSchema;
 var init_workflow = __esm({
   "shared/contracts/workflow.ts"() {
     "use strict";
+    nextApproverUserId = z7.string().trim().min(1).max(120).optional();
     SubmitBranchCommandSchema = z7.object({
       expectedVersion: z7.number().int().min(1),
-      resolutionNotes: z7.string().min(5, "Gi\u1EA3i tr\xECnh kh\u1EAFc ph\u1EE5c b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 5 k\xFD t\u1EF1")
+      resolutionNotes: z7.string().min(5, "Gi\u1EA3i tr\xECnh kh\u1EAFc ph\u1EE5c b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 5 k\xFD t\u1EF1"),
+      nextApproverUserId
     });
     BranchControlApproveCommandSchema = z7.object({
       expectedVersion: z7.number().int().min(1),
-      notes: z7.string().optional()
+      notes: z7.string().optional(),
+      nextApproverUserId
     });
     BranchControlRejectCommandSchema = z7.object({
       expectedVersion: z7.number().int().min(1),
@@ -608,7 +611,8 @@ var init_workflow = __esm({
     });
     BranchLeaderApproveCommandSchema = z7.object({
       expectedVersion: z7.number().int().min(1),
-      notes: z7.string().optional()
+      notes: z7.string().optional(),
+      nextApproverUserId
     });
     BranchLeaderRejectCommandSchema = z7.object({
       expectedVersion: z7.number().int().min(1),
@@ -637,94 +641,115 @@ var init_workflow = __esm({
   }
 });
 
-// shared/contracts/sla.ts
+// shared/contracts/handover.ts
 import { z as z8 } from "zod";
+var HANDOVER_MAX_ITEMS, HandoverItemSchema, ExecuteHandoverSchema;
+var init_handover = __esm({
+  "shared/contracts/handover.ts"() {
+    "use strict";
+    HANDOVER_MAX_ITEMS = 500;
+    HandoverItemSchema = z8.object({
+      findingId: z8.string().trim().min(1).max(120),
+      stage: z8.enum(["BRANCH_CONTROLLER", "BRANCH_LEADER", "INTERNAL_APPROVER"]),
+      expectedVersion: z8.number().int().min(1)
+    });
+    ExecuteHandoverSchema = z8.object({
+      fromUserId: z8.string().trim().min(1).max(120),
+      toUserId: z8.string().trim().min(1).max(120),
+      reason: z8.string().trim().min(5, "L\xFD do b\xE0n giao b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 5 k\xFD t\u1EF1").max(2e3),
+      items: z8.array(HandoverItemSchema).min(1).max(HANDOVER_MAX_ITEMS)
+    });
+  }
+});
+
+// shared/contracts/sla.ts
+import { z as z9 } from "zod";
 var CreateSlaExtensionRequestSchema, DecideSlaExtensionSchema;
 var init_sla = __esm({
   "shared/contracts/sla.ts"() {
     "use strict";
-    CreateSlaExtensionRequestSchema = z8.object({
-      requestedDeadline: z8.string().regex(/^\d{4}-\d{2}-\d{2}$/, "\u0110\u1ECBnh d\u1EA1ng ng\xE0y YYYY-MM-DD"),
-      reason: z8.string().min(10, "L\xFD do xin gia h\u1EA1n b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 10 k\xFD t\u1EF1"),
-      evidenceDriveUrl: z8.string().url().optional()
+    CreateSlaExtensionRequestSchema = z9.object({
+      requestedDeadline: z9.string().regex(/^\d{4}-\d{2}-\d{2}$/, "\u0110\u1ECBnh d\u1EA1ng ng\xE0y YYYY-MM-DD"),
+      reason: z9.string().min(10, "L\xFD do xin gia h\u1EA1n b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 10 k\xFD t\u1EF1"),
+      evidenceDriveUrl: z9.string().url().optional()
     });
-    DecideSlaExtensionSchema = z8.object({
-      action: z8.enum(["APPROVE", "REJECT"]),
-      notes: z8.string().optional()
+    DecideSlaExtensionSchema = z9.object({
+      action: z9.enum(["APPROVE", "REJECT"]),
+      notes: z9.string().optional()
     });
   }
 });
 
 // shared/contracts/ingestion.ts
-import { z as z9 } from "zod";
+import { z as z10 } from "zod";
 var CalendarDateSchema, WebFormFindingSchema, BulkFindingImportSchema, StageFindingImportSchema, CommitStagedFindingImportSchema, ScheduleStagedFindingImportSchema, compactIdentifier, buildFindingBusinessKey;
 var init_ingestion = __esm({
   "shared/contracts/ingestion.ts"() {
     "use strict";
     init_common();
-    CalendarDateSchema = z9.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Ng\xE0y ph\u1EA3i theo \u0111\u1ECBnh d\u1EA1ng YYYY-MM-DD").refine((value) => {
+    CalendarDateSchema = z10.string().regex(/^\d{4}-\d{2}-\d{2}$/, "Ng\xE0y ph\u1EA3i theo \u0111\u1ECBnh d\u1EA1ng YYYY-MM-DD").refine((value) => {
       const [year, month, day] = value.split("-").map(Number);
       const date = new Date(Date.UTC(year, month - 1, day));
       return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
     }, "Ng\xE0y l\u1ECBch kh\xF4ng h\u1EE3p l\u1EC7");
-    WebFormFindingSchema = z9.object({
-      campaignId: z9.string().min(1).optional(),
-      channelId: z9.string().min(1),
-      cif: z9.string().min(3).max(20),
-      customerName: z9.string().min(2).max(255),
-      clusterName: z9.string().min(2),
-      branchCode: z9.string().min(1),
-      branchName: z9.string().min(2),
-      department: z9.string().optional(),
-      decisionNo: z9.string().optional(),
+    WebFormFindingSchema = z10.object({
+      campaignId: z10.string().min(1).optional(),
+      channelId: z10.string().min(1),
+      cif: z10.string().min(3).max(20),
+      customerName: z10.string().min(2).max(255),
+      clusterName: z10.string().min(2),
+      branchCode: z10.string().min(1),
+      branchName: z10.string().min(2),
+      department: z10.string().optional(),
+      decisionNo: z10.string().optional(),
       auditDate: CalendarDateSchema.optional(),
       deadlineDate: CalendarDateSchema.optional(),
-      loanGroup: z9.string().trim().min(1).optional(),
-      collateralValue: z9.number().nonnegative().optional(),
-      loanPurpose: z9.string().trim().min(1).max(2e3).optional(),
-      errorCode: z9.string().min(2),
-      errorGroup: z9.string().optional(),
-      errorTitle: z9.string().min(3),
-      description: z9.string().min(5),
-      quantity: z9.number().int().positive().optional(),
-      exposureAmount: z9.number().nonnegative().default(0),
+      loanGroup: z10.string().trim().min(1).optional(),
+      collateralValue: z10.number().nonnegative().optional(),
+      loanPurpose: z10.string().trim().min(1).max(2e3).optional(),
+      errorCode: z10.string().min(2),
+      errorGroup: z10.string().optional(),
+      errorTitle: z10.string().min(3),
+      description: z10.string().min(5),
+      quantity: z10.number().int().positive().optional(),
+      exposureAmount: z10.number().nonnegative().default(0),
       // Provenance carried over from the upstream CoPlus inspection record.
-      inspectionTeamCode: z9.string().trim().min(1).max(50).optional(),
-      sourceRecordCode: z9.string().trim().min(1).max(60).optional(),
-      businessLine: z9.enum(BUSINESS_LINES).optional(),
-      riskLevel: z9.enum(RISK_LEVELS).optional(),
-      penaltyProposalCode: z9.string().trim().min(1).max(30).optional(),
-      referenceDocument: z9.string().trim().min(1).max(500).optional(),
-      creditBalance: z9.number().nonnegative().optional(),
-      officerName: z9.string().optional(),
-      deptHeadName: z9.string().optional(),
-      inspectorName: z9.string().optional(),
-      customPayload: z9.record(z9.any()).optional()
+      inspectionTeamCode: z10.string().trim().min(1).max(50).optional(),
+      sourceRecordCode: z10.string().trim().min(1).max(60).optional(),
+      businessLine: z10.enum(BUSINESS_LINES).optional(),
+      riskLevel: z10.enum(RISK_LEVELS).optional(),
+      penaltyProposalCode: z10.string().trim().min(1).max(30).optional(),
+      referenceDocument: z10.string().trim().min(1).max(500).optional(),
+      creditBalance: z10.number().nonnegative().optional(),
+      officerName: z10.string().optional(),
+      deptHeadName: z10.string().optional(),
+      inspectorName: z10.string().optional(),
+      customPayload: z10.record(z10.any()).optional()
     });
-    BulkFindingImportSchema = z9.object({
-      sourceFileName: z9.string().trim().min(1).max(255),
-      sourceType: z9.enum(["XLSX", "ZIP_XLSX", "CLIPBOARD", "DOCX", "PDF", "API_BULK", "WEB_FORM"]).default("API_BULK"),
-      atomic: z9.boolean().optional(),
-      rows: z9.array(WebFormFindingSchema).min(1).max(5e3)
+    BulkFindingImportSchema = z10.object({
+      sourceFileName: z10.string().trim().min(1).max(255),
+      sourceType: z10.enum(["XLSX", "ZIP_XLSX", "CLIPBOARD", "DOCX", "PDF", "API_BULK", "WEB_FORM"]).default("API_BULK"),
+      atomic: z10.boolean().optional(),
+      rows: z10.array(WebFormFindingSchema).min(1).max(5e3)
     }).superRefine((value, context) => {
       if (value.sourceType !== "API_BULK" && value.rows.some((row) => !row.campaignId?.trim())) {
-        context.addIssue({ code: z9.ZodIssueCode.custom, path: ["rows"], message: "Chuy\xEAn \u0111\u1EC1 l\xE0 b\u1EAFt bu\u1ED9c \u0111\u1ED1i v\u1EDBi d\u1EEF li\u1EC7u nh\u1EADp t\u1EEB giao di\u1EC7n." });
+        context.addIssue({ code: z10.ZodIssueCode.custom, path: ["rows"], message: "Chuy\xEAn \u0111\u1EC1 l\xE0 b\u1EAFt bu\u1ED9c \u0111\u1ED1i v\u1EDBi d\u1EEF li\u1EC7u nh\u1EADp t\u1EEB giao di\u1EC7n." });
       }
       if (value.sourceType !== "API_BULK" && value.rows.some((row) => row.channelId !== value.rows[0]?.channelId || row.campaignId !== value.rows[0]?.campaignId)) {
-        context.addIssue({ code: z9.ZodIssueCode.custom, path: ["rows"], message: "M\u1ED9t l\u1EA7n nh\u1EADp ch\u1EC9 \u0111\u01B0\u1EE3c d\xF9ng m\u1ED9t lo\u1EA1i b\xE1o c\xE1o v\xE0 m\u1ED9t chuy\xEAn \u0111\u1EC1." });
+        context.addIssue({ code: z10.ZodIssueCode.custom, path: ["rows"], message: "M\u1ED9t l\u1EA7n nh\u1EADp ch\u1EC9 \u0111\u01B0\u1EE3c d\xF9ng m\u1ED9t lo\u1EA1i b\xE1o c\xE1o v\xE0 m\u1ED9t chuy\xEAn \u0111\u1EC1." });
       }
     });
-    StageFindingImportSchema = z9.object({
-      sourceFileName: z9.string().trim().min(1).max(255),
-      sourceType: z9.enum(["XLSX", "ZIP_XLSX", "CLIPBOARD", "DOCX", "PDF", "API_BULK", "WEB_FORM"]).default("API_BULK"),
-      rows: z9.array(z9.record(z9.unknown())).min(1).max(5e3)
+    StageFindingImportSchema = z10.object({
+      sourceFileName: z10.string().trim().min(1).max(255),
+      sourceType: z10.enum(["XLSX", "ZIP_XLSX", "CLIPBOARD", "DOCX", "PDF", "API_BULK", "WEB_FORM"]).default("API_BULK"),
+      rows: z10.array(z10.record(z10.unknown())).min(1).max(5e3)
     });
-    CommitStagedFindingImportSchema = z9.object({
-      maxRows: z9.coerce.number().int().min(1).max(1e3).default(250),
-      allowPartial: z9.boolean().default(false)
+    CommitStagedFindingImportSchema = z10.object({
+      maxRows: z10.coerce.number().int().min(1).max(1e3).default(250),
+      allowPartial: z10.boolean().default(false)
     });
-    ScheduleStagedFindingImportSchema = z9.object({
-      maxRows: z9.coerce.number().int().min(1).max(1e3).default(250)
+    ScheduleStagedFindingImportSchema = z10.object({
+      maxRows: z10.coerce.number().int().min(1).max(1e3).default(250)
     });
     compactIdentifier = (value) => (value || "").trim().replace(/\s+/g, " ");
     buildFindingBusinessKey = (finding) => [
@@ -739,39 +764,39 @@ var init_ingestion = __esm({
 });
 
 // shared/contracts/findings.ts
-import { z as z10 } from "zod";
+import { z as z11 } from "zod";
 var WorkspaceTargetCommandSchema, SetWorkspacePrioritySchema, CreateFindingSubItemSchema, ReviewFindingSubItemsSchema;
 var init_findings = __esm({
   "shared/contracts/findings.ts"() {
     "use strict";
-    WorkspaceTargetCommandSchema = z10.object({
-      targetType: z10.enum(["CLUSTER", "BRANCH", "CUSTOMER"]),
-      clusterName: z10.string().trim().min(1).max(200).optional(),
-      branchCode: z10.string().trim().min(1).max(50).optional(),
-      cif: z10.string().trim().min(1).max(100).optional()
+    WorkspaceTargetCommandSchema = z11.object({
+      targetType: z11.enum(["CLUSTER", "BRANCH", "CUSTOMER"]),
+      clusterName: z11.string().trim().min(1).max(200).optional(),
+      branchCode: z11.string().trim().min(1).max(50).optional(),
+      cif: z11.string().trim().min(1).max(100).optional()
     }).superRefine((value, context) => {
-      if (value.targetType === "CLUSTER" && !value.clusterName) context.addIssue({ code: z10.ZodIssueCode.custom, path: ["clusterName"], message: "C\u1EE5m \u0111\u1ECBa b\xE0n l\xE0 b\u1EAFt bu\u1ED9c." });
-      if (value.targetType === "BRANCH" && !value.branchCode) context.addIssue({ code: z10.ZodIssueCode.custom, path: ["branchCode"], message: "Chi nh\xE1nh l\xE0 b\u1EAFt bu\u1ED9c." });
-      if (value.targetType === "CUSTOMER" && (!value.branchCode || !value.cif)) context.addIssue({ code: z10.ZodIssueCode.custom, path: ["cif"], message: "Kh\xE1ch h\xE0ng v\xE0 chi nh\xE1nh l\xE0 b\u1EAFt bu\u1ED9c." });
+      if (value.targetType === "CLUSTER" && !value.clusterName) context.addIssue({ code: z11.ZodIssueCode.custom, path: ["clusterName"], message: "C\u1EE5m \u0111\u1ECBa b\xE0n l\xE0 b\u1EAFt bu\u1ED9c." });
+      if (value.targetType === "BRANCH" && !value.branchCode) context.addIssue({ code: z11.ZodIssueCode.custom, path: ["branchCode"], message: "Chi nh\xE1nh l\xE0 b\u1EAFt bu\u1ED9c." });
+      if (value.targetType === "CUSTOMER" && (!value.branchCode || !value.cif)) context.addIssue({ code: z11.ZodIssueCode.custom, path: ["cif"], message: "Kh\xE1ch h\xE0ng v\xE0 chi nh\xE1nh l\xE0 b\u1EAFt bu\u1ED9c." });
     });
-    SetWorkspacePrioritySchema = z10.object({
-      isPriority: z10.boolean()
+    SetWorkspacePrioritySchema = z11.object({
+      isPriority: z11.boolean()
     });
-    CreateFindingSubItemSchema = z10.object({
-      content: z10.string().trim().min(5).max(1e3)
+    CreateFindingSubItemSchema = z11.object({
+      content: z11.string().trim().min(5).max(1e3)
     });
-    ReviewFindingSubItemsSchema = z10.object({
-      decisions: z10.array(z10.object({
-        subItemId: z10.string().min(1),
-        decision: z10.enum(["ACCEPT", "RETURN"])
+    ReviewFindingSubItemsSchema = z11.object({
+      decisions: z11.array(z11.object({
+        subItemId: z11.string().min(1),
+        decision: z11.enum(["ACCEPT", "RETURN"])
       })).min(1),
-      reviewNote: z10.string().trim().min(5).max(2e3)
+      reviewNote: z11.string().trim().min(5).max(2e3)
     });
   }
 });
 
 // shared/contracts/dashboards.ts
-import { z as z11 } from "zod";
+import { z as z12 } from "zod";
 function formatReportMetricValue(value, format) {
   const decimals = format?.decimals ?? 0;
   const text = value.toLocaleString("vi-VN", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
@@ -781,19 +806,19 @@ var ReportFilterSchema, ReportColumnSchema, REPORT_FIELD_KEYS, ReportFieldKeySch
 var init_dashboards = __esm({
   "shared/contracts/dashboards.ts"() {
     "use strict";
-    ReportFilterSchema = z11.object({
-      branchCode: z11.string().trim().min(1).max(50).optional(),
-      department: z11.string().trim().min(1).max(255).optional(),
-      workflowStatus: z11.enum(["PENDING", "SUBMITTED_BRANCH", "SUBMITTED_BRANCH_LEADER", "SUBMITTED_INTERNAL", "REJECTED", "WAIVED_RESOLVED"]).optional(),
-      errorCode: z11.string().trim().min(2).max(50).optional(),
-      dateFrom: z11.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-      dateTo: z11.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+    ReportFilterSchema = z12.object({
+      branchCode: z12.string().trim().min(1).max(50).optional(),
+      department: z12.string().trim().min(1).max(255).optional(),
+      workflowStatus: z12.enum(["PENDING", "SUBMITTED_BRANCH", "SUBMITTED_BRANCH_LEADER", "SUBMITTED_INTERNAL", "REJECTED", "WAIVED_RESOLVED"]).optional(),
+      errorCode: z12.string().trim().min(2).max(50).optional(),
+      dateFrom: z12.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+      dateTo: z12.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
     }).superRefine((value, context) => {
       if (value.dateFrom && value.dateTo && value.dateFrom > value.dateTo) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["dateTo"], message: "dateTo ph\u1EA3i l\u1EDBn h\u01A1n ho\u1EB7c b\u1EB1ng dateFrom" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["dateTo"], message: "dateTo ph\u1EA3i l\u1EDBn h\u01A1n ho\u1EB7c b\u1EB1ng dateFrom" });
       }
     });
-    ReportColumnSchema = z11.enum([
+    ReportColumnSchema = z12.enum([
       "cif",
       "customerName",
       "clusterName",
@@ -837,7 +862,7 @@ var init_dashboards = __esm({
       "measure.quantity",
       "flag.overdue"
     ];
-    ReportFieldKeySchema = z11.enum(REPORT_FIELD_KEYS);
+    ReportFieldKeySchema = z12.enum(REPORT_FIELD_KEYS);
     REPORT_OPERATOR_KEYS = [
       "op.eq",
       "op.neq",
@@ -849,7 +874,7 @@ var init_dashboards = __esm({
       "op.is_true",
       "op.is_false"
     ];
-    ReportOperatorKeySchema = z11.enum(REPORT_OPERATOR_KEYS);
+    ReportOperatorKeySchema = z12.enum(REPORT_OPERATOR_KEYS);
     REPORT_METRIC_KEYS = [
       "metric.customer_count",
       "metric.finding_count",
@@ -861,7 +886,7 @@ var init_dashboards = __esm({
       "metric.resolved_count",
       "metric.remediation_rate"
     ];
-    ReportMetricKeySchema = z11.enum(REPORT_METRIC_KEYS);
+    ReportMetricKeySchema = z12.enum(REPORT_METRIC_KEYS);
     TEXT_OPERATORS = ["op.eq", "op.neq", "op.contains", "op.in"];
     ENUM_OPERATORS = ["op.eq", "op.neq", "op.in"];
     RANGE_OPERATORS = ["op.eq", "op.neq", "op.gte", "op.lte", "op.between"];
@@ -923,169 +948,169 @@ var init_dashboards = __esm({
       }
       return void 0;
     };
-    ReportCatalogFieldConfigurationInputSchema = z11.object({
+    ReportCatalogFieldConfigurationInputSchema = z12.object({
       key: ReportFieldKeySchema,
-      label: z11.string().trim().min(1).max(100),
-      isActive: z11.boolean(),
-      filterable: z11.boolean(),
-      groupable: z11.boolean(),
-      exportable: z11.boolean(),
-      defaultExport: z11.boolean(),
-      sortOrder: z11.number().int().min(0).max(999)
+      label: z12.string().trim().min(1).max(100),
+      isActive: z12.boolean(),
+      filterable: z12.boolean(),
+      groupable: z12.boolean(),
+      exportable: z12.boolean(),
+      defaultExport: z12.boolean(),
+      sortOrder: z12.number().int().min(0).max(999)
     });
-    ReportCatalogMetricConfigurationInputSchema = z11.object({
+    ReportCatalogMetricConfigurationInputSchema = z12.object({
       key: ReportMetricKeySchema,
-      label: z11.string().trim().min(1).max(100),
-      isActive: z11.boolean(),
-      sortOrder: z11.number().int().min(0).max(999)
+      label: z12.string().trim().min(1).max(100),
+      isActive: z12.boolean(),
+      sortOrder: z12.number().int().min(0).max(999)
     });
-    UpdateReportCatalogConfigurationSchema = z11.object({
-      expectedVersion: z11.number().int().min(1),
-      fields: z11.array(ReportCatalogFieldConfigurationInputSchema).length(REPORT_FIELD_KEYS.length),
-      metrics: z11.array(ReportCatalogMetricConfigurationInputSchema).length(REPORT_METRIC_KEYS.length)
+    UpdateReportCatalogConfigurationSchema = z12.object({
+      expectedVersion: z12.number().int().min(1),
+      fields: z12.array(ReportCatalogFieldConfigurationInputSchema).length(REPORT_FIELD_KEYS.length),
+      metrics: z12.array(ReportCatalogMetricConfigurationInputSchema).length(REPORT_METRIC_KEYS.length)
     }).superRefine((configuration, context) => {
       const fieldKeys = new Set(configuration.fields.map((field) => field.key));
       const metricKeys = new Set(configuration.metrics.map((metric) => metric.key));
       if (fieldKeys.size !== REPORT_FIELD_KEYS.length) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields"], message: "Danh s\xE1ch tr\u01B0\u1EDDng b\xE1o c\xE1o ph\u1EA3i \u0111\u1EA7y \u0111\u1EE7 v\xE0 kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields"], message: "Danh s\xE1ch tr\u01B0\u1EDDng b\xE1o c\xE1o ph\u1EA3i \u0111\u1EA7y \u0111\u1EE7 v\xE0 kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
       }
       if (metricKeys.size !== REPORT_METRIC_KEYS.length) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["metrics"], message: "Danh s\xE1ch ch\u1EC9 s\u1ED1 b\xE1o c\xE1o ph\u1EA3i \u0111\u1EA7y \u0111\u1EE7 v\xE0 kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["metrics"], message: "Danh s\xE1ch ch\u1EC9 s\u1ED1 b\xE1o c\xE1o ph\u1EA3i \u0111\u1EA7y \u0111\u1EE7 v\xE0 kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
       }
       configuration.fields.forEach((field, index) => {
         const base = REPORT_FIELD_CATALOG.find((item) => item.key === field.key);
         if (field.groupable && !base.groupable) {
-          context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields", index, "groupable"], message: "Tr\u01B0\u1EDDng n\xE0y kh\xF4ng h\u1ED7 tr\u1EE3 ph\xE2n nh\xF3m" });
+          context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields", index, "groupable"], message: "Tr\u01B0\u1EDDng n\xE0y kh\xF4ng h\u1ED7 tr\u1EE3 ph\xE2n nh\xF3m" });
         }
         if (field.exportable && !base.exportable) {
-          context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields", index, "exportable"], message: "Tr\u01B0\u1EDDng n\xE0y kh\xF4ng h\u1ED7 tr\u1EE3 xu\u1EA5t d\u1EEF li\u1EC7u" });
+          context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields", index, "exportable"], message: "Tr\u01B0\u1EDDng n\xE0y kh\xF4ng h\u1ED7 tr\u1EE3 xu\u1EA5t d\u1EEF li\u1EC7u" });
         }
         if (field.defaultExport && (!field.isActive || !field.exportable)) {
-          context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields", index, "defaultExport"], message: "C\u1ED9t xu\u1EA5t m\u1EB7c \u0111\u1ECBnh ph\u1EA3i \u0111ang b\u1EADt v\xE0 \u0111\u01B0\u1EE3c ph\xE9p xu\u1EA5t" });
+          context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields", index, "defaultExport"], message: "C\u1ED9t xu\u1EA5t m\u1EB7c \u0111\u1ECBnh ph\u1EA3i \u0111ang b\u1EADt v\xE0 \u0111\u01B0\u1EE3c ph\xE9p xu\u1EA5t" });
         }
         if (field.filterable && !field.isActive) {
-          context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields", index, "filterable"], message: "Tr\u01B0\u1EDDng d\xF9ng \u0111\u1EC3 l\u1ECDc ph\u1EA3i \u0111ang hi\u1EC3n th\u1ECB" });
+          context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields", index, "filterable"], message: "Tr\u01B0\u1EDDng d\xF9ng \u0111\u1EC3 l\u1ECDc ph\u1EA3i \u0111ang hi\u1EC3n th\u1ECB" });
         }
       });
       if (!configuration.fields.some((field) => field.isActive && field.groupable)) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields"], message: "C\u1EA7n \xEDt nh\u1EA5t m\u1ED9t tr\u01B0\u1EDDng d\xF9ng \u0111\u1EC3 xem theo nh\xF3m" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields"], message: "C\u1EA7n \xEDt nh\u1EA5t m\u1ED9t tr\u01B0\u1EDDng d\xF9ng \u0111\u1EC3 xem theo nh\xF3m" });
       }
       if (!configuration.fields.some((field) => field.isActive && field.defaultExport)) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields"], message: "C\u1EA7n \xEDt nh\u1EA5t m\u1ED9t c\u1ED9t xu\u1EA5t m\u1EB7c \u0111\u1ECBnh" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields"], message: "C\u1EA7n \xEDt nh\u1EA5t m\u1ED9t c\u1ED9t xu\u1EA5t m\u1EB7c \u0111\u1ECBnh" });
       }
       if (!configuration.metrics.some((metric) => metric.isActive)) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["metrics"], message: "C\u1EA7n \xEDt nh\u1EA5t m\u1ED9t ch\u1EC9 s\u1ED1 \u0111ang b\u1EADt" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["metrics"], message: "C\u1EA7n \xEDt nh\u1EA5t m\u1ED9t ch\u1EC9 s\u1ED1 \u0111ang b\u1EADt" });
       }
       const duplicateFieldLabel = firstDuplicateLabel(configuration.fields.filter((field) => field.isActive).map((field) => field.label));
       if (duplicateFieldLabel) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["fields"], message: `T\xEAn hi\u1EC3n th\u1ECB \u201C${duplicateFieldLabel}\u201D b\u1ECB tr\xF9ng; m\u1ED7i tr\u01B0\u1EDDng c\u1EA7n m\u1ED9t t\xEAn ri\xEAng \u0111\u1EC3 xu\u1EA5t Excel.` });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["fields"], message: `T\xEAn hi\u1EC3n th\u1ECB "${duplicateFieldLabel}" b\u1ECB tr\xF9ng; m\u1ED7i tr\u01B0\u1EDDng c\u1EA7n m\u1ED9t t\xEAn ri\xEAng \u0111\u1EC3 xu\u1EA5t Excel.` });
       }
       const duplicateMetricLabel = firstDuplicateLabel(configuration.metrics.filter((metric) => metric.isActive).map((metric) => metric.label));
       if (duplicateMetricLabel) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["metrics"], message: `T\xEAn hi\u1EC3n th\u1ECB \u201C${duplicateMetricLabel}\u201D b\u1ECB tr\xF9ng; m\u1ED7i ch\u1EC9 s\u1ED1 c\u1EA7n m\u1ED9t t\xEAn ri\xEAng \u0111\u1EC3 xu\u1EA5t Excel.` });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["metrics"], message: `T\xEAn hi\u1EC3n th\u1ECB "${duplicateMetricLabel}" b\u1ECB tr\xF9ng; m\u1ED7i ch\u1EC9 s\u1ED1 c\u1EA7n m\u1ED9t t\xEAn ri\xEAng \u0111\u1EC3 xu\u1EA5t Excel.` });
       }
     });
-    ReportRuleValueSchema = z11.union([z11.string().max(500), z11.number().finite(), z11.boolean()]);
-    ReportFilterRuleSchema = z11.object({
+    ReportRuleValueSchema = z12.union([z12.string().max(500), z12.number().finite(), z12.boolean()]);
+    ReportFilterRuleSchema = z12.object({
       key: ReportFieldKeySchema,
       operator: ReportOperatorKeySchema,
       value: ReportRuleValueSchema.optional(),
-      values: z11.array(ReportRuleValueSchema).min(1).max(100).optional(),
-      from: z11.union([z11.string().max(50), z11.number().finite()]).optional(),
-      to: z11.union([z11.string().max(50), z11.number().finite()]).optional()
+      values: z12.array(ReportRuleValueSchema).min(1).max(100).optional(),
+      from: z12.union([z12.string().max(50), z12.number().finite()]).optional(),
+      to: z12.union([z12.string().max(50), z12.number().finite()]).optional()
     }).superRefine((rule, context) => {
       const field = REPORT_FIELD_CATALOG.find((item) => item.key === rule.key);
       if (!field.operators.includes(rule.operator)) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["operator"], message: `To\xE1n t\u1EED ${rule.operator} kh\xF4ng d\xF9ng \u0111\u01B0\u1EE3c cho ${rule.key}` });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["operator"], message: `To\xE1n t\u1EED ${rule.operator} kh\xF4ng d\xF9ng \u0111\u01B0\u1EE3c cho ${rule.key}` });
         return;
       }
       const operator = REPORT_OPERATOR_CATALOG.find((item) => item.key === rule.operator);
       if (operator.requires === "VALUE" && (rule.value === void 0 || rule.value === "")) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["value"], message: "B\u1ED9 l\u1ECDc c\u1EA7n m\u1ED9t gi\xE1 tr\u1ECB" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["value"], message: "B\u1ED9 l\u1ECDc c\u1EA7n m\u1ED9t gi\xE1 tr\u1ECB" });
       }
       if (operator.requires === "VALUES" && !rule.values?.length) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["values"], message: "B\u1ED9 l\u1ECDc c\u1EA7n danh s\xE1ch gi\xE1 tr\u1ECB" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["values"], message: "B\u1ED9 l\u1ECDc c\u1EA7n danh s\xE1ch gi\xE1 tr\u1ECB" });
       }
       if (operator.requires === "RANGE" && (rule.from === void 0 || rule.to === void 0)) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["from"], message: "B\u1ED9 l\u1ECDc c\u1EA7n \u0111\u1EE7 gi\xE1 tr\u1ECB t\u1EEB v\xE0 \u0111\u1EBFn" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["from"], message: "B\u1ED9 l\u1ECDc c\u1EA7n \u0111\u1EE7 gi\xE1 tr\u1ECB t\u1EEB v\xE0 \u0111\u1EBFn" });
       }
       const supplied = [rule.value, ...rule.values || [], rule.from, rule.to].filter((value) => value !== void 0);
       if (field.valueType === "NUMBER" && supplied.some((value) => typeof value !== "number")) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["value"], message: "Key ki\u1EC3u NUMBER ch\u1EC9 nh\u1EADn gi\xE1 tr\u1ECB s\u1ED1" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["value"], message: "Key ki\u1EC3u NUMBER ch\u1EC9 nh\u1EADn gi\xE1 tr\u1ECB s\u1ED1" });
       }
       if (field.valueType === "DATE" && supplied.some((value) => typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["value"], message: "Key ki\u1EC3u DATE ch\u1EC9 nh\u1EADn YYYY-MM-DD" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["value"], message: "Key ki\u1EC3u DATE ch\u1EC9 nh\u1EADn YYYY-MM-DD" });
       }
       if (rule.operator === "op.between" && rule.from !== void 0 && rule.to !== void 0 && rule.from > rule.to) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["to"], message: "Gi\xE1 tr\u1ECB \u0111\u1EBFn ph\u1EA3i l\u1EDBn h\u01A1n ho\u1EB7c b\u1EB1ng gi\xE1 tr\u1ECB t\u1EEB" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["to"], message: "Gi\xE1 tr\u1ECB \u0111\u1EBFn ph\u1EA3i l\u1EDBn h\u01A1n ho\u1EB7c b\u1EB1ng gi\xE1 tr\u1ECB t\u1EEB" });
       }
     });
-    ReportRunRequestSchema = z11.object({
-      rules: z11.array(ReportFilterRuleSchema).max(20).default([]),
-      match: z11.enum(["ALL", "ANY"]).default("ALL"),
+    ReportRunRequestSchema = z12.object({
+      rules: z12.array(ReportFilterRuleSchema).max(20).default([]),
+      match: z12.enum(["ALL", "ANY"]).default("ALL"),
       groupBy: ReportFieldKeySchema.default("dimension.branch"),
       pivotBy: ReportFieldKeySchema.optional(),
-      metrics: z11.array(ReportMetricKeySchema).min(1).max(REPORT_METRIC_KEYS.length).default([
+      metrics: z12.array(ReportMetricKeySchema).min(1).max(REPORT_METRIC_KEYS.length).default([
         "metric.customer_count",
         "metric.finding_count",
         "metric.exposure_sum"
       ]),
-      sort: z11.object({ key: ReportMetricKeySchema, direction: z11.enum(["asc", "desc"]).default("desc") }).optional(),
-      limit: z11.number().int().min(1).max(100).default(25)
+      sort: z12.object({ key: ReportMetricKeySchema, direction: z12.enum(["asc", "desc"]).default("desc") }).optional(),
+      limit: z12.number().int().min(1).max(100).default(25)
     }).superRefine((query, context) => {
       const groupField = REPORT_FIELD_CATALOG.find((item) => item.key === query.groupBy);
       if (!groupField.groupable) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["groupBy"], message: `${query.groupBy} kh\xF4ng ph\u1EA3i key ph\xE2n nh\xF3m` });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["groupBy"], message: `${query.groupBy} kh\xF4ng ph\u1EA3i key ph\xE2n nh\xF3m` });
       }
       if (query.pivotBy && query.pivotBy === query.groupBy) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["pivotBy"], message: "Tr\u01B0\u1EDDng c\u1ED9t c\u1EE7a b\u1EA3ng ch\xE9o ph\u1EA3i kh\xE1c tr\u01B0\u1EDDng h\xE0ng." });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["pivotBy"], message: "Tr\u01B0\u1EDDng c\u1ED9t c\u1EE7a b\u1EA3ng ch\xE9o ph\u1EA3i kh\xE1c tr\u01B0\u1EDDng h\xE0ng." });
       }
       if (query.pivotBy && !REPORT_FIELD_CATALOG.find((item) => item.key === query.pivotBy)?.groupable) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["pivotBy"], message: `${query.pivotBy} kh\xF4ng ph\u1EA3i key ph\xE2n nh\xF3m` });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["pivotBy"], message: `${query.pivotBy} kh\xF4ng ph\u1EA3i key ph\xE2n nh\xF3m` });
       }
       if (new Set(query.metrics).size !== query.metrics.length) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["metrics"], message: "Key ch\u1EC9 s\u1ED1 kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["metrics"], message: "Key ch\u1EC9 s\u1ED1 kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
       }
     });
     REPORT_HIGHLIGHT_TONES = ["risk", "warn", "ok"];
-    ReportMetricFormatSchema = z11.object({
+    ReportMetricFormatSchema = z12.object({
       /** Tên cột do người dùng đặt; bỏ trống thì dùng tên trong danh mục. */
-      label: z11.string().trim().max(60).optional(),
-      decimals: z11.number().int().min(0).max(4).optional(),
+      label: z12.string().trim().max(60).optional(),
+      decimals: z12.number().int().min(0).max(4).optional(),
       /** Hậu tố dán sau con số, ví dụ "hồ sơ" hoặc "%". */
-      suffix: z11.string().trim().max(16).optional(),
-      highlight: z11.object({
-        operator: z11.enum(["gt", "gte", "lt", "lte"]),
-        value: z11.number(),
-        tone: z11.enum(REPORT_HIGHLIGHT_TONES)
+      suffix: z12.string().trim().max(16).optional(),
+      highlight: z12.object({
+        operator: z12.enum(["gt", "gte", "lt", "lte"]),
+        value: z12.number(),
+        tone: z12.enum(REPORT_HIGHLIGHT_TONES)
       }).optional()
     });
-    ReportPresentationOptionsSchema = z11.object({
-      title: z11.string().trim().max(150).optional(),
+    ReportPresentationOptionsSchema = z12.object({
+      title: z12.string().trim().max(150).optional(),
       /** Đổi tên cột đầu tiên (trường ở vùng Hàng). */
-      rowLabel: z11.string().trim().max(60).optional(),
-      metrics: z11.record(ReportMetricKeySchema, ReportMetricFormatSchema).default({})
+      rowLabel: z12.string().trim().max(60).optional(),
+      metrics: z12.record(ReportMetricKeySchema, ReportMetricFormatSchema).default({})
     });
-    ReportExportSectionSchema = z11.enum(["design", "detail"]);
-    ReportExportRequestSchema = z11.object({
+    ReportExportSectionSchema = z12.enum(["design", "detail"]);
+    ReportExportRequestSchema = z12.object({
       query: ReportRunRequestSchema,
-      columns: z11.array(ReportFieldKeySchema).min(1).max(REPORT_FIELD_KEYS.length),
-      format: z11.enum(["csv", "html", "xlsx"]).default("csv"),
+      columns: z12.array(ReportFieldKeySchema).min(1).max(REPORT_FIELD_KEYS.length),
+      format: z12.enum(["csv", "html", "xlsx"]).default("csv"),
       section: ReportExportSectionSchema.default("design"),
       presentation: ReportPresentationOptionsSchema.optional()
     }).superRefine((request, context) => {
       request.columns.forEach((key, index) => {
         if (!REPORT_FIELD_CATALOG.find((item) => item.key === key)?.exportable) {
-          context.addIssue({ code: z11.ZodIssueCode.custom, path: ["columns", index], message: `${key} kh\xF4ng th\u1EC3 xu\u1EA5t d\u1EEF li\u1EC7u` });
+          context.addIssue({ code: z12.ZodIssueCode.custom, path: ["columns", index], message: `${key} kh\xF4ng th\u1EC3 xu\u1EA5t d\u1EEF li\u1EC7u` });
         }
       });
       if (new Set(request.columns).size !== request.columns.length) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["columns"], message: "Key c\u1ED9t xu\u1EA5t kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["columns"], message: "Key c\u1ED9t xu\u1EA5t kh\xF4ng \u0111\u01B0\u1EE3c l\u1EB7p" });
       }
     });
     REPORT_DEFINITION_VISIBILITIES = ["PRIVATE", "ROLE_SHARED"];
-    ReportDefinitionVisibilitySchema = z11.enum(REPORT_DEFINITION_VISIBILITIES);
-    ReportShareRoleSchema = z11.enum([
+    ReportDefinitionVisibilitySchema = z12.enum(REPORT_DEFINITION_VISIBILITIES);
+    ReportShareRoleSchema = z12.enum([
       "ADMIN",
       "SUPERVISOR",
       "INTERNAL_APPROVER",
@@ -1095,46 +1120,46 @@ var init_dashboards = __esm({
       "BRANCH_INPUT",
       "VIEWER"
     ]);
-    CreateReportDefinitionSchema = z11.object({
-      name: z11.string().trim().min(3).max(150),
-      description: z11.string().trim().max(500).optional(),
+    CreateReportDefinitionSchema = z12.object({
+      name: z12.string().trim().min(3).max(150),
+      description: z12.string().trim().max(500).optional(),
       filters: ReportFilterSchema.default({}),
-      columns: z11.array(ReportColumnSchema).max(15).default([]),
+      columns: z12.array(ReportColumnSchema).max(15).default([]),
       query: ReportRunRequestSchema.optional(),
-      exportColumns: z11.array(ReportFieldKeySchema).max(REPORT_FIELD_KEYS.length).default([]),
+      exportColumns: z12.array(ReportFieldKeySchema).max(REPORT_FIELD_KEYS.length).default([]),
       presentation: ReportPresentationOptionsSchema.optional(),
       visibility: ReportDefinitionVisibilitySchema.default("PRIVATE"),
-      sharedWithRoles: z11.array(ReportShareRoleSchema).max(8).default([]),
-      sourceReportDefinitionId: z11.string().min(1).max(200).optional()
+      sharedWithRoles: z12.array(ReportShareRoleSchema).max(8).default([]),
+      sourceReportDefinitionId: z12.string().min(1).max(200).optional()
     }).superRefine((definition, context) => {
       if (definition.columns.length === 0 && definition.exportColumns.length === 0) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["exportColumns"], message: "Ph\u1EA3i ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t c\u1ED9t xu\u1EA5t b\xE1o c\xE1o" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["exportColumns"], message: "Ph\u1EA3i ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t c\u1ED9t xu\u1EA5t b\xE1o c\xE1o" });
       }
       if (definition.visibility === "ROLE_SHARED" && definition.sharedWithRoles.length === 0) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem b\xE1o c\xE1o chia s\u1EBB" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem b\xE1o c\xE1o chia s\u1EBB" });
       }
     });
-    CreateDashboardDefinitionSchema = z11.object({
-      name: z11.string().trim().min(3).max(150),
-      reportDefinitionIds: z11.array(z11.string().min(1)).min(1).max(6),
+    CreateDashboardDefinitionSchema = z12.object({
+      name: z12.string().trim().min(3).max(150),
+      reportDefinitionIds: z12.array(z12.string().min(1)).min(1).max(6),
       visibility: ReportDefinitionVisibilitySchema.default("PRIVATE"),
-      sharedWithRoles: z11.array(ReportShareRoleSchema).max(8).default([])
+      sharedWithRoles: z12.array(ReportShareRoleSchema).max(8).default([])
     }).superRefine((dashboard, context) => {
       if (new Set(dashboard.reportDefinitionIds).size !== dashboard.reportDefinitionIds.length) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["reportDefinitionIds"], message: "M\u1ED9t b\xE1o c\xE1o ch\u1EC9 \u0111\u01B0\u1EE3c th\xEAm m\u1ED9t l\u1EA7n v\xE0o dashboard" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["reportDefinitionIds"], message: "M\u1ED9t b\xE1o c\xE1o ch\u1EC9 \u0111\u01B0\u1EE3c th\xEAm m\u1ED9t l\u1EA7n v\xE0o dashboard" });
       }
       if (dashboard.visibility === "ROLE_SHARED" && dashboard.sharedWithRoles.length === 0) {
-        context.addIssue({ code: z11.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem dashboard chia s\u1EBB" });
+        context.addIssue({ code: z12.ZodIssueCode.custom, path: ["sharedWithRoles"], message: "Ch\u1ECDn \xEDt nh\u1EA5t m\u1ED9t vai tr\xF2 \u0111\u01B0\u1EE3c xem dashboard chia s\u1EBB" });
       }
     });
-    ReportDrillRequestSchema = z11.object({
+    ReportDrillRequestSchema = z12.object({
       query: ReportRunRequestSchema,
       /** Value of `query.groupBy` for the clicked row; omitted when drilling a grand total. */
-      rowKey: z11.string().max(300).optional(),
+      rowKey: z12.string().max(300).optional(),
       /** Value of `query.pivotBy` for the clicked crosstab column. */
-      columnKey: z11.string().max(300).optional(),
-      page: z11.number().int().min(1).max(500).default(1),
-      pageSize: z11.number().int().min(5).max(100).default(25)
+      columnKey: z12.string().max(300).optional(),
+      page: z12.number().int().min(1).max(500).default(1),
+      pageSize: z12.number().int().min(5).max(100).default(25)
     });
     preset = (id, name, description, query, presentation = "table", chartType) => ({
       id,
@@ -1245,41 +1270,41 @@ var init_audit = __esm({
 });
 
 // shared/contracts/campaigns.ts
-import { z as z12 } from "zod";
+import { z as z13 } from "zod";
 function validateCampaignInput(value, context) {
-  if (value.endDate < value.startDate) context.addIssue({ code: z12.ZodIssueCode.custom, path: ["endDate"], message: "Ng\xE0y k\u1EBFt th\xFAc ph\u1EA3i t\u1EEB ng\xE0y b\u1EAFt \u0111\u1EA7u tr\u1EDF \u0111i." });
+  if (value.endDate < value.startDate) context.addIssue({ code: z13.ZodIssueCode.custom, path: ["endDate"], message: "Ng\xE0y k\u1EBFt th\xFAc ph\u1EA3i t\u1EEB ng\xE0y b\u1EAFt \u0111\u1EA7u tr\u1EDF \u0111i." });
   const userIds = value.members.map((member) => member.userId);
-  if (new Set(userIds).size !== userIds.length) context.addIssue({ code: z12.ZodIssueCode.custom, path: ["members"], message: "Th\xE0nh vi\xEAn kh\xF4ng \u0111\u01B0\u1EE3c tr\xF9ng." });
+  if (new Set(userIds).size !== userIds.length) context.addIssue({ code: z13.ZodIssueCode.custom, path: ["members"], message: "Th\xE0nh vi\xEAn kh\xF4ng \u0111\u01B0\u1EE3c tr\xF9ng." });
   const lead = value.members.find((member) => member.userId === value.leadUserId && member.memberRole === "LEAD");
-  if (!lead) context.addIssue({ code: z12.ZodIssueCode.custom, path: ["leadUserId"], message: "Tr\u01B0\u1EDFng \u0111o\xE0n ph\u1EA3i c\xF3 trong danh s\xE1ch v\u1EDBi vai tr\xF2 LEAD." });
+  if (!lead) context.addIssue({ code: z13.ZodIssueCode.custom, path: ["leadUserId"], message: "Tr\u01B0\u1EDFng \u0111o\xE0n ph\u1EA3i c\xF3 trong danh s\xE1ch v\u1EDBi vai tr\xF2 LEAD." });
   const branches = new Set(value.branchCodes);
-  if (value.members.some((member) => member.assignedBranchCodes.some((code) => !branches.has(code)))) context.addIssue({ code: z12.ZodIssueCode.custom, path: ["members"], message: "Chi nh\xE1nh ph\xE2n c\xF4ng ph\u1EA3i thu\u1ED9c ph\u1EA1m vi chuy\xEAn \u0111\u1EC1." });
+  if (value.members.some((member) => member.assignedBranchCodes.some((code) => !branches.has(code)))) context.addIssue({ code: z13.ZodIssueCode.custom, path: ["members"], message: "Chi nh\xE1nh ph\xE2n c\xF4ng ph\u1EA3i thu\u1ED9c ph\u1EA1m vi chuy\xEAn \u0111\u1EC1." });
 }
 var CampaignMemberSchema, CampaignInputSchema, CreateAuditCampaignSchema, UpdateAuditCampaignSchema;
 var init_campaigns = __esm({
   "shared/contracts/campaigns.ts"() {
     "use strict";
-    CampaignMemberSchema = z12.object({
-      userId: z12.string().trim().min(1),
-      memberRole: z12.enum(["LEAD", "MEMBER"]),
-      assignedBranchCodes: z12.array(z12.string().trim().min(1)).default([])
+    CampaignMemberSchema = z13.object({
+      userId: z13.string().trim().min(1),
+      memberRole: z13.enum(["LEAD", "MEMBER"]),
+      assignedBranchCodes: z13.array(z13.string().trim().min(1)).default([])
     });
-    CampaignInputSchema = z12.object({
-      code: z12.string().trim().min(2).max(80),
-      name: z12.string().trim().min(3).max(255),
-      description: z12.string().trim().max(1e3).optional(),
-      decisionNo: z12.string().trim().min(2).max(150),
-      startDate: z12.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      endDate: z12.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-      leadUserId: z12.string().trim().min(1),
-      members: z12.array(CampaignMemberSchema).min(1),
-      branchCodes: z12.array(z12.string().trim().min(1)).min(1),
-      reportChannelIds: z12.array(z12.string().trim().min(1)).min(1)
+    CampaignInputSchema = z13.object({
+      code: z13.string().trim().min(2).max(80),
+      name: z13.string().trim().min(3).max(255),
+      description: z13.string().trim().max(1e3).optional(),
+      decisionNo: z13.string().trim().min(2).max(150),
+      startDate: z13.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      endDate: z13.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+      leadUserId: z13.string().trim().min(1),
+      members: z13.array(CampaignMemberSchema).min(1),
+      branchCodes: z13.array(z13.string().trim().min(1)).min(1),
+      reportChannelIds: z13.array(z13.string().trim().min(1)).min(1)
     });
     CreateAuditCampaignSchema = CampaignInputSchema.superRefine(validateCampaignInput);
     UpdateAuditCampaignSchema = CampaignInputSchema.partial().extend({
-      expectedVersion: z12.number().int().positive(),
-      status: z12.enum(["DRAFT", "ACTIVE", "CLOSED", "ARCHIVED"]).optional()
+      expectedVersion: z13.number().int().positive(),
+      status: z13.enum(["DRAFT", "ACTIVE", "CLOSED", "ARCHIVED"]).optional()
     });
   }
 });
@@ -1311,6 +1336,7 @@ var init_contracts = __esm({
     init_channels();
     init_evidence();
     init_workflow();
+    init_handover();
     init_sla();
     init_ingestion();
     init_findings();
@@ -1333,8 +1359,26 @@ var init_workflow_service = __esm({
           throw new Error(`403: APPROVER_NOT_ASSIGNED \u2014 H\u1ED3 s\u01A1 n\xE0y \u0111\u01B0\u1EE3c ph\xE2n cho ${label} kh\xE1c duy\u1EC7t.`);
         }
         const latestAssignment = finding.approvalRoute?.assignmentHistory?.filter((assignment) => assignment.stage === stage).at(-1);
-        if (latestAssignment?.validUntil && Date.parse(latestAssignment.validUntil) <= Date.now()) {
+        if (latestAssignment?.validUntil && latestAssignment.assignedUserId === selectedUserId && Date.parse(latestAssignment.validUntil) <= Date.now()) {
           throw new Error(`409: APPROVAL_ASSIGNMENT_EXPIRED \u2014 Th\u1EDDi h\u1EA1n \u0111\u01B0\u1EE3c giao cho ${label} \u0111\xE3 k\u1EBFt th\xFAc; qu\u1EA3n tr\u1ECB vi\xEAn ph\u1EA3i giao l\u1EA1i ng\u01B0\u1EDDi duy\u1EC7t.`);
+        }
+      }
+      /**
+       * Trạng thái hồ sơ sẽ sang khi người đang giữ bước hiện tại chuyển nó đi. Các lệnh nộp và duyệt
+       * dưới đây và màn hình chọn người nhận cùng đọc hàm này nên không thể lệch nhau về việc ai nhận.
+       * Trả về `undefined` khi không có bước nào để chuyển tiếp (đã đóng, hoặc đang ở Hội sở).
+       */
+      nextStatusAfterForward(finding, workflowType = "TWO_TIER") {
+        switch (finding.workflowStatus) {
+          case "PENDING":
+          case "REJECTED":
+            return workflowType === "ONE_TIER" ? "SUBMITTED_INTERNAL" : "SUBMITTED_BRANCH";
+          case "SUBMITTED_BRANCH":
+            return finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase ? "SUBMITTED_BRANCH_LEADER" : "SUBMITTED_INTERNAL";
+          case "SUBMITTED_BRANCH_LEADER":
+            return "SUBMITTED_INTERNAL";
+          default:
+            return void 0;
         }
       }
       validateTransition(finding, command, user) {
@@ -1422,7 +1466,7 @@ var init_workflow_service = __esm({
         }
         const updated = {
           ...finding,
-          workflowStatus: workflowType === "ONE_TIER" ? "SUBMITTED_INTERNAL" : "SUBMITTED_BRANCH",
+          workflowStatus: this.nextStatusAfterForward(finding, workflowType),
           resolutionNotes: dto.resolutionNotes,
           version: finding.version + 1,
           rejectedFromStage: void 0,
@@ -1438,12 +1482,9 @@ var init_workflow_service = __esm({
         if (dto.expectedVersion !== finding.version) {
           throw new Error(`409: VERSION_CONFLICT \u2014 Version conflict (${finding.version} != ${dto.expectedVersion})`);
         }
-        const routeThroughBranchLeader = Boolean(
-          finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase
-        );
         const updated = {
           ...finding,
-          workflowStatus: routeThroughBranchLeader ? "SUBMITTED_BRANCH_LEADER" : "SUBMITTED_INTERNAL",
+          workflowStatus: this.nextStatusAfterForward(finding),
           version: finding.version + 1,
           updatedAt: (/* @__PURE__ */ new Date()).toISOString()
         };
@@ -1473,7 +1514,7 @@ var init_workflow_service = __esm({
         }
         return {
           ...finding,
-          workflowStatus: "SUBMITTED_INTERNAL",
+          workflowStatus: this.nextStatusAfterForward(finding),
           version: finding.version + 1,
           updatedAt: (/* @__PURE__ */ new Date()).toISOString()
         };
@@ -1867,27 +1908,66 @@ function approvalCandidatesForFinding(finding, users) {
 function selectIndependentApprover(submittingUserId, candidates) {
   return candidates.find((candidate) => candidate.id !== submittingUserId)?.id;
 }
-function resolveApprovalRoute(finding, workflowType, actor, users, assignedAt) {
+function approvalStageForStatus(status) {
+  switch (status) {
+    case "SUBMITTED_BRANCH":
+      return "BRANCH_CONTROLLER";
+    case "SUBMITTED_BRANCH_LEADER":
+      return "BRANCH_LEADER";
+    case "SUBMITTED_INTERNAL":
+      return "INTERNAL_APPROVER";
+    default:
+      return void 0;
+  }
+}
+function approvalStagesHeldBy(findings2, userId) {
+  const held = [];
+  for (const finding of findings2) {
+    const current = approvalStageForStatus(finding.workflowStatus);
+    const route = finding.approvalRoute;
+    if (!current || !route) continue;
+    const leaderApplies = route.requiresBranchLeaderApproval || Boolean(finding.isSpecialCase);
+    for (const stage of stageOrder.slice(stageOrder.indexOf(current))) {
+      if (stage === "BRANCH_LEADER" && !leaderApplies) continue;
+      if (route[fieldByStage[stage]] === userId) held.push({ finding, stage, isCurrentStage: stage === current });
+    }
+  }
+  return held;
+}
+function eligibleRecipientsForStage(finding, stage, actorUserId, route, users) {
+  const candidates = approvalCandidatesForFinding(finding, users);
+  const pool2 = stage === "BRANCH_CONTROLLER" ? candidates.branchControllers : stage === "BRANCH_LEADER" ? candidates.branchLeaders : candidates.internalApprovers;
+  const taken = /* @__PURE__ */ new Set([actorUserId]);
+  if (route?.assignedByUserId) taken.add(route.assignedByUserId);
+  if (stage !== "BRANCH_CONTROLLER" && route?.branchControllerUserId) taken.add(route.branchControllerUserId);
+  if (stage === "INTERNAL_APPROVER" && route?.branchLeaderUserId) taken.add(route.branchLeaderUserId);
+  return pool2.filter((user) => !taken.has(user.id));
+}
+function pinStageApprover(route, stage, userId, assignedAt) {
+  const base = route ?? {
+    requiresBranchLeaderApproval: stage === "BRANCH_LEADER",
+    assignedAt
+  };
+  return { ...base, [fieldByStage[stage]]: userId };
+}
+function resolveApprovalRoute(finding, workflowType, actor, users, assignedAt, options = {}) {
   const candidates = approvalCandidatesForFinding(finding, users);
   const requiresBranchLeaderApproval = workflowType === "THREE_TIER" || Boolean(finding.isSpecialCase);
-  const branchControllerUserId = selectIndependentApprover(actor.id, candidates.branchControllers);
-  const branchLeaderUserId = requiresBranchLeaderApproval ? selectIndependentApprover(actor.id, candidates.branchLeaders) : void 0;
+  const stillEligible = (pool2, userId) => userId && userId !== actor.id && pool2.some((candidate) => candidate.id === userId) ? userId : void 0;
+  const branchControllerUserId = options.controllerUserId ?? stillEligible(candidates.branchControllers, options.previous?.branchControllerUserId) ?? selectIndependentApprover(actor.id, candidates.branchControllers);
+  const branchLeaderUserId = requiresBranchLeaderApproval ? stillEligible(candidates.branchLeaders, options.previous?.branchLeaderUserId) ?? selectIndependentApprover(actor.id, candidates.branchLeaders) : void 0;
   if (!branchControllerUserId || requiresBranchLeaderApproval && !branchLeaderUserId) return void 0;
   return {
     branchControllerUserId,
     branchLeaderUserId,
-    internalApproverUserId: void 0,
+    internalApproverUserId: stillEligible(candidates.internalApprovers, options.previous?.internalApproverUserId),
     requiresBranchLeaderApproval,
     assignedByUserId: actor.id,
-    assignedAt
+    assignedAt,
+    assignmentHistory: options.previous?.assignmentHistory
   };
 }
 function reassignApprovalStage(route, stage, assignedUserId, record) {
-  const fieldByStage = {
-    BRANCH_CONTROLLER: "branchControllerUserId",
-    BRANCH_LEADER: "branchLeaderUserId",
-    INTERNAL_APPROVER: "internalApproverUserId"
-  };
   const field = fieldByStage[stage];
   const previousUserId = route[field];
   return {
@@ -1907,10 +1987,17 @@ function reassignApprovalStage(route, stage, assignedUserId, record) {
     ]
   };
 }
+var fieldByStage, stageOrder;
 var init_approval_assignment = __esm({
   "server/src/modules/workflow/approval-assignment.ts"() {
     "use strict";
     init_access_control();
+    fieldByStage = {
+      BRANCH_CONTROLLER: "branchControllerUserId",
+      BRANCH_LEADER: "branchLeaderUserId",
+      INTERNAL_APPROVER: "internalApproverUserId"
+    };
+    stageOrder = ["BRANCH_CONTROLLER", "BRANCH_LEADER", "INTERNAL_APPROVER"];
   }
 });
 
@@ -5804,7 +5891,7 @@ import path5 from "node:path";
 import fastify from "fastify";
 import cors from "@fastify/cors";
 import multipart from "@fastify/multipart";
-import { z as z13 } from "zod";
+import { z as z14 } from "zod";
 function recordRequestMeasurement(request, statusCode) {
   const startedAt = requestStartedAt.get(request.id);
   requestStartedAt.delete(request.id);
@@ -6866,17 +6953,17 @@ function validateDynamicPayload(channel, dto) {
     const value = payload[field.fieldKey];
     const missing2 = value === void 0 || value === null || value === "";
     if (field.isRequired && missing2) {
-      throw new HttpProblem(422, "DYNAMIC_FORM_INVALID", "Form b\xE1o c\xE1o ch\u01B0a h\u1EE3p l\u1EC7", `Tr\u01B0\u1EDDng \u201C${field.label}\u201D l\xE0 b\u1EAFt bu\u1ED9c.`);
+      throw new HttpProblem(422, "DYNAMIC_FORM_INVALID", "Form b\xE1o c\xE1o ch\u01B0a h\u1EE3p l\u1EC7", `Tr\u01B0\u1EDDng "${field.label}" l\xE0 b\u1EAFt bu\u1ED9c.`);
     }
     if (missing2) continue;
     if ((field.dataType === "number" || field.dataType === "currency") && (typeof value !== "number" || !Number.isFinite(value))) {
-      throw new HttpProblem(422, "DYNAMIC_FORM_INVALID", "Form b\xE1o c\xE1o ch\u01B0a h\u1EE3p l\u1EC7", `Tr\u01B0\u1EDDng \u201C${field.label}\u201D ph\u1EA3i l\xE0 s\u1ED1.`);
+      throw new HttpProblem(422, "DYNAMIC_FORM_INVALID", "Form b\xE1o c\xE1o ch\u01B0a h\u1EE3p l\u1EC7", `Tr\u01B0\u1EDDng "${field.label}" ph\u1EA3i l\xE0 s\u1ED1.`);
     }
     if (field.dataType === "date" && (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value))) {
-      throw new HttpProblem(422, "DYNAMIC_FORM_INVALID", "Form b\xE1o c\xE1o ch\u01B0a h\u1EE3p l\u1EC7", `Tr\u01B0\u1EDDng \u201C${field.label}\u201D ph\u1EA3i l\xE0 ng\xE0y h\u1EE3p l\u1EC7.`);
+      throw new HttpProblem(422, "DYNAMIC_FORM_INVALID", "Form b\xE1o c\xE1o ch\u01B0a h\u1EE3p l\u1EC7", `Tr\u01B0\u1EDDng "${field.label}" ph\u1EA3i l\xE0 ng\xE0y h\u1EE3p l\u1EC7.`);
     }
     if (field.dataType === "select" && !field.dropdownOptions?.some((option) => option.value === value)) {
-      throw new HttpProblem(422, "DYNAMIC_FORM_INVALID", "Form b\xE1o c\xE1o ch\u01B0a h\u1EE3p l\u1EC7", `Gi\xE1 tr\u1ECB c\u1EE7a \u201C${field.label}\u201D kh\xF4ng n\u1EB1m trong danh s\xE1ch c\u1EA5u h\xECnh.`);
+      throw new HttpProblem(422, "DYNAMIC_FORM_INVALID", "Form b\xE1o c\xE1o ch\u01B0a h\u1EE3p l\u1EC7", `Gi\xE1 tr\u1ECB c\u1EE7a "${field.label}" kh\xF4ng n\u1EB1m trong danh s\xE1ch c\u1EA5u h\xECnh.`);
     }
   }
 }
@@ -7104,7 +7191,9 @@ function executeReportRun(items, query) {
       column.items.push(finding);
       columnGroups.set(columnKey, column);
       const row = rowGroups.get(rowKey) || { label: reportValueLabel(query.groupBy, rowValue, finding), cells: /* @__PURE__ */ new Map() };
-      row.cells.set(columnKey, [...row.cells.get(columnKey) || [], finding]);
+      const cell = row.cells.get(columnKey);
+      if (cell) cell.push(finding);
+      else row.cells.set(columnKey, [finding]);
       rowGroups.set(rowKey, row);
     }
     if (columnGroups.size > 25) {
@@ -7636,6 +7725,63 @@ async function createUserAccount(req, body) {
   }
   return { user: newUser, temporaryPassword };
 }
+function assertNoOpenApprovalItems(user, action) {
+  const held = approvalStagesHeldBy(findings, user.id);
+  if (!held.length) return;
+  throw new HttpProblem(
+    409,
+    "USER_HAS_OPEN_ITEMS",
+    "T\xE0i kho\u1EA3n c\xF2n h\u1ED3 s\u01A1 \u0111ang gi\u1EEF",
+    `${user.fullName} c\xF2n ${held.length} h\u1ED3 s\u01A1 \u0111ang gi\u1EEF \u1EDF b\u01B0\u1EDBc duy\u1EC7t. H\xE3y b\xE0n giao h\u1ED3 s\u01A1 tr\u01B0\u1EDBc khi ${action}.`
+  );
+}
+function requireHandoverUser(id, label) {
+  const found = appUsers.find((candidate) => candidate.id === id);
+  if (!found) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", `${label} kh\xF4ng t\u1ED3n t\u1EA1i.`);
+  return found;
+}
+function openItemsOf(user, viewer, recipient) {
+  const held = approvalStagesHeldBy(findings, user.id);
+  const visible = held.filter((entry) => hasFindingAccess(viewer, entry.finding));
+  const eligibleCounts = /* @__PURE__ */ new Map();
+  const items = [];
+  for (const { finding, stage, isCurrentStage } of visible) {
+    const eligible = eligibleRecipientsForStage(finding, stage, user.id, finding.approvalRoute, appUsers);
+    for (const candidate of eligible) eligibleCounts.set(candidate.id, (eligibleCounts.get(candidate.id) ?? 0) + 1);
+    const transferable = recipient ? eligible.some((candidate) => candidate.id === recipient.id) : void 0;
+    items.push({
+      findingId: finding.id,
+      cif: finding.cif,
+      customerName: finding.customerName,
+      errorCode: finding.errorCode,
+      branchCode: finding.branchCode,
+      branchName: finding.branchName,
+      workflowStatus: finding.workflowStatus,
+      deadlineDate: finding.deadlineDate,
+      version: finding.version,
+      stage,
+      isCurrentStage,
+      ...recipient ? { transferable, blockedReason: transferable ? void 0 : HANDOVER_INELIGIBLE_MESSAGE } : {}
+    });
+  }
+  items.sort((left, right) => left.deadlineDate.localeCompare(right.deadlineDate) || left.cif.localeCompare(right.cif));
+  const recipientOptions = appUsers.filter((candidate) => eligibleCounts.has(candidate.id)).map((candidate) => ({
+    id: candidate.id,
+    fullName: candidate.fullName,
+    department: candidate.department,
+    eligibleCount: eligibleCounts.get(candidate.id)
+  })).sort((left, right) => right.eligibleCount - left.eligibleCount || left.fullName.localeCompare(right.fullName, "vi"));
+  return {
+    userId: user.id,
+    fullName: user.fullName,
+    items: items.slice(0, HANDOVER_MAX_ITEMS),
+    total: held.length,
+    hiddenOutOfScope: held.length - visible.length,
+    recipientOptions,
+    acceptedTargets: workspaceAccepted.filter((target) => target.userId === user.id).length,
+    watchTargets: workspaceWatchTargets.filter((target) => target.userId === user.id).length
+  };
+}
 function securitySettingsResponse() {
   const configured = new Set(authenticatorCredentials.filter(isAuthenticatorConfirmed).map((item) => item.userId));
   const covered = appUsers.filter((user) => user.isActive && mfaPolicyCovers(securitySettings.mfaPolicy, user.portal));
@@ -7910,11 +8056,11 @@ async function commitStagedFindingImport(batchId, user, dto, options = {}) {
   return response;
 }
 async function runStagedImportBackgroundCheckpoint(payload) {
-  const parsed = z13.object({
-    batchId: z13.string().min(1),
-    userId: z13.string().min(1),
-    maxRows: z13.number().int().min(1).max(1e3),
-    checkpointRowNumber: z13.number().int().nonnegative()
+  const parsed = z14.object({
+    batchId: z14.string().min(1),
+    userId: z14.string().min(1),
+    maxRows: z14.number().int().min(1).max(1e3),
+    checkpointRowNumber: z14.number().int().nonnegative()
   }).parse(payload);
   const user = appUsers.find((item) => item.id === parsed.userId);
   if (!user) throw new HttpProblem(409, "IMPORT_BACKGROUND_USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y ng\u01B0\u1EDDi nh\u1EADp", "Worker kh\xF4ng th\u1EC3 x\u1EED l\xFD l\xF4 khi t\xE0i kho\u1EA3n ng\u01B0\u1EDDi nh\u1EADp kh\xF4ng c\xF2n t\u1ED3n t\u1EA1i.");
@@ -7922,6 +8068,31 @@ async function runStagedImportBackgroundCheckpoint(payload) {
   return commitStagedFindingImport(parsed.batchId, user, { maxRows: parsed.maxRows, allowPartial: false }, {
     expectedCheckpointRowNumber: parsed.checkpointRowNumber
   });
+}
+function workflowTypeOf(finding) {
+  const pinnedVersion = reportChannelVersions.find((version) => version.id === finding.channelVersionId);
+  return pinnedVersion?.snapshot.workflowConfig?.workflowType ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.workflowType ?? "TWO_TIER";
+}
+function requireEligibleRecipient(requestedUserId, eligible) {
+  if (!requestedUserId) return void 0;
+  if (!eligible.some((candidate) => candidate.id === requestedUserId)) {
+    throw new HttpProblem(422, "APPROVAL_ASSIGNEE_INELIGIBLE", "Ng\u01B0\u1EDDi nh\u1EADn kh\xF4ng ph\xF9 h\u1EE3p", "Ng\u01B0\u1EDDi nh\u1EADn ph\u1EA3i \u0111ang ho\u1EA1t \u0111\u1ED9ng, \u0111\xFAng vai tr\xF2 v\xE0 \u0111\xFAng ph\u1EA1m vi c\u1EE7a b\u01B0\u1EDBc ph\xEA duy\u1EC7t, v\xE0 ch\u01B0a gi\u1EEF b\u01B0\u1EDBc n\xE0o kh\xE1c c\u1EE7a h\u1ED3 s\u01A1 n\xE0y.");
+  }
+  return requestedUserId;
+}
+function pinChosenRecipient(next, requestedUserId, actor) {
+  const stage = approvalStageForStatus(next.workflowStatus);
+  if (!stage) return;
+  const eligible = eligibleRecipientsForStage(next, stage, actor.id, next.approvalRoute, appUsers);
+  const chosen = requireEligibleRecipient(requestedUserId, eligible);
+  if (chosen) next.approvalRoute = pinStageApprover(next.approvalRoute, stage, chosen, (/* @__PURE__ */ new Date()).toISOString());
+}
+function recipientNote(next) {
+  const stage = approvalStageForStatus(next.workflowStatus);
+  const route = next.approvalRoute;
+  const userId = stage === "BRANCH_CONTROLLER" ? route?.branchControllerUserId : stage === "BRANCH_LEADER" ? route?.branchLeaderUserId : stage === "INTERNAL_APPROVER" ? route?.internalApproverUserId : void 0;
+  const name = appUsers.find((candidate) => candidate.id === userId)?.fullName;
+  return name ? ` Ng\u01B0\u1EDDi nh\u1EADn: ${name}.` : "";
 }
 function buildFindingApprovalRoute(finding) {
   const pinnedVersion = reportChannelVersions.find((version) => version.id === finding.channelVersionId);
@@ -8195,7 +8366,7 @@ async function startServer() {
     process.exit(1);
   }
 }
-var app, allowedOrigins, API_CONTENT_SECURITY_POLICY, requestStartedAt, requestMeasurements, REQUEST_MEASUREMENT_LIMIT, lastSuccessfulSlaRunAt, internalSlaPath, internalOutboxPath, isEvidenceScanCallbackPath, publicPaths, requestUsers, idempotencyRequests, authSessionStore, supabaseAuthAdapter, unsafeHttpMethods, CSRF_COOKIE, CSRF_HEADER, CSRF_TOKEN_TTL_SECONDS, STEP_UP_TTL_MS, OIDC_STATE_COOKIE, OIDC_STATE_TTL_SECONDS, orgUnits, appUsers, localCredentialDirectory, seedUserDirectory, auditCampaigns, defaultSlaConfig, wholeNumberAtLeast, reportChannels, findings, workflowEvents, pendingWorkflowEvents, evidences, importBatches, stagingRows, pendingEvidenceUploads, slaExtensions, reportDefinitions, dashboardDefinitions, REPORT_EXPORT_MAX_ROWS, DEFAULT_REPORT_EXPORT_FIELDS, DEFAULT_REPORT_FILTER_FIELDS, DEFAULT_REPORT_METRICS, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows, workspaceAccepted, workspaceWatchTargets, reportChannelVersions, authSessions, authenticatorCredentials, googleDriveOAuthCredential, securityEvents, pendingSecurityEvents, SECURITY_EVENT_RETENTION, loginAttempts, usedTotpCounters, recoveryCodeSets, DEMO_SEED_ENABLED, DEMO_SEED_IDS, credentialDirectory, unknownUserPasswordHash, stateRepository, workflowEventLedger, securityEventLedger, postgresAuthSecurityState, postgresOutbox, findingRecords, findingsReadPath, usesPostgresIdempotency, idempotencyStore, hydratedState, repositoryHydrationBaseline, channelSlaBackfilled, STARTER_FORM_TEMPLATES, durableState, runtimeStateGate, runtimeRequestReleases, LOGIN_FAILURE_LIMIT, LOGIN_FAILURE_WINDOW_MS, LOGIN_LOCKOUT_MS, LOGIN_BURST_LIMIT, LOGIN_BURST_WINDOW_MS, loginBurstWindowStartedAt, loginBurstCount, TOTP_REPLAY_RETENTION_STEPS, reportFieldAccessors, workflowStatusLabels, slaStatusLabels, REDACTED_DIAGNOSTIC, catalogManagerRoles, PORT;
+var app, allowedOrigins, API_CONTENT_SECURITY_POLICY, requestStartedAt, requestMeasurements, REQUEST_MEASUREMENT_LIMIT, lastSuccessfulSlaRunAt, internalSlaPath, internalOutboxPath, isEvidenceScanCallbackPath, publicPaths, requestUsers, idempotencyRequests, authSessionStore, supabaseAuthAdapter, unsafeHttpMethods, CSRF_COOKIE, CSRF_HEADER, CSRF_TOKEN_TTL_SECONDS, STEP_UP_TTL_MS, OIDC_STATE_COOKIE, OIDC_STATE_TTL_SECONDS, orgUnits, appUsers, localCredentialDirectory, seedUserDirectory, auditCampaigns, defaultSlaConfig, wholeNumberAtLeast, reportChannels, findings, workflowEvents, pendingWorkflowEvents, evidences, importBatches, stagingRows, pendingEvidenceUploads, slaExtensions, reportDefinitions, dashboardDefinitions, REPORT_EXPORT_MAX_ROWS, DEFAULT_REPORT_EXPORT_FIELDS, DEFAULT_REPORT_FILTER_FIELDS, DEFAULT_REPORT_METRICS, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows, workspaceAccepted, workspaceWatchTargets, reportChannelVersions, authSessions, authenticatorCredentials, googleDriveOAuthCredential, securityEvents, pendingSecurityEvents, SECURITY_EVENT_RETENTION, loginAttempts, usedTotpCounters, recoveryCodeSets, DEMO_SEED_ENABLED, DEMO_SEED_IDS, credentialDirectory, unknownUserPasswordHash, stateRepository, workflowEventLedger, securityEventLedger, postgresAuthSecurityState, postgresOutbox, findingRecords, findingsReadPath, usesPostgresIdempotency, idempotencyStore, hydratedState, repositoryHydrationBaseline, channelSlaBackfilled, STARTER_FORM_TEMPLATES, durableState, runtimeStateGate, runtimeRequestReleases, LOGIN_FAILURE_LIMIT, LOGIN_FAILURE_WINDOW_MS, LOGIN_LOCKOUT_MS, LOGIN_BURST_LIMIT, LOGIN_BURST_WINDOW_MS, loginBurstWindowStartedAt, loginBurstCount, TOTP_REPLAY_RETENTION_STEPS, reportFieldAccessors, workflowStatusLabels, slaStatusLabels, REDACTED_DIAGNOSTIC, catalogManagerRoles, HANDOVER_INELIGIBLE_MESSAGE, handoverStageLabels, PORT;
 var init_app = __esm({
   async "server/src/app.ts"() {
     "use strict";
@@ -9520,7 +9691,7 @@ var init_app = __esm({
       return { user, expiresAt: new Date(Date.now() + session.expiresIn * 1e3).toISOString() };
     });
     app.post("/api/v1/auth/forgot-password", async (req, reply) => {
-      const body = z13.object({ email: z13.string().email(), redirectTo: z13.string().url().optional() }).parse(req.body);
+      const body = z14.object({ email: z14.string().email(), redirectTo: z14.string().url().optional() }).parse(req.body);
       assertLoginBurstAllowed(Date.now());
       if (process.env.AUTH_MODE !== "supabase" || !supabaseAuthAdapter) {
         return reply.code(204).send();
@@ -9892,6 +10063,9 @@ var init_app = __esm({
       const user = appUsers.find((item) => item.id === req.params.id);
       if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
       if (user.id === actor.id && body.isActive === false) throw new HttpProblem(409, "USER_SELF_LOCK", "Kh\xF4ng th\u1EC3 t\u1EF1 kh\xF3a t\xE0i kho\u1EA3n", "H\xE3y c\u1EA5p quy\u1EC1n cho m\u1ED9t qu\u1EA3n tr\u1ECB vi\xEAn kh\xE1c tr\u01B0\u1EDBc.");
+      const changesBranch = body.branchCode !== void 0 && (body.branchCode ?? void 0) !== user.branchCode;
+      if (body.isActive === false && user.isActive) assertNoOpenApprovalItems(user, "kh\xF3a t\xE0i kho\u1EA3n");
+      else if (changesBranch) assertNoOpenApprovalItems(user, "chuy\u1EC3n sang chi nh\xE1nh kh\xE1c");
       if (body.email && appUsers.some((item) => item.id !== user.id && item.email.toLocaleLowerCase("en-US") === body.email.toLocaleLowerCase("en-US"))) {
         throw new HttpProblem(409, "USER_EMAIL_EXISTS", "Email \u0111\xE3 \u0111\u01B0\u1EE3c s\u1EED d\u1EE5ng", "\u0110\xE3 t\u1ED3n t\u1EA1i t\xE0i kho\u1EA3n v\u1EDBi email n\xE0y.");
       }
@@ -9958,6 +10132,7 @@ var init_app = __esm({
       if (index < 0) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
       const user = appUsers[index];
       if (user.id === actor.id) throw new HttpProblem(409, "USER_SELF_DELETE", "Kh\xF4ng th\u1EC3 t\u1EF1 x\xF3a t\xE0i kho\u1EA3n", "H\xE3y c\u1EA5p quy\u1EC1n cho m\u1ED9t qu\u1EA3n tr\u1ECB vi\xEAn kh\xE1c tr\u01B0\u1EDBc.");
+      assertNoOpenApprovalItems(user, "x\xF3a t\xE0i kho\u1EA3n");
       if (process.env.AUTH_MODE === "supabase" && supabaseAuthAdapter && user.authUserId) await supabaseAuthAdapter.deleteUser(user.authUserId, { shouldSoftDelete: true });
       appUsers.splice(index, 1);
       credentialDirectory = credentialDirectory.filter((entry) => entry.userId !== user.id);
@@ -9967,6 +10142,90 @@ var init_app = __esm({
       recordUserSecurityEvent(req, actor, { type: "ADMIN_USER_DELETED", outcome: "SUCCESS", subject: user.username, detail: `X\xF3a t\xE0i kho\u1EA3n ${user.fullName}.` });
       await persistLocalState();
       return reply.code(204).send();
+    });
+    HANDOVER_INELIGIBLE_MESSAGE = "Ng\u01B0\u1EDDi nh\u1EADn kh\xF4ng \u0111\u1EE7 \u0111i\u1EC1u ki\u1EC7n: thi\u1EBFu vai tr\xF2, ngo\xE0i ph\u1EA1m vi, ho\u1EB7c \u0111\xE3 gi\u1EEF m\u1ED9t b\u01B0\u1EDBc kh\xE1c c\u1EE7a h\u1ED3 s\u01A1 n\xE0y.";
+    handoverStageLabels = {
+      BRANCH_CONTROLLER: "Ki\u1EC3m so\xE1t chi nh\xE1nh",
+      BRANCH_LEADER: "L\xE3nh \u0111\u1EA1o chi nh\xE1nh",
+      INTERNAL_APPROVER: "Ph\xEA duy\u1EC7t HT"
+    };
+    app.get("/api/v1/admin/users/:id/open-items", async (req) => {
+      const actor = getCurrentUser(req);
+      requireAdmin(actor);
+      const user = requireHandoverUser(req.params.id, "T\xE0i kho\u1EA3n");
+      const toUserId = typeof req.query?.toUserId === "string" && req.query.toUserId ? req.query.toUserId : void 0;
+      return openItemsOf(user, actor, toUserId ? requireHandoverUser(toUserId, "Ng\u01B0\u1EDDi nh\u1EADn") : void 0);
+    });
+    app.post("/api/v1/admin/handovers", async (req) => {
+      const actor = getCurrentUser(req);
+      requireAdmin(actor);
+      requireRecentStepUp(req);
+      const dto = ExecuteHandoverSchema.parse(req.body);
+      const from = requireHandoverUser(dto.fromUserId, "Ng\u01B0\u1EDDi b\xE0n giao");
+      const to = requireHandoverUser(dto.toUserId, "Ng\u01B0\u1EDDi nh\u1EADn");
+      if (from.id === to.id) {
+        throw new HttpProblem(422, "HANDOVER_SAME_USER", "Ng\u01B0\u1EDDi nh\u1EADn tr\xF9ng ng\u01B0\u1EDDi b\xE0n giao", "H\xE3y ch\u1ECDn m\u1ED9t ng\u01B0\u1EDDi nh\u1EADn kh\xE1c.");
+      }
+      if (!to.isActive) {
+        throw new HttpProblem(422, "HANDOVER_RECIPIENT_INELIGIBLE", "Ng\u01B0\u1EDDi nh\u1EADn kh\xF4ng ph\xF9 h\u1EE3p", "Ng\u01B0\u1EDDi nh\u1EADn ph\u1EA3i l\xE0 t\xE0i kho\u1EA3n \u0111ang ho\u1EA1t \u0111\u1ED9ng.");
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const skipped = [];
+      const assignmentWrites = [];
+      let moved = 0;
+      for (const item of dto.items) {
+        const skip = (code, message) => skipped.push({ findingId: item.findingId, stage: item.stage, code, message });
+        const finding = findings.find((candidate) => candidate.id === item.findingId);
+        if (!finding || !hasFindingAccess(actor, finding)) {
+          skip("FINDING_NOT_FOUND", "H\u1ED3 s\u01A1 kh\xF4ng t\u1ED3n t\u1EA1i ho\u1EB7c n\u1EB1m ngo\xE0i ph\u1EA1m vi c\u1EE7a b\u1EA1n.");
+          continue;
+        }
+        const route = finding.approvalRoute;
+        const stillHeld = Boolean(route) && approvalStagesHeldBy([finding], from.id).some((entry) => entry.stage === item.stage);
+        if (!route || !stillHeld || finding.version !== item.expectedVersion) {
+          skip("HANDOVER_ITEM_CHANGED", "H\u1ED3 s\u01A1 \u0111\xE3 thay \u0111\u1ED5i sau khi xem tr\u01B0\u1EDBc; h\xE3y t\u1EA3i l\u1EA1i danh s\xE1ch.");
+          continue;
+        }
+        const eligible = eligibleRecipientsForStage(finding, item.stage, from.id, route, appUsers);
+        if (!eligible.some((candidate) => candidate.id === to.id)) {
+          skip("HANDOVER_RECIPIENT_INELIGIBLE", HANDOVER_INELIGIBLE_MESSAGE);
+          continue;
+        }
+        finding.approvalRoute = reassignApprovalStage(route, item.stage, to.id, {
+          actorUserId: actor.id,
+          reason: `B\xE0n giao: ${dto.reason}`,
+          assignedAt: now
+        });
+        finding.version += 1;
+        finding.updatedAt = now;
+        const assignment = finding.approvalRoute.assignmentHistory?.at(-1);
+        if (!assignment) throw new Error("APPROVAL_ASSIGNMENT_HISTORY_MISSING");
+        const eventId = `evt-${crypto9.randomUUID()}`;
+        recordWorkflowEvent({
+          id: eventId,
+          findingId: finding.id,
+          command: "HANDOVER_APPROVAL",
+          fromStatus: finding.workflowStatus,
+          toStatus: finding.workflowStatus,
+          actorUserId: actor.id,
+          actorName: actor.fullName,
+          actorRole: actor.primaryRole,
+          notes: `B\xE0n giao b\u01B0\u1EDBc ${handoverStageLabels[item.stage]} t\u1EEB ${from.fullName} sang ${to.fullName}: ${dto.reason}`,
+          createdAt: now
+        });
+        assignmentWrites.push({ eventId, findingId: finding.id, assignment });
+        moved += 1;
+      }
+      if (moved > 0) {
+        recordUserSecurityEvent(req, actor, {
+          type: "ADMIN_HANDOVER_EXECUTED",
+          outcome: "SUCCESS",
+          subject: from.username,
+          detail: `B\xE0n giao ${moved} b\u01B0\u1EDBc duy\u1EC7t t\u1EEB ${from.fullName} sang ${to.fullName}; b\u1ECF qua ${skipped.length}.`
+        });
+        await persistLocalState({ approvalAssignmentHistory: assignmentWrites });
+      }
+      return { moved, skipped, remaining: approvalStagesHeldBy(findings, from.id).length };
     });
     app.get("/api/v1/admin/security-settings", async (req) => {
       requireAdmin(getCurrentUser(req));
@@ -10007,7 +10266,7 @@ var init_app = __esm({
       const user = appUsers.find((item) => item.id === req.params.id);
       if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
       if (!body.enabled && mfaPolicyCovers(securitySettings.mfaPolicy, user.portal)) {
-        throw new HttpProblem(409, "MFA_REQUIRED_BY_POLICY", "Ch\xEDnh s\xE1ch \u0111ang b\u1EAFt bu\u1ED9c Authenticator", `Kh\xF4ng th\u1EC3 thu h\u1ED3i m\xE3 c\u1EE7a ${user.fullName} khi ch\xEDnh s\xE1ch h\u1EC7 th\u1ED1ng l\xE0 \u201C${mfaPolicyLabels[securitySettings.mfaPolicy]}\u201D. H\xE3y \u0111\u1ED5i ch\xEDnh s\xE1ch tr\u01B0\u1EDBc.`);
+        throw new HttpProblem(409, "MFA_REQUIRED_BY_POLICY", "Ch\xEDnh s\xE1ch \u0111ang b\u1EAFt bu\u1ED9c Authenticator", `Kh\xF4ng th\u1EC3 thu h\u1ED3i m\xE3 c\u1EE7a ${user.fullName} khi ch\xEDnh s\xE1ch h\u1EC7 th\u1ED1ng l\xE0 "${mfaPolicyLabels[securitySettings.mfaPolicy]}". H\xE3y \u0111\u1ED5i ch\xEDnh s\xE1ch tr\u01B0\u1EDBc.`);
       }
       let setup;
       const existing = authenticatorCredentials.find((item) => item.userId === user.id);
@@ -10793,10 +11052,23 @@ var init_app = __esm({
         throw error;
       }
     });
-    app.get("/api/v1/findings/:id/approval-candidates", async (req) => {
+    app.get("/api/v1/findings/:id/next-approvers", async (req) => {
       const user = getCurrentUser(req);
       const finding = getScopedFindingOrThrow(req.params.id, user);
-      return approvalCandidatesForFinding(finding, appUsers);
+      const nextStatus = workflowService.nextStatusAfterForward(finding, workflowTypeOf(finding));
+      const stage = nextStatus && approvalStageForStatus(nextStatus);
+      if (!stage) return { options: [], allowSharedQueue: false };
+      const eligible = eligibleRecipientsForStage(finding, stage, user.id, finding.approvalRoute, appUsers);
+      const route = finding.approvalRoute;
+      const pinnedUserId = stage === "BRANCH_CONTROLLER" ? route?.branchControllerUserId : stage === "BRANCH_LEADER" ? route?.branchLeaderUserId : route?.internalApproverUserId;
+      const isHeadOffice = stage === "INTERNAL_APPROVER";
+      const suggestedUserId = eligible.some((candidate) => candidate.id === pinnedUserId) ? pinnedUserId : isHeadOffice ? void 0 : eligible[0]?.id;
+      return {
+        stage,
+        options: eligible.map((candidate) => ({ id: candidate.id, fullName: candidate.fullName, department: candidate.department })),
+        suggestedUserId,
+        allowSharedQueue: isHeadOffice
+      };
     });
     app.put("/api/v1/findings/:id/special-case", async (req) => {
       const user = getCurrentUser(req);
@@ -10923,17 +11195,35 @@ var init_app = __esm({
         if (dto.expectedVersion !== finding.version) {
           throw new HttpProblem(409, "VERSION_CONFLICT", "Xung \u0111\u1ED9t phi\xEAn b\u1EA3n", `H\u1ED3 s\u01A1 \u0111\xE3 \u0111\u01B0\u1EE3c c\u1EADp nh\u1EADt b\u1EDFi ng\u01B0\u1EDDi kh\xE1c (version hi\u1EC7n t\u1EA1i: ${finding.version}, expected: ${dto.expectedVersion}).`);
         }
-        const pinnedVersion = reportChannelVersions.find((version) => version.id === finding.channelVersionId);
-        const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.workflowType ?? "TWO_TIER";
+        const workflowType = workflowTypeOf(finding);
         requireAvailableEvidence(finding);
         if (workflowType !== "ONE_TIER") {
-          const approvalRoute = resolveApprovalRoute(finding, workflowType, user, appUsers, (/* @__PURE__ */ new Date()).toISOString());
+          const controllerUserId = requireEligibleRecipient(
+            dto.nextApproverUserId,
+            eligibleRecipientsForStage(finding, "BRANCH_CONTROLLER", user.id, void 0, appUsers)
+          );
+          const approvalRoute = resolveApprovalRoute(finding, workflowType, user, appUsers, (/* @__PURE__ */ new Date()).toISOString(), {
+            controllerUserId,
+            previous: finding.approvalRoute
+          });
           if (!approvalRoute) {
             throw new HttpProblem(409, "APPROVAL_ROUTE_UNRESOLVED", "Ch\u01B0a x\xE1c \u0111\u1ECBnh \u0111\u01B0\u1EE3c tuy\u1EBFn duy\u1EC7t", "Chi nh\xE1nh ch\u01B0a c\xF3 ng\u01B0\u1EDDi ki\u1EC3m so\xE1t ho\u1EB7c l\xE3nh \u0111\u1EA1o ph\xF9 h\u1EE3p \u0111\u1EC3 nh\u1EADn h\u1ED3 s\u01A1. H\xE3y b\u1ED5 sung ng\u01B0\u1EDDi ph\u1EE5 tr\xE1ch tr\u01B0\u1EDBc khi n\u1ED9p.");
           }
           finding.approvalRoute = approvalRoute;
         }
         const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
+        if (workflowType === "ONE_TIER") {
+          const headOfficeUserId = requireEligibleRecipient(
+            dto.nextApproverUserId,
+            eligibleRecipientsForStage(finding, "INTERNAL_APPROVER", user.id, void 0, appUsers)
+          );
+          if (headOfficeUserId) {
+            updated.approvalRoute = {
+              ...pinStageApprover(finding.approvalRoute, "INTERNAL_APPROVER", headOfficeUserId, (/* @__PURE__ */ new Date()).toISOString()),
+              assignedByUserId: user.id
+            };
+          }
+        }
         Object.assign(finding, updated);
         recordWorkflowEvent({
           id: `evt-${crypto9.randomUUID()}`,
@@ -10944,7 +11234,7 @@ var init_app = __esm({
           actorUserId: user.id,
           actorName: user.fullName,
           actorRole: user.primaryRole,
-          notes: dto.resolutionNotes,
+          notes: `${dto.resolutionNotes}${recipientNote(updated)}`,
           createdAt: (/* @__PURE__ */ new Date()).toISOString()
         });
         await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
@@ -10963,6 +11253,7 @@ var init_app = __esm({
       try {
         const updated = workflowService.executeBranchControlApprove(finding, dto, user);
         requireAvailableEvidence(finding);
+        pinChosenRecipient(updated, dto.nextApproverUserId, user);
         Object.assign(finding, updated);
         recordWorkflowEvent({
           id: `evt-${crypto9.randomUUID()}`,
@@ -10973,7 +11264,7 @@ var init_app = __esm({
           actorUserId: user.id,
           actorName: user.fullName,
           actorRole: user.primaryRole,
-          notes: dto.notes || "Ki\u1EC3m so\xE1t chi nh\xE1nh \u0111\u1ED3ng \xFD h\u1ED3 s\u01A1 kh\u1EAFc ph\u1EE5c.",
+          notes: `${dto.notes || "Ki\u1EC3m so\xE1t chi nh\xE1nh \u0111\u1ED3ng \xFD h\u1ED3 s\u01A1 kh\u1EAFc ph\u1EE5c."}${recipientNote(updated)}`,
           createdAt: (/* @__PURE__ */ new Date()).toISOString()
         });
         await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
@@ -11021,6 +11312,7 @@ var init_app = __esm({
       try {
         const updated = workflowService.executeBranchLeaderApprove(finding, dto, user);
         requireAvailableEvidence(finding);
+        pinChosenRecipient(updated, dto.nextApproverUserId, user);
         Object.assign(finding, updated);
         recordWorkflowEvent({
           id: `evt-${crypto9.randomUUID()}`,
@@ -11031,7 +11323,7 @@ var init_app = __esm({
           actorUserId: user.id,
           actorName: user.fullName,
           actorRole: user.primaryRole,
-          notes: dto.notes || "L\xE3nh \u0111\u1EA1o chi nh\xE1nh \u0111\u1ED3ng \xFD chuy\u1EC3n h\u1ED3 s\u01A1 l\xEAn Kh\u1ED1i N\u1ED9i B\u1ED9.",
+          notes: `${dto.notes || "L\xE3nh \u0111\u1EA1o chi nh\xE1nh \u0111\u1ED3ng \xFD chuy\u1EC3n h\u1ED3 s\u01A1 l\xEAn Kh\u1ED1i N\u1ED9i B\u1ED9."}${recipientNote(updated)}`,
           createdAt: (/* @__PURE__ */ new Date()).toISOString()
         });
         await persistLocalState({ completeIdempotency: { context: idempotency, response: finding } });
@@ -11544,7 +11836,9 @@ var init_app = __esm({
         const groups = /* @__PURE__ */ new Map();
         for (const finding of scoped) {
           const key = keyOf(finding);
-          groups.set(key, [...groups.get(key) || [], finding]);
+          const group = groups.get(key);
+          if (group) group.push(finding);
+          else groups.set(key, [finding]);
         }
         return [...groups.entries()].map(([key, items]) => ({
           key,

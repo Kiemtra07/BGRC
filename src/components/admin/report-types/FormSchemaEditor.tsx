@@ -123,7 +123,7 @@ export const FormSchemaEditor: React.FC<Props> = ({ value, onChange }) => {
       {duplicateKeys.length > 0 && <p>Mã trường bị trùng: <strong>{[...new Set(duplicateKeys)].join(', ')}</strong>. Mỗi trường phải có mã riêng.</p>}
       {invalidKeys.length > 0 && <p>Mã trường chưa hợp lệ: <strong>{[...new Set(invalidKeys)].join(', ')}</strong>. Mã phải bắt đầu bằng chữ thường và dài từ 2 ký tự.</p>}
       {danglingBlocks.length > 0 && <p><strong>{danglingBlocks.length} khối</strong> đang gắn với trường không còn tồn tại. Chọn lại trường hoặc xóa khối đó.</p>}
-      {unplacedFields.length > 0 && <p><strong>{unplacedFields.map(field => field.label).join(', ')}</strong> chưa được xếp vào khung mẫu nên sẽ hiện ở cuối biểu mẫu. Thêm khối “Trường nhập” để đặt đúng vị trí.</p>}
+      {unplacedFields.length > 0 && <p><strong>{unplacedFields.map(field => field.label).join(', ')}</strong> chưa được xếp vào khung mẫu nên sẽ hiện ở cuối biểu mẫu. Thêm khối "Trường nhập" để đặt đúng vị trí.</p>}
     </div>}
 
     <div className="grid gap-3 rounded-xl border border-rule bg-white p-3 md:grid-cols-[minmax(220px,1fr)_minmax(180px,.8fr)_auto] md:items-end">
@@ -149,10 +149,10 @@ export const FormSchemaEditor: React.FC<Props> = ({ value, onChange }) => {
           // A block that places a field is useless before any field exists, but a greyed-out button
           // with no reason reads as a broken screen — so say what unlocks it.
           const needsField = (type === 'FIELD' || type === 'FIELD_GROUP') && value.fields.length === 0;
-          return <button key={type} type="button" disabled={needsField} title={needsField ? 'Thêm ít nhất một trường ở mục “Trường dữ liệu của form” bên dưới trước.' : undefined} onClick={() => addBlock(type)} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-rule px-3 py-2 text-left text-xs font-bold text-slate-700 hover:border-brand-500 hover:bg-brand-50 disabled:opacity-40"><Icon className="h-4 w-4 text-brand-600" />{blockLabels[type]}</button>;
+          return <button key={type} type="button" disabled={needsField} title={needsField ? 'Thêm ít nhất một trường ở mục "Trường dữ liệu của form" bên dưới trước.' : undefined} onClick={() => addBlock(type)} className="inline-flex min-h-10 items-center gap-2 rounded-lg border border-rule px-3 py-2 text-left text-xs font-bold text-slate-700 hover:border-brand-500 hover:bg-brand-50 disabled:opacity-40"><Icon className="h-4 w-4 text-brand-600" />{blockLabels[type]}</button>;
         })}
       </div>
-      {value.fields.length === 0 && <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[10px] font-semibold leading-relaxed text-amber-800">Chưa có trường nào nên khối “Trường nhập” và “Nhóm trường” đang tắt. Thêm trường ở mục “Trường dữ liệu của biểu mẫu” bên dưới để bật.</p>}
+      {value.fields.length === 0 && <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-2.5 py-2 text-[10px] font-semibold leading-relaxed text-amber-800">Chưa có trường nào nên khối "Trường nhập" và "Nhóm trường" đang tắt. Thêm trường ở mục "Trường dữ liệu của biểu mẫu" bên dưới để bật.</p>}
       </aside>
       <div className="min-w-0 rounded-xl border border-rule bg-slate-100 p-3"><div className="mb-3 flex items-center justify-between gap-2"><h4 className="text-xs font-extrabold text-slate-900">Khung mẫu báo cáo</h4><span className="text-[11px] text-slate-500">{template.blocks.length} khối · {value.fields.length} trường</span></div><div className="grid grid-cols-1 gap-2 sm:grid-cols-6">
         {template.blocks.map((block, index) => <div key={block.id} className={`rounded-lg border border-rule bg-white p-3 shadow-panel ${block.width === 'FULL' ? 'sm:col-span-6' : block.width === 'HALF' ? 'sm:col-span-3' : 'sm:col-span-2'}`}>

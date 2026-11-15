@@ -5,7 +5,7 @@ import {
   InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO, StageFindingImportDTO, CommitStagedFindingImportDTO, ScheduleStagedFindingImportDTO, ImportBatch, StagingRow,
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, CreateDashboardDefinitionDTO, DashboardDefinition, ReportFilterQuery,
   AuditLogPage, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
-  FindingApprovalRouteView,
+  FindingApprovalRouteView, NextApprovalRecipients, ExecuteHandoverDTO, HandoverResult, UserOpenItems,
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest, ReportDrillRequest, ReportDrillResult,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness, CreateReportSpreadsheetDTO, ReportSpreadsheetResult,
@@ -15,12 +15,6 @@ import {
   AuditCampaign, CampaignImportDraft, CreateAuditCampaignDTO, UpdateAuditCampaignDTO, UpdateOrgUnitDTO, UpdateUserDTO,
   BulkOrgUnitImportDTO, BulkOrgUnitImportResult,
 } from '../../shared/contracts';
-
-export interface FindingApprovalCandidates {
-  branchControllers: UserProfile[];
-  branchLeaders: UserProfile[];
-  internalApprovers: UserProfile[];
-}
 
 export interface StagedFindingImportView {
   batch: ImportBatch;
@@ -295,6 +289,13 @@ export class ApiService {
   public deleteUser(id: string): Promise<void> {
     return this.request(`/admin/users/${id}`, { method: 'DELETE' });
   }
+  public getUserOpenItems(id: string, toUserId?: string): Promise<UserOpenItems> {
+    const query = toUserId ? `?toUserId=${encodeURIComponent(toUserId)}` : '';
+    return this.request(`/admin/users/${encodeURIComponent(id)}/open-items${query}`);
+  }
+  public executeHandover(data: ExecuteHandoverDTO): Promise<HandoverResult> {
+    return this.request('/admin/handovers', { method: 'POST', body: JSON.stringify(data) });
+  }
   public importUsers(data: BulkUserImportDTO): Promise<BulkUserImportResult> {
     return this.request('/admin/users/imports/commit', {
       method: 'POST',
@@ -354,8 +355,8 @@ export class ApiService {
     return this.request(`/findings?${new URLSearchParams(params).toString()}`);
   }
   public getFindingById(id: string): Promise<Finding> { return this.request(`/findings/${id}`); }
-  public getApprovalCandidates(id: string): Promise<FindingApprovalCandidates> { return this.request(`/findings/${id}/approval-candidates`); }
-  /** Bật/tắt dấu sao "trường hợp đặc biệt". Tuyến duyệt được suy tự động từ cờ này khi nộp hồ sơ. */
+  public getNextApprovers(id: string): Promise<NextApprovalRecipients> { return this.request(`/findings/${id}/next-approvers`); }
+  /** Bật/tắt dấu sao "trường hợp đặc biệt"; dấu sao quyết định hồ sơ có qua bước Lãnh đạo chi nhánh hay không. */
   public setSpecialCase(id: string, dto: SetFindingSpecialCaseDTO): Promise<Finding> {
     return this.request(`/findings/${id}/special-case`, { method: 'PUT', body: JSON.stringify(dto) });
   }

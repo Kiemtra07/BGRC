@@ -57,7 +57,7 @@ describe('report export limits', () => {
 
     expect(response.statusCode).toBe(200);
     expect(response.headers['content-type']).toMatch(/text\/csv/);
-    expect(response.body.startsWith('﻿')).toBe(true);
+    expect(response.body.startsWith('\uFEFF')).toBe(true);
 
     // Xuất dữ liệu là đường mang hồ sơ ra khỏi hệ thống, nên nó vẫn phải để lại dấu vết — việc bỏ
     // persistLocalState() khỏi endpoint này là để bớt chi phí, không phải để bớt nhật ký.

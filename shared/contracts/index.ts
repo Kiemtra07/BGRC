@@ -5,6 +5,7 @@ export * from './org';
 export * from './channels';
 export * from './evidence';
 export * from './workflow';
+export * from './handover';
 export * from './sla';
 export * from './ingestion';
 export * from './findings';

@@ -5,6 +5,7 @@ import { ApprovalAssignmentStage } from './findings';
 export const workflowCommands = [
   'SET_APPROVAL_ROUTE',
   'SET_SPECIAL_CASE',
+  'HANDOVER_APPROVAL',
   'SUBMIT_BRANCH',
   'BRANCH_CONTROL_APPROVE',
   'BRANCH_CONTROL_REJECT',
@@ -33,15 +34,23 @@ export interface WorkflowEvent {
   createdAt: string;
 }
 
+/**
+ * Người nhận ở bước kế tiếp do người đang chuyển hồ sơ chọn. Bỏ trống thì hệ thống dùng người mặc
+ * định của bước đó (Hội sở: hàng chờ chung, ai tiếp nhận thì người đó duyệt).
+ */
+const nextApproverUserId = z.string().trim().min(1).max(120).optional();
+
 export const SubmitBranchCommandSchema = z.object({
   expectedVersion: z.number().int().min(1),
   resolutionNotes: z.string().min(5, 'Giải trình khắc phục bắt buộc tối thiểu 5 ký tự'),
+  nextApproverUserId,
 });
 export type SubmitBranchCommandDTO = z.infer<typeof SubmitBranchCommandSchema>;
 
 export const BranchControlApproveCommandSchema = z.object({
   expectedVersion: z.number().int().min(1),
   notes: z.string().optional(),
+  nextApproverUserId,
 });
 export type BranchControlApproveCommandDTO = z.infer<typeof BranchControlApproveCommandSchema>;
 
@@ -54,6 +63,7 @@ export type BranchControlRejectCommandDTO = z.infer<typeof BranchControlRejectCo
 export const BranchLeaderApproveCommandSchema = z.object({
   expectedVersion: z.number().int().min(1),
   notes: z.string().optional(),
+  nextApproverUserId,
 });
 export type BranchLeaderApproveCommandDTO = z.infer<typeof BranchLeaderApproveCommandSchema>;
 
@@ -63,11 +73,7 @@ export const BranchLeaderRejectCommandSchema = z.object({
 });
 export type BranchLeaderRejectCommandDTO = z.infer<typeof BranchLeaderRejectCommandSchema>;
 
-/**
- * Cờ "dấu sao" đánh dấu hồ sơ thuộc trường hợp đặc biệt (lỗi / khách hàng đặc biệt). Bật cờ này
- * là cách duy nhất để chèn bước Lãnh đạo chi nhánh phê duyệt bắt buộc vào tuyến duyệt hai cấp —
- * không còn chọn tay người duyệt hay tick "Yêu cầu Lãnh đạo CN" trên từng hồ sơ.
- */
+/** Dấu sao đánh dấu trường hợp đặc biệt; bật dấu sao là cách duy nhất chèn bước Lãnh đạo chi nhánh vào tuyến hai cấp. */
 export const SetFindingSpecialCaseSchema = z.object({
   isSpecialCase: z.boolean(),
 });
@@ -95,6 +101,23 @@ export const InternalRejectCommandSchema = z.object({
   regulatoryBasis: z.string().optional(),
 });
 export type InternalRejectCommandDTO = z.infer<typeof InternalRejectCommandSchema>;
+
+export interface ApprovalRecipientOption {
+  id: string;
+  fullName: string;
+  department?: string;
+}
+
+/** Ai có thể nhận hồ sơ ở bước kế tiếp khi người dùng hiện tại chuyển nó đi. */
+export interface NextApprovalRecipients {
+  /** Bước sẽ nhận hồ sơ; vắng mặt khi hồ sơ không còn bước nào để chuyển. */
+  stage?: ApprovalAssignmentStage;
+  options: ApprovalRecipientOption[];
+  /** Người mặc định của bước; vắng mặt ở Hội sở khi chưa ai được chỉ định. */
+  suggestedUserId?: string;
+  /** Hội sở có hàng chờ chung: để trống người nhận nghĩa là ai tiếp nhận thì người đó duyệt. */
+  allowSharedQueue: boolean;
+}
 
 /**
  * A finding's approval route, resolved for display. The server derives it from the report type

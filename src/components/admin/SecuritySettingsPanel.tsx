@@ -110,7 +110,7 @@ export const SecuritySettingsPanel: React.FC = () => {
       setData(result);
       setDraft(result.settings.mfaPolicy);
       setNotice(result.pendingEnrolment.length
-        ? `Đã lưu. Còn ${result.pendingEnrolment.length} tài khoản chưa được cấp mã — bấm “Cấp mã” ở bảng bên dưới trước khi họ đăng nhập lại.`
+        ? `Đã lưu. Còn ${result.pendingEnrolment.length} tài khoản chưa được cấp mã. Bấm "Cấp mã" ở bảng bên dưới trước khi họ đăng nhập lại.`
         : 'Đã lưu chính sách bảo mật.');
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Không thể lưu cấu hình bảo mật.');
@@ -225,7 +225,7 @@ export const SecuritySettingsPanel: React.FC = () => {
       {data.pendingEnrolment.length > 0 && (
         <p role="alert" className="flex items-start gap-2 rounded-2xl border border-warn-border bg-warn-surface px-5 py-3 text-xs leading-5 text-warn">
           <TriangleAlert className="mt-px h-4 w-4 shrink-0" />
-          {data.pendingEnrolment.length} tài khoản đang bị chính sách bắt buộc nhưng chưa có mã — họ sẽ không đăng nhập được cho tới khi bạn bấm “Cấp mã”.
+          {data.pendingEnrolment.length} tài khoản đang bị chính sách bắt buộc nhưng chưa có mã nên họ sẽ không đăng nhập được cho tới khi bạn bấm "Cấp mã".
         </p>
       )}
 

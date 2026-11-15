@@ -24,8 +24,7 @@ export const WorkflowConfigEditor: React.FC<Props> = ({ channelId, value, onChan
     ...value,
     stages: value.stages.map((item, stageIndex) => stageIndex === index ? { ...item, stageName } : item),
   });
-  // The engine splices a Lãnh đạo chi nhánh step into a two-tier route whenever a finding carries the
-  // special-case star, so the diagram has to show that branch or it misrepresents the real flow.
+  // Hồ sơ có dấu sao thì luồng hai cấp được chèn thêm bước Lãnh đạo chi nhánh; sơ đồ phải hiện bước đó.
   const starInsertIndex = value.workflowType === 'TWO_TIER'
     ? value.stages.findIndex(stage => stage.statusCode === 'SUBMITTED_INTERNAL')
     : -1;
@@ -33,9 +32,9 @@ export const WorkflowConfigEditor: React.FC<Props> = ({ channelId, value, onChan
   return <section className="space-y-5">
     <div className="grid grid-cols-1 gap-3 md:grid-cols-3">
       {([
-        ['THREE_TIER', 'Luồng có lãnh đạo', 'Chi nhánh → Kiểm soát → Lãnh đạo CN → Phê duyệt HT'],
-        ['TWO_TIER', 'Luồng kiểm soát', 'Chi nhánh → Kiểm soát chi nhánh → Phê duyệt HT'],
-        ['ONE_TIER', 'Luồng gọn', 'Chi nhánh → Phê duyệt HT'],
+        ['THREE_TIER', 'Luồng có lãnh đạo', 'Chi nhánh > Kiểm soát > Lãnh đạo CN > Phê duyệt HT'],
+        ['TWO_TIER', 'Luồng kiểm soát', 'Chi nhánh > Kiểm soát chi nhánh > Phê duyệt HT'],
+        ['ONE_TIER', 'Luồng gọn', 'Chi nhánh > Phê duyệt HT'],
       ] as const).map(([type, title, description]) => {
         const active = value.workflowType === type;
         return <button key={type} type="button" onClick={() => onChange(createWorkflowConfig(channelId, type))} className={`rounded-xl border p-4 text-left transition ${active ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500' : 'border-rule bg-white hover:border-slate-300'}`}>

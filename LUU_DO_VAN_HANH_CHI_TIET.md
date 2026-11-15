@@ -5,6 +5,7 @@
 ![Lưu đồ vận hành AuditBGS](./luu_do_van_hanh_chi_tiet.png)
 
 - [Mở bản chỉnh sửa Draw.io](./LUU_DO_VAN_HANH_CHI_TIET.drawio)
+- [Luồng giao hồ sơ, ủy quyền khi vắng mặt và bàn giao](./LUU_DO_BAN_GIAO_HO_SO.md)
 - [Hướng dẫn sử dụng](./HUONG_DAN_SU_DUNG.md)
 - [Hướng dẫn vận hành chi tiết](./HUONG_DAN_VAN_HANH_CHI_TIET.md)
 
@@ -66,6 +67,8 @@ flowchart TD
 - `TWO_TIER` có **dấu sao Trường hợp đặc biệt**: sau Kiểm soát chi nhánh chèn bắt buộc bước `SUBMITTED_BRANCH_LEADER`, rồi mới lên Hội sở.
 - `THREE_TIER`: luôn đi `SUBMITTED_BRANCH` → `SUBMITTED_BRANCH_LEADER` → `SUBMITTED_INTERNAL`.
 - Kiểm soát chi nhánh, Lãnh đạo chi nhánh và Phê duyệt HT đều có nhánh chuyển trả về `REJECTED`; cán bộ chi nhánh bổ sung rồi nộp lại theo tuyến đã ghim.
+- Mỗi lần chuyển hồ sơ đi, người đang chuyển chọn người nhận của bước kế tiếp: cán bộ chi nhánh chọn Kiểm soát chi nhánh, Kiểm soát chọn Lãnh đạo chi nhánh hoặc Hội sở, Lãnh đạo chọn Hội sở. Danh sách do server lọc theo vai trò, phạm vi và trạng thái hoạt động, loại người đang chuyển, người nộp và những người đã giữ bước trước. Không chọn thì dùng người mặc định; Hội sở không có mặc định mà là hàng chờ chung.
+- Nộp lại sau khi bị trả về giữ nguyên người đã chọn nếu họ còn hợp lệ, và giữ lịch sử giao lại của quản trị viên.
 - `WAIVED_RESOLVED` là trạng thái cuối; không được sửa hoặc chạy lại thao tác nghiệp vụ.
 
 ## 3. Bảng tuyến phê duyệt

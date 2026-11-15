@@ -19,7 +19,7 @@ try {
   const presetList = workspace.getByTestId('report-preset-list');
   await presetList.waitFor();
   await presetList.getByRole('button').filter({ hasText: 'Tổng hợp theo chi nhánh' }).click();
-  await workspace.getByText('Đang xem mẫu dựng sẵn “Tổng hợp theo chi nhánh”.', { exact: true }).waitFor();
+  await workspace.getByText('Đang xem mẫu dựng sẵn "Tổng hợp theo chi nhánh".', { exact: true }).waitFor();
   await workspace.getByText('Kết quả truy vấn', { exact: true }).waitFor();
   await workspace.getByText('Bảng', { exact: true }).waitFor();
 

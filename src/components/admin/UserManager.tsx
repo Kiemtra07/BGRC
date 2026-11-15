@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from 'react';
 import {
+  ArrowRightLeft,
   Building2,
   Key,
   KeyRound,
@@ -23,7 +24,8 @@ import {
 import { BulkUserImportDTO, BulkUserImportResult, ConfirmAuthenticatorEnrollmentDTO, ConfirmAuthenticatorEnrollmentResponse, CreatedUserResponse, CreateUserDTO, OrgUnit, ResetUserPasswordDTO, UserProfile, UserRole, UpdateAuthenticatorDTO, UpdateAuthenticatorResponse, UpdateUserDTO, coplusRoleLabel, inferCoPlusRole } from '../../../shared/contracts';
 import { userRoleLabels } from '../../content/ui-copy';
 import { parseUserImportFile, type UserImportPreviewRow } from '../../lib/user-import';
-import { api } from '../../services/api';
+import { api, ApiError } from '../../services/api';
+import { HandoverDialog } from './HandoverDialog';
 import { UserPasswordModal } from './UserPasswordModal';
 import { UserProfileEditModal } from './UserProfileEditModal';
 
@@ -54,11 +56,12 @@ const UserDirectoryTable: React.FC<{
   updatingAuthenticatorId: string | null;
   onEdit: (user: UserProfile) => void;
   onDelete: (user: UserProfile) => void;
+  onHandover: (user: UserProfile) => void;
   onResetPassword: (user: UserProfile) => void;
   onSendResetEmail: (user: UserProfile) => void;
   onAuthenticatorChange: (user: UserProfile, enabled: boolean) => void;
   onClearFilters: () => void;
-}> = ({ users, updatingAuthenticatorId, onEdit, onDelete, onResetPassword, onSendResetEmail, onAuthenticatorChange, onClearFilters }) => {
+}> = ({ users, updatingAuthenticatorId, onEdit, onDelete, onHandover, onResetPassword, onSendResetEmail, onAuthenticatorChange, onClearFilters }) => {
   if (!users.length) return (
     <div className="rounded-2xl border border-rule bg-white p-10 text-center shadow-panel">
       <p className="text-sm font-semibold text-slate-700">Không có người dùng nào khớp bộ lọc</p>
@@ -103,6 +106,7 @@ const UserDirectoryTable: React.FC<{
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap justify-end gap-1.5">
                     <button type="button" onClick={() => onEdit(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-rule px-2 text-[11px] font-bold text-slate-700 hover:border-brand-300 hover:text-brand-600"><Pencil className="h-3.5 w-3.5" />Sửa</button>
+                    <button type="button" onClick={() => onHandover(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-brand-100 px-2 text-[11px] font-bold text-brand-700 hover:bg-brand-50"><ArrowRightLeft className="h-3.5 w-3.5" />Bàn giao</button>
                     <button type="button" onClick={() => onResetPassword(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-warn-border px-2 text-[11px] font-bold text-warn hover:bg-warn-surface"><KeyRound className="h-3.5 w-3.5" />Đặt lại mật khẩu</button>
                     <button type="button" onClick={() => onSendResetEmail(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-info-border px-2 text-[11px] font-bold text-info hover:bg-info-surface"><Mail className="h-3.5 w-3.5" />Gửi email reset</button>
                     <button type="button" onClick={() => onDelete(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-risk-border px-2 text-[11px] font-bold text-risk hover:bg-risk-surface"><Trash2 className="h-3.5 w-3.5" />Xóa</button>
@@ -117,8 +121,8 @@ const UserDirectoryTable: React.FC<{
   );
 };
 
-type UserCardProps = { user: UserProfile; compact?: boolean; onAuthenticatorChange?: (user: UserProfile, enabled: boolean) => void; updatingAuthenticator?: boolean; onEdit?: (user: UserProfile) => void; onDelete?: (user: UserProfile) => void; onResetPassword?: (user: UserProfile) => void; onSendResetEmail?: (user: UserProfile) => void };
-const UserCard: React.FC<UserCardProps> = ({ user, compact = false, onAuthenticatorChange, updatingAuthenticator = false, onEdit, onDelete, onResetPassword, onSendResetEmail }) => (
+type UserCardProps = { user: UserProfile; compact?: boolean; onAuthenticatorChange?: (user: UserProfile, enabled: boolean) => void; updatingAuthenticator?: boolean; onEdit?: (user: UserProfile) => void; onDelete?: (user: UserProfile) => void; onHandover?: (user: UserProfile) => void; onResetPassword?: (user: UserProfile) => void; onSendResetEmail?: (user: UserProfile) => void };
+const UserCard: React.FC<UserCardProps> = ({ user, compact = false, onAuthenticatorChange, updatingAuthenticator = false, onEdit, onDelete, onHandover, onResetPassword, onSendResetEmail }) => (
   <article className={`rounded-xl border border-rule bg-white ${compact ? 'p-3' : 'p-4'} shadow-panel`}>
     <div className="flex items-start justify-between gap-3">
       <div className="min-w-0">
@@ -155,9 +159,10 @@ const UserCard: React.FC<UserCardProps> = ({ user, compact = false, onAuthentica
     <p className={`mt-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-[11px] font-bold ${user.authenticatorConfigured ? 'border-ok-border bg-ok-surface text-ok' : 'border-rule bg-slate-50 text-slate-500'}`}>
       <ShieldCheck className="h-3.5 w-3.5" />{user.authenticatorConfigured ? 'Đã cấp mã Authenticator' : 'Chưa cấp mã Authenticator'}
     </p>
-    {(onEdit || onDelete || onResetPassword || onSendResetEmail) && (
+    {(onEdit || onDelete || onHandover || onResetPassword || onSendResetEmail) && (
       <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
         {onEdit && <button type="button" onClick={() => onEdit(user)} className="inline-flex items-center gap-1 rounded-lg border border-rule px-2.5 py-1.5 text-[10px] font-bold text-slate-700 hover:bg-slate-50"><Pencil className="h-3 w-3" /> Sửa</button>}
+        {onHandover && <button type="button" onClick={() => onHandover(user)} className="inline-flex items-center gap-1 rounded-lg border border-brand-100 px-2.5 py-1.5 text-[10px] font-bold text-brand-700 hover:bg-brand-50"><ArrowRightLeft className="h-3 w-3" /> Bàn giao</button>}
         {onResetPassword && <button type="button" onClick={() => onResetPassword(user)} className="inline-flex items-center gap-1 rounded-lg border border-amber-200 px-2.5 py-1.5 text-[10px] font-bold text-amber-800 hover:bg-amber-50"><Key className="h-3 w-3" /> Đặt lại mật khẩu</button>}
         {onSendResetEmail && <button type="button" onClick={() => onSendResetEmail(user)} className="inline-flex items-center gap-1 rounded-lg border border-info-border px-2.5 py-1.5 text-[10px] font-bold text-info hover:bg-info-surface"><Mail className="h-3 w-3" /> Gửi email reset</button>}
         {onDelete && <button type="button" onClick={() => onDelete(user)} className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-[10px] font-bold text-red-700 hover:bg-red-50"><Trash2 className="h-3 w-3" /> Xóa</button>}
@@ -196,6 +201,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
   const [updatingUserId, setUpdatingUserId] = useState<string | null>(null);
   const [editingUser, setEditingUser] = useState<UserProfile | null>(null);
   const [passwordUser, setPasswordUser] = useState<UserProfile | null>(null);
+  const [handoverUser, setHandoverUser] = useState<UserProfile | null>(null);
 
   const internalTeams = orgUnits.filter(unit => unit.type === 'INTERNAL_TEAM' && unit.isActive);
   const clusters = orgUnits.filter(unit => unit.type === 'CLUSTER' && unit.isActive);
@@ -419,6 +425,10 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
       setTimeout(() => setToastMessage(null), 6000);
     } catch (error) {
       setToastMessage(error instanceof Error ? error.message : 'Không thể cập nhật tài khoản.');
+      if (error instanceof ApiError && error.code === 'USER_HAS_OPEN_ITEMS') {
+        setEditingUser(null);
+        setHandoverUser(users.find(candidate => candidate.id === id) ?? null);
+      }
     } finally {
       setUpdatingUserId(null);
     }
@@ -434,6 +444,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
       setTimeout(() => setToastMessage(null), 6000);
     } catch (error) {
       setToastMessage(error instanceof Error ? error.message : 'Không thể xóa tài khoản.');
+      if (error instanceof ApiError && error.code === 'USER_HAS_OPEN_ITEMS') setHandoverUser(user);
     } finally {
       setUpdatingUserId(null);
     }
@@ -622,7 +633,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
           users={filteredUsers}
           updatingAuthenticatorId={updatingAuthenticatorId}
           onEdit={handleEditUser}
-          onDelete={handleDeleteUser}
+          onDelete={handleDeleteUser} onHandover={setHandoverUser}
           onResetPassword={handleResetPassword}
           onSendResetEmail={handleSendResetEmail}
           onAuthenticatorChange={handleAuthenticatorChange}
@@ -645,11 +656,11 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
                 <div className="space-y-3 p-4">
                   <div>
                     <div className="mb-2 flex items-center gap-2 text-[10px] font-bold text-amber-700"><UserCheck className="h-3.5 w-3.5" /> Phê duyệt HT</div>
-                    {lead ? <UserCard user={lead} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === lead.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} /> : <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-3 text-xs font-semibold text-amber-800">Chưa phân công phê duyệt HT.</div>}
+                    {lead ? <UserCard user={lead} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === lead.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} /> : <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-3 text-xs font-semibold text-amber-800">Chưa phân công phê duyệt HT.</div>}
                   </div>
                   <div>
                     <div className="mb-2 text-[10px] font-bold text-slate-500">Thành viên nhóm</div>
-                    <div className="grid gap-2 sm:grid-cols-2">{members.map(member => <UserCard key={member.id} user={member} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === member.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
+                    <div className="grid gap-2 sm:grid-cols-2">{members.map(member => <UserCard key={member.id} user={member} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === member.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
                     {!members.length && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-xs text-slate-500">Chưa có thành viên phù hợp bộ lọc.</div>}
                   </div>
                 </div>
@@ -659,7 +670,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
           {systemUsers.length > 0 && (
             <article className="rounded-2xl border border-rule bg-white p-4 shadow-panel xl:col-span-2">
               <h4 className="text-sm font-bold text-slate-900">Tài khoản hệ thống</h4>
-              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{systemUsers.map(user => <UserCard key={user.id} user={user} onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
+              <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-3">{systemUsers.map(user => <UserCard key={user.id} user={user} onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
             </article>
           )}
         </section>
@@ -686,8 +697,8 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
                       <section key={branch.id} className="rounded-xl border border-rule bg-slate-50 p-3 sm:p-4">
                         <div className="flex items-center justify-between gap-2"><div><div className="text-[10px] font-bold text-brand-600">Chi nhánh {branch.code}</div><h5 className="mt-0.5 text-sm font-bold text-slate-900">{branch.name}</h5></div><Building2 className="h-5 w-5 text-brand-600" /></div>
                         <div className="mt-3 space-y-3">
-                          <div><div className="mb-2 text-[10px] font-bold text-amber-700">Kiểm soát chi nhánh</div><div className="mb-2 text-[11px] text-slate-500">Kiểm tra hồ sơ và chuyển phê duyệt HT.</div><div className="grid gap-2">{controllers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>{!controllers.length && <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800">Chưa có người kiểm soát.</div>}</div>
-                          <div><div className="mb-2 text-[10px] font-bold text-slate-500">Cán bộ theo Phòng / PGD</div><div className="grid gap-2">{officers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>{!officers.length && <div className="rounded-lg border border-dashed border-slate-300 p-2 text-[11px] text-slate-500">Chưa có cán bộ phù hợp bộ lọc.</div>}</div>
+                          <div><div className="mb-2 text-[10px] font-bold text-amber-700">Kiểm soát chi nhánh</div><div className="mb-2 text-[11px] text-slate-500">Kiểm tra hồ sơ và chuyển phê duyệt HT.</div><div className="grid gap-2">{controllers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>{!controllers.length && <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2 text-[11px] text-amber-800">Chưa có người kiểm soát.</div>}</div>
+                          <div><div className="mb-2 text-[10px] font-bold text-slate-500">Cán bộ theo Phòng / PGD</div><div className="grid gap-2">{officers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>{!officers.length && <div className="rounded-lg border border-dashed border-slate-300 p-2 text-[11px] text-slate-500">Chưa có cán bộ phù hợp bộ lọc.</div>}</div>
                         </div>
                       </section>
                     );
@@ -703,7 +714,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
                 <span className="rounded-full bg-white px-3 py-1 text-[11px] font-bold text-amber-800">{unassignedUsers.length} người dùng</span>
               </div>
               <p className="mt-3 text-[11px] font-semibold text-amber-800">Có thể mở hồ sơ và vào Sửa để phân công Cụm, Chi nhánh, Phòng / PGD sau.</p>
-              <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{unassignedUsers.map(user => <UserCard key={user.id} user={user} onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
+              <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{unassignedUsers.map(user => <UserCard key={user.id} user={user} onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
             </article>
           )}
         </section>
@@ -754,6 +765,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
       )}
 
       {editingUser && <UserProfileEditModal user={editingUser} orgUnits={orgUnits} busy={updatingUserId === editingUser.id} onClose={() => setEditingUser(null)} onSave={data => saveUserProfile(editingUser.id, data)} />}
+      {handoverUser && <HandoverDialog user={handoverUser} onClose={() => setHandoverUser(null)} />}
       {passwordUser && <UserPasswordModal user={passwordUser} busy={updatingUserId === passwordUser.id} onClose={() => setPasswordUser(null)} onSubmit={password => handlePasswordSubmit(passwordUser, password ? { password } : undefined)} />}
     </div>
   );

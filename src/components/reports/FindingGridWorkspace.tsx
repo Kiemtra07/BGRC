@@ -160,7 +160,7 @@ export const FindingGridWorkspace: React.FC<Props> = ({ findings, currentUser, o
 
     {outcome && <div role="status" className={`rounded-xl border px-3 py-2 text-[11px] font-semibold ${outcome.failures.length ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-brand-200 bg-brand-50 text-brand-600'}`}>
       <p className="flex items-center gap-2">{outcome.failures.length ? <AlertTriangle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}Đã xử lý {outcome.succeeded} dòng{outcome.failures.length ? `, ${outcome.failures.length} dòng lỗi:` : '.'}</p>
-      {outcome.failures.length > 0 && <ul className="mt-1 list-disc space-y-0.5 pl-5 font-normal">{outcome.failures.map(item => <li key={item.label}><strong>{item.label}</strong> — {item.reason}</li>)}</ul>}
+      {outcome.failures.length > 0 && <ul className="mt-1 list-disc space-y-0.5 pl-5 font-normal">{outcome.failures.map(item => <li key={item.label}><strong>{item.label}</strong>: {item.reason}</li>)}</ul>}
     </div>}
 
     <div className="min-w-0 overflow-x-auto rounded-2xl border border-rule bg-white shadow-panel">
