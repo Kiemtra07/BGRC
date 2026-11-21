@@ -126,9 +126,45 @@ export function pinStageApprover(
   return { ...base, [fieldByStage[stage]]: userId };
 }
 
+/** Các bước nhận hồ sơ của một tuyến theo loại luồng; bước Lãnh đạo chi nhánh có ở luồng ba cấp hoặc khi hồ sơ có dấu sao. */
+export function routeStagesFor(workflowType: ApprovalWorkflowType, isSpecialCase: boolean): ApprovalAssignmentStage[] {
+  if (workflowType === 'ONE_TIER') return ['INTERNAL_APPROVER'];
+  return workflowType === 'THREE_TIER' || isSpecialCase
+    ? ['BRANCH_CONTROLLER', 'BRANCH_LEADER', 'INTERNAL_APPROVER']
+    : ['BRANCH_CONTROLLER', 'INTERNAL_APPROVER'];
+}
+
+const workflowTypeRank: Record<ApprovalWorkflowType, number> = { ONE_TIER: 1, TWO_TIER: 2, THREE_TIER: 3 };
+
+export function strictestWorkflowType(left: ApprovalWorkflowType, right: ApprovalWorkflowType): ApprovalWorkflowType {
+  return workflowTypeRank[right] > workflowTypeRank[left] ? right : left;
+}
+
+/**
+ * Loại luồng hiệu lực khi nộp: loại báo cáo cấu hình là mức tối thiểu, bước kiểm soát người nộp chọn
+ * thêm (Kiểm soát, Lãnh đạo chi nhánh) chỉ làm tuyến chặt hơn. Chọn Lãnh đạo kéo theo cả Kiểm soát.
+ */
+export function submitWorkflowType(
+  configured: ApprovalWorkflowType,
+  selections: Partial<Record<ApprovalAssignmentStage, string>>,
+): ApprovalWorkflowType {
+  const requested: ApprovalWorkflowType = selections.BRANCH_LEADER ? 'THREE_TIER' : selections.BRANCH_CONTROLLER ? 'TWO_TIER' : 'ONE_TIER';
+  return strictestWorkflowType(configured, requested);
+}
+
+/** Bước kiểm soát có thể thêm vào tuyến đã cấu hình, theo thứ tự thêm. */
+export function addableStagesFor(configured: ApprovalWorkflowType, isSpecialCase: boolean): ApprovalAssignmentStage[] {
+  if (configured === 'ONE_TIER') return ['BRANCH_CONTROLLER', 'BRANCH_LEADER'];
+  return configured === 'TWO_TIER' && !isSpecialCase ? ['BRANCH_LEADER'] : [];
+}
+
 export interface ApprovalRouteOptions {
   /** Người Kiểm soát chi nhánh do người nộp chọn; người gọi đã kiểm tra là hợp lệ. */
   controllerUserId?: string;
+  /** Người Lãnh đạo chi nhánh do người nộp chọn; đã kiểm tra như trên. */
+  leaderUserId?: string;
+  /** Người phê duyệt Hội sở do người nộp chọn; để trống thì dùng hàng chờ chung. */
+  internalApproverUserId?: string;
   /** Tuyến của lần nộp trước. Người đã chọn còn hợp lệ và lịch sử giao lại được giữ nguyên. */
   previous?: FindingApprovalRoute;
 }
@@ -159,14 +195,14 @@ export function resolveApprovalRoute(
   for (const branchControllerUserId of controllerChoices) {
     const leaderPool = candidates.branchLeaders.filter(candidate => candidate.id !== branchControllerUserId);
     const branchLeaderUserId = requiresBranchLeaderApproval
-      ? stillEligible(leaderPool, options.previous?.branchLeaderUserId) ?? selectIndependentApprover(actor.id, leaderPool)
+      ? options.leaderUserId ?? stillEligible(leaderPool, options.previous?.branchLeaderUserId) ?? selectIndependentApprover(actor.id, leaderPool)
       : undefined;
     if (requiresBranchLeaderApproval && !branchLeaderUserId) continue;
     const internalPool = candidates.internalApprovers.filter(candidate => candidate.id !== branchControllerUserId && candidate.id !== branchLeaderUserId);
     return {
       branchControllerUserId,
       branchLeaderUserId,
-      internalApproverUserId: stillEligible(internalPool, options.previous?.internalApproverUserId),
+      internalApproverUserId: options.internalApproverUserId ?? stillEligible(internalPool, options.previous?.internalApproverUserId),
       requiresBranchLeaderApproval,
       assignedByUserId: actor.id,
       assignedAt,

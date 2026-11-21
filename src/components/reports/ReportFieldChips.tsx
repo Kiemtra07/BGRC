@@ -44,10 +44,10 @@ const FieldChip: React.FC<FieldChipProps> = ({ field, placement, defaultZone = '
     onClick={() => onAssign(defaultZone)}
     aria-label={`${field.label}: thêm vào ${PLACEMENT_LABEL[defaultZone]}`}
     title={`${field.label}: bấm để thêm vào ${PLACEMENT_LABEL[defaultZone]}, hoặc kéo vào vùng bên dưới`}
-    className={`inline-flex min-h-8 max-w-full cursor-grab items-center gap-1.5 rounded-lg border px-2.5 text-left text-[0.75rem] font-bold leading-tight transition-colors active:cursor-grabbing ${placement ? PLACEMENT_CLASS[placement] : 'border-rule bg-white text-slate-700 hover:border-brand-300 hover:text-brand-600'}`}
+    className={`inline-flex min-h-8 max-w-full cursor-grab items-center gap-1.5 rounded-lg border px-2.5 text-left text-xs font-bold leading-tight transition-colors active:cursor-grabbing ${placement ? PLACEMENT_CLASS[placement] : 'border-rule bg-white text-slate-700 hover:border-brand-300 hover:text-brand-600'}`}
   >
     <span className="max-w-[18rem] whitespace-normal break-words">{field.label}</span>
-    {placement && <span className="shrink-0 rounded bg-white/70 px-1 text-[0.75rem] font-black">{PLACEMENT_LABEL[placement]}</span>}
+    {placement && <span className="shrink-0 rounded bg-white/70 px-1 text-xs font-black">{PLACEMENT_LABEL[placement]}</span>}
   </button>
 );
 
@@ -104,11 +104,11 @@ export const ReportFieldChips: React.FC<ReportFieldChipsProps> = ({
   return (
     <div className="space-y-2.5 rounded-xl border border-rule bg-slate-50 p-3">
       <div>
-        <h3 className="mb-1.5 flex items-center gap-1.5 text-[0.75rem] font-black uppercase tracking-wide text-slate-500">
+        <h3 className="mb-1.5 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-500">
           <Columns3 className="h-3 w-3" />Trường để nhóm và lọc
           <span className="font-semibold normal-case tracking-normal text-slate-400">(kéo vào vùng bên dưới hoặc bấm để thêm)</span>
         </h3>
-        <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-dashed border-slate-300 bg-white/70 px-2 py-1.5 text-[0.75rem] font-bold text-slate-500">
+        <div className="mb-2 flex flex-wrap items-center gap-1.5 rounded-lg border border-dashed border-slate-300 bg-white/70 px-2 py-1.5 text-xs font-bold text-slate-500">
           <span className="mr-0.5">Bấm một trường sẽ đưa vào:</span>
           {ZONES.filter(item => showColumnsZone || item.zone !== 'columns').map(item => (
             <button
@@ -116,7 +116,7 @@ export const ReportFieldChips: React.FC<ReportFieldChipsProps> = ({
               type="button"
               aria-pressed={clickZone === item.zone}
               onClick={() => onClickZoneChange(item.zone)}
-              className={`inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-[0.75rem] font-black transition-colors ${clickZone === item.zone ? 'bg-brand-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
+              className={`inline-flex min-h-7 items-center gap-1 rounded-md px-2 text-xs font-black transition-colors ${clickZone === item.zone ? 'bg-brand-500 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'}`}
             >
               {item.icon}{item.label}
             </button>
@@ -127,7 +127,7 @@ export const ReportFieldChips: React.FC<ReportFieldChipsProps> = ({
             <details key={group.title} open={index === 0 || group.fields.some(field => placementOf(field.key))} className="rounded-lg border border-rule bg-white">
               <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between px-3 text-xs font-bold text-slate-700">
                 <span>{group.title}</span>
-                <span className="text-[0.75rem] font-semibold text-slate-400">{group.fields.length} trường</span>
+                <span className="text-xs font-semibold text-slate-400">{group.fields.length} trường</span>
               </summary>
               <div className="flex flex-wrap gap-1.5 border-t border-rule p-2">
                 {group.fields.map(field => (
@@ -143,12 +143,12 @@ export const ReportFieldChips: React.FC<ReportFieldChipsProps> = ({
               </div>
             </details>
           ))}
-          {!fields.length && <span className="text-[0.75rem] text-slate-500">Quản trị viên chưa bật trường nào để nhóm.</span>}
+          {!fields.length && <span className="text-xs text-slate-500">Quản trị viên chưa bật trường nào để nhóm.</span>}
         </div>
       </div>
 
       <div>
-        <h3 className="mb-1.5 flex items-center gap-1.5 text-[0.75rem] font-black uppercase tracking-wide text-slate-500">
+        <h3 className="mb-1.5 flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-slate-500">
           <Sigma className="h-3 w-3" />Số cần đo
           <span className="font-semibold normal-case tracking-normal text-slate-400">(bấm để thêm hoặc bỏ khỏi vùng Đo bằng)</span>
         </h3>
@@ -164,14 +164,14 @@ export const ReportFieldChips: React.FC<ReportFieldChipsProps> = ({
                 onClick={() => onToggleMetric(metric.key)}
                 aria-pressed={used}
                 title={used ? `Bỏ ${metric.label} khỏi vùng Đo bằng` : `Thêm ${metric.label} vào vùng Đo bằng`}
-                className={`inline-flex min-h-8 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 text-[0.75rem] font-bold transition-colors ${used ? 'border-brand-500 bg-brand-50 text-brand-700' : 'cursor-grab border-rule bg-white text-slate-700 hover:border-brand-300 hover:text-brand-600 active:cursor-grabbing'}`}
+                className={`inline-flex min-h-8 items-center gap-1.5 whitespace-nowrap rounded-lg border px-2.5 text-xs font-bold transition-colors ${used ? 'border-brand-500 bg-brand-50 text-brand-700' : 'cursor-grab border-rule bg-white text-slate-700 hover:border-brand-300 hover:text-brand-600 active:cursor-grabbing'}`}
               >
                 {metric.label}
                 {used && <Check className="h-3 w-3" aria-hidden />}
               </button>
             );
           })}
-          {!metrics.length && <span className="text-[0.75rem] text-slate-500">Không có chỉ số nào khớp từ khoá.</span>}
+          {!metrics.length && <span className="text-xs text-slate-500">Không có chỉ số nào khớp từ khoá.</span>}
         </div>
       </div>
     </div>

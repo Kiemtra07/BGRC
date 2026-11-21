@@ -45,7 +45,7 @@ interface Props {
 
 type DirectoryView = 'INTERNAL' | 'GEOGRAPHY';
 
-const filterSelectClass = 'min-h-9 rounded-lg border border-rule bg-white px-2.5 text-[0.75rem] font-semibold text-slate-700 outline-none focus:border-brand-500';
+const filterSelectClass = 'min-h-9 rounded-lg border border-rule bg-white px-2.5 text-xs font-semibold text-slate-700 outline-none focus:border-brand-500';
 
 /**
  * Flat directory. The grouped cards answer "who sits where"; this answers "where is this
@@ -72,7 +72,7 @@ const UserDirectoryTable: React.FC<{
     <section aria-label="Danh sách người dùng" className="overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
       <div className="overflow-x-auto">
         <table className="w-full min-w-[900px] text-left text-xs">
-          <thead className="border-b border-rule bg-slate-50/80 text-[0.75rem] font-semibold text-slate-500">
+          <thead className="border-b border-rule bg-slate-50/80 text-xs font-semibold text-slate-500">
             <tr>
               <th scope="col" className="px-4 py-2.5 font-semibold">Họ tên / email</th>
               <th scope="col" className="px-4 py-2.5 font-semibold">Vai trò</th>
@@ -87,29 +87,29 @@ const UserDirectoryTable: React.FC<{
               <tr key={user.id} className="align-top transition-colors hover:bg-brand-50/50">
                 <td className="px-4 py-3">
                   <div className="font-bold text-slate-900">{user.fullName}</div>
-                  <div className="mt-0.5 truncate text-[0.75rem] text-slate-500">{user.email}</div>
+                  <div className="mt-0.5 truncate text-xs text-slate-500">{user.email}</div>
                 </td>
                 <td className="px-4 py-3">
-                  <span className="inline-flex items-center rounded-md border border-brand-100 bg-brand-50 px-1.5 py-[2px] text-[0.75rem] font-bold text-brand-700">{userRoleLabels[user.primaryRole]}</span>
-                  {user.coplusRole && <div className="mt-1 font-mono text-[0.75rem] text-slate-400">{user.coplusRole}</div>}
+                  <span className="inline-flex items-center rounded-md border border-brand-100 bg-brand-50 px-1.5 py-[2px] text-xs font-bold text-brand-700">{userRoleLabels[user.primaryRole]}</span>
+                  {user.coplusRole && <div className="mt-1 font-mono text-xs text-slate-400">{user.coplusRole}</div>}
                 </td>
-                <td className="px-4 py-3 text-[0.75rem] text-slate-600">
+                <td className="px-4 py-3 text-xs text-slate-600">
                   <div className="font-semibold text-slate-700">{user.internalTeamName || user.branchName || user.clusterName || 'Chưa phân đơn vị'}</div>
                   <div className="mt-0.5 text-slate-500">{[user.clusterName, user.department].filter(Boolean).join(' · ') || (user.portal === 'INTERNAL' ? 'Khối nội bộ' : 'Mạng lưới chi nhánh')}</div>
                 </td>
                 <td className="px-4 py-3">
-                  <span className={`inline-flex items-center rounded-md border px-1.5 py-[2px] text-[0.75rem] font-bold ${user.authenticatorConfigured ? 'border-ok-border bg-ok-surface text-ok' : 'border-idle-border bg-idle-surface text-idle'}`}>{user.authenticatorConfigured ? 'Đã cấp mã' : 'Chưa cấp mã'}</span>
+                  <span className={`inline-flex items-center rounded-md border px-1.5 py-[2px] text-xs font-bold ${user.authenticatorConfigured ? 'border-ok-border bg-ok-surface text-ok' : 'border-idle-border bg-idle-surface text-idle'}`}>{user.authenticatorConfigured ? 'Đã cấp mã' : 'Chưa cấp mã'}</span>
                 </td>
                 <td className="px-4 py-3">
-                  <span className={`inline-flex items-center rounded-md border px-1.5 py-[2px] text-[0.75rem] font-bold ${user.isActive ? 'border-ok-border bg-ok-surface text-ok' : 'border-idle-border bg-idle-surface text-idle'}`}>{user.isActive ? 'Hoạt động' : 'Ngừng'}</span>
+                  <span className={`inline-flex items-center rounded-md border px-1.5 py-[2px] text-xs font-bold ${user.isActive ? 'border-ok-border bg-ok-surface text-ok' : 'border-idle-border bg-idle-surface text-idle'}`}>{user.isActive ? 'Hoạt động' : 'Ngừng'}</span>
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex flex-wrap justify-end gap-1.5">
-                    <button type="button" onClick={() => onEdit(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-rule px-2 text-[0.75rem] font-bold text-slate-700 hover:border-brand-300 hover:text-brand-600"><Pencil className="h-3.5 w-3.5" />Sửa</button>
-                    <button type="button" onClick={() => onHandover(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-brand-100 px-2 text-[0.75rem] font-bold text-brand-700 hover:bg-brand-50"><ArrowRightLeft className="h-3.5 w-3.5" />Bàn giao</button>
-                    <button type="button" onClick={() => onResetPassword(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-warn-border px-2 text-[0.75rem] font-bold text-warn hover:bg-warn-surface"><KeyRound className="h-3.5 w-3.5" />Đặt lại mật khẩu</button>
-                    <button type="button" onClick={() => onSendResetEmail(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-info-border px-2 text-[0.75rem] font-bold text-info hover:bg-info-surface"><Mail className="h-3.5 w-3.5" />Gửi email reset</button>
-                    <button type="button" onClick={() => onDelete(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-risk-border px-2 text-[0.75rem] font-bold text-risk hover:bg-risk-surface"><Trash2 className="h-3.5 w-3.5" />Xóa</button>
+                    <button type="button" onClick={() => onEdit(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-rule px-2 text-xs font-bold text-slate-700 hover:border-brand-300 hover:text-brand-600"><Pencil className="h-3.5 w-3.5" />Sửa</button>
+                    <button type="button" onClick={() => onHandover(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-brand-100 px-2 text-xs font-bold text-brand-700 hover:bg-brand-50"><ArrowRightLeft className="h-3.5 w-3.5" />Bàn giao</button>
+                    <button type="button" onClick={() => onResetPassword(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-warn-border px-2 text-xs font-bold text-warn hover:bg-warn-surface"><KeyRound className="h-3.5 w-3.5" />Đặt lại mật khẩu</button>
+                    <button type="button" onClick={() => onSendResetEmail(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-info-border px-2 text-xs font-bold text-info hover:bg-info-surface"><Mail className="h-3.5 w-3.5" />Gửi email reset</button>
+                    <button type="button" onClick={() => onDelete(user)} className="inline-flex min-h-8 items-center gap-1 rounded-lg border border-risk-border px-2 text-xs font-bold text-risk hover:bg-risk-surface"><Trash2 className="h-3.5 w-3.5" />Xóa</button>
                   </div>
                 </td>
               </tr>
@@ -129,43 +129,43 @@ const UserCard: React.FC<UserCardProps> = ({ user, compact = false, onAuthentica
         <div className="flex flex-wrap items-center gap-2">
           <h5 className="truncate text-sm font-bold text-slate-900">{user.fullName}</h5>
           {user.teamRole === 'LEAD' && (
-            <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[0.75rem] font-bold text-amber-800">
+            <span className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-bold text-amber-800">
               <ShieldCheck className="h-3 w-3" /> Trưởng nhóm
             </span>
           )}
         </div>
-        <div className="mt-1 flex min-w-0 items-center gap-1 text-[0.75rem] text-slate-500">
+        <div className="mt-1 flex min-w-0 items-center gap-1 text-xs text-slate-500">
           <Mail className="h-3 w-3 shrink-0" />
           <span className="truncate">{user.email}</span>
         </div>
         {user.googleWorkspaceEmail && user.googleWorkspaceEmail.toLowerCase() !== user.email.toLowerCase() && (
-          <div className="mt-1 flex min-w-0 items-center gap-1 text-[0.75rem] text-info">
+          <div className="mt-1 flex min-w-0 items-center gap-1 text-xs text-info">
             <Mail className="h-3 w-3 shrink-0" />
             <span className="truncate" title="Email Google Workspace để cấp quyền tệp đính kèm">Drive: {user.googleWorkspaceEmail}</span>
           </div>
         )}
       </div>
-      <span className={`shrink-0 rounded-full px-2 py-1 text-[0.75rem] font-bold ${user.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+      <span className={`shrink-0 rounded-full px-2 py-1 text-xs font-bold ${user.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
         {user.isActive ? 'Hoạt động' : 'Tạm khóa'}
       </span>
     </div>
-    <div className="mt-3 flex flex-wrap gap-2 text-[0.75rem] font-semibold">
+    <div className="mt-3 flex flex-wrap gap-2 text-xs font-semibold">
       <span className="rounded-md bg-brand-500/10 px-2 py-1 text-brand-600" title={userRoleLabels[user.primaryRole]}>{user.coplusRole ? coplusRoleLabel(user.coplusRole) : userRoleLabels[user.primaryRole]}</span>
       {user.coplusRole && <span className="rounded-md bg-slate-900/5 px-2 py-1 font-mono text-slate-600">{user.coplusRole}</span>}
       {user.department && <span className="rounded-md bg-slate-100 px-2 py-1 text-slate-600">{user.department}</span>}
     </div>
     {/* Chỉ hiển thị trạng thái. Việc cấp mã và đặt chính sách nằm ở thẻ Bảo mật để tránh
         tạo thêm một nơi thay đổi cùng một thiết lập. */}
-    <p className={`mt-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-[0.75rem] font-bold ${user.authenticatorConfigured ? 'border-ok-border bg-ok-surface text-ok' : 'border-rule bg-slate-50 text-slate-500'}`}>
+    <p className={`mt-3 flex items-center gap-2 rounded-lg border px-3 py-2 text-xs font-bold ${user.authenticatorConfigured ? 'border-ok-border bg-ok-surface text-ok' : 'border-rule bg-slate-50 text-slate-500'}`}>
       <ShieldCheck className="h-3.5 w-3.5" />{user.authenticatorConfigured ? 'Đã cấp mã Authenticator' : 'Chưa cấp mã Authenticator'}
     </p>
     {(onEdit || onDelete || onHandover || onResetPassword || onSendResetEmail) && (
       <div className="mt-3 flex flex-wrap gap-2 border-t border-slate-100 pt-3">
-        {onEdit && <button type="button" onClick={() => onEdit(user)} className="inline-flex items-center gap-1 rounded-lg border border-rule px-2.5 py-1.5 text-[0.75rem] font-bold text-slate-700 hover:bg-slate-50"><Pencil className="h-3 w-3" /> Sửa</button>}
-        {onHandover && <button type="button" onClick={() => onHandover(user)} className="inline-flex items-center gap-1 rounded-lg border border-brand-100 px-2.5 py-1.5 text-[0.75rem] font-bold text-brand-700 hover:bg-brand-50"><ArrowRightLeft className="h-3 w-3" /> Bàn giao</button>}
-        {onResetPassword && <button type="button" onClick={() => onResetPassword(user)} className="inline-flex items-center gap-1 rounded-lg border border-amber-200 px-2.5 py-1.5 text-[0.75rem] font-bold text-amber-800 hover:bg-amber-50"><Key className="h-3 w-3" /> Đặt lại mật khẩu</button>}
-        {onSendResetEmail && <button type="button" onClick={() => onSendResetEmail(user)} className="inline-flex items-center gap-1 rounded-lg border border-info-border px-2.5 py-1.5 text-[0.75rem] font-bold text-info hover:bg-info-surface"><Mail className="h-3 w-3" /> Gửi email reset</button>}
-        {onDelete && <button type="button" onClick={() => onDelete(user)} className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-[0.75rem] font-bold text-red-700 hover:bg-red-50"><Trash2 className="h-3 w-3" /> Xóa</button>}
+        {onEdit && <button type="button" onClick={() => onEdit(user)} className="inline-flex items-center gap-1 rounded-lg border border-rule px-2.5 py-1.5 text-xs font-bold text-slate-700 hover:bg-slate-50"><Pencil className="h-3 w-3" /> Sửa</button>}
+        {onHandover && <button type="button" onClick={() => onHandover(user)} className="inline-flex items-center gap-1 rounded-lg border border-brand-100 px-2.5 py-1.5 text-xs font-bold text-brand-700 hover:bg-brand-50"><ArrowRightLeft className="h-3 w-3" /> Bàn giao</button>}
+        {onResetPassword && <button type="button" onClick={() => onResetPassword(user)} className="inline-flex items-center gap-1 rounded-lg border border-amber-200 px-2.5 py-1.5 text-xs font-bold text-amber-800 hover:bg-amber-50"><Key className="h-3 w-3" /> Đặt lại mật khẩu</button>}
+        {onSendResetEmail && <button type="button" onClick={() => onSendResetEmail(user)} className="inline-flex items-center gap-1 rounded-lg border border-info-border px-2.5 py-1.5 text-xs font-bold text-info hover:bg-info-surface"><Mail className="h-3 w-3" /> Gửi email reset</button>}
+        {onDelete && <button type="button" onClick={() => onDelete(user)} className="inline-flex items-center gap-1 rounded-lg border border-red-200 px-2.5 py-1.5 text-xs font-bold text-red-700 hover:bg-red-50"><Trash2 className="h-3 w-3" /> Xóa</button>}
       </div>
     )}
   </article>
@@ -503,14 +503,14 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="flex items-center gap-2 text-xs font-black text-amber-900"><Key className="h-4 w-4" />Mật khẩu tạm của {issuedCredential.fullName}</p>
-              <p className="mt-1 text-[0.75rem] font-semibold text-amber-800">Chỉ hiển thị lần này. Chuyển cho người dùng và yêu cầu đổi ngay sau khi đăng nhập.</p>
+              <p className="mt-1 text-xs font-semibold text-amber-800">Chỉ hiển thị lần này. Chuyển cho người dùng và yêu cầu đổi ngay sau khi đăng nhập.</p>
               <dl className="mt-3 grid gap-2 sm:grid-cols-2">
                 <div className="rounded-lg border border-amber-300 bg-white p-2.5">
-                  <dt className="text-[0.75rem] font-bold text-slate-500">Tên đăng nhập</dt>
+                  <dt className="text-xs font-bold text-slate-500">Tên đăng nhập</dt>
                   <dd className="mt-1 select-all font-mono text-sm font-bold text-slate-900">{issuedCredential.username}</dd>
                 </div>
                 <div className="rounded-lg border border-amber-300 bg-white p-2.5">
-                  <dt className="text-[0.75rem] font-bold text-slate-500">Mật khẩu tạm</dt>
+                  <dt className="text-xs font-bold text-slate-500">Mật khẩu tạm</dt>
                   <dd className="mt-1 select-all break-all font-mono text-sm font-bold text-slate-900">{issuedCredential.password}</dd>
                 </div>
               </dl>
@@ -525,13 +525,13 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <p className="flex items-center gap-2 text-xs font-black text-info"><ShieldCheck className="h-4 w-4" />Xác nhận Google Authenticator cho {authenticatorSetup.fullName}</p>
-              <p className="mt-1 text-[0.75rem] font-semibold text-info">Quét secret, nhập mã 6 chữ số đang hiển thị để hoàn tất. Secret chỉ hiển thị một lần.</p>
+              <p className="mt-1 text-xs font-semibold text-info">Quét secret, nhập mã 6 chữ số đang hiển thị để hoàn tất. Secret chỉ hiển thị một lần.</p>
               <dl className="mt-3 grid gap-2 sm:grid-cols-2">
-                <div className="rounded-lg border border-info-border bg-white p-2.5"><dt className="text-[0.75rem] font-bold text-slate-500">Secret</dt><dd className="mt-1 select-all break-all font-mono text-sm font-bold text-slate-900">{authenticatorSetup.secret}</dd></div>
-                <div className="rounded-lg border border-info-border bg-white p-2.5"><dt className="text-[0.75rem] font-bold text-slate-500">otpauth URI</dt><dd className="mt-1 select-all break-all font-mono text-[0.75rem] font-semibold text-slate-900">{authenticatorSetup.otpauthUri}</dd></div>
+                <div className="rounded-lg border border-info-border bg-white p-2.5"><dt className="text-xs font-bold text-slate-500">Secret</dt><dd className="mt-1 select-all break-all font-mono text-sm font-bold text-slate-900">{authenticatorSetup.secret}</dd></div>
+                <div className="rounded-lg border border-info-border bg-white p-2.5"><dt className="text-xs font-bold text-slate-500">otpauth URI</dt><dd className="mt-1 select-all break-all font-mono text-xs font-semibold text-slate-900">{authenticatorSetup.otpauthUri}</dd></div>
               </dl>
               <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
-                <label className="grid gap-1 text-[0.75rem] font-bold text-slate-600">Mã 6 chữ số
+                <label className="grid gap-1 text-xs font-bold text-slate-600">Mã 6 chữ số
                   <input value={authenticatorSetup.code} onChange={event => setAuthenticatorSetup(previous => previous ? { ...previous, code: event.target.value.replace(/\D/g, '').slice(0, 6) } : previous)} inputMode="numeric" autoComplete="one-time-code" className="w-40 rounded-lg border border-info-border bg-white px-3 py-2 font-mono text-sm font-bold tracking-[0.2em] text-slate-900" />
                 </label>
                 <button type="button" onClick={handleAuthenticatorConfirmation} disabled={authenticatorSetup.code.length !== 6 || updatingAuthenticatorId === authenticatorSetup.userId} className="rounded-lg bg-info px-3 py-2 text-xs font-bold text-white disabled:cursor-not-allowed disabled:opacity-50">Xác nhận thiết bị</button>
@@ -545,7 +545,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
       <header className="rounded-2xl border border-rule bg-white p-4 shadow-panel sm:p-5">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
           <div>
-            <p className="text-[0.75rem] font-bold text-brand-600">Người dùng</p>
+            <p className="text-xs font-bold text-brand-600">Người dùng</p>
             <h3 className="mt-1 text-lg font-bold text-slate-950">Quản lý người dùng</h3>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -557,9 +557,9 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
         </div>
 
         <div className="mt-5 grid gap-3 sm:grid-cols-3">
-          <div className="rounded-xl bg-slate-50 p-3"><div className="text-[0.75rem] font-bold text-slate-400">Người dùng</div><div className="mt-1 text-xl font-black text-slate-900">{users.length}</div></div>
-          <div className="rounded-xl bg-brand-50 p-3"><div className="text-[0.75rem] font-bold text-brand-700">Nhóm nội bộ</div><div className="mt-1 text-xl font-black text-brand-600">{internalTeams.length}</div></div>
-          <div className="rounded-xl bg-info-surface p-3"><div className="text-[0.75rem] font-bold text-info">Cụm / chi nhánh</div><div className="mt-1 text-xl font-black text-info">{clusters.length} / {branches.length}</div></div>
+          <div className="rounded-xl bg-slate-50 p-3"><div className="text-xs font-bold text-slate-400">Người dùng</div><div className="mt-1 text-xl font-black text-slate-900">{users.length}</div></div>
+          <div className="rounded-xl bg-brand-50 p-3"><div className="text-xs font-bold text-brand-700">Nhóm nội bộ</div><div className="mt-1 text-xl font-black text-brand-600">{internalTeams.length}</div></div>
+          <div className="rounded-xl bg-info-surface p-3"><div className="text-xs font-bold text-info">Cụm / chi nhánh</div><div className="mt-1 text-xl font-black text-info">{clusters.length} / {branches.length}</div></div>
         </div>
       </header>
 
@@ -604,7 +604,7 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
         </div>
 
         <div className="flex flex-wrap items-center gap-2 border-t border-rule pt-3">
-          <span className="inline-flex items-center gap-1.5 text-[0.75rem] font-bold text-slate-500"><Filter className="h-3.5 w-3.5" />Lọc</span>
+          <span className="inline-flex items-center gap-1.5 text-xs font-bold text-slate-500"><Filter className="h-3.5 w-3.5" />Lọc</span>
           <select aria-label="Lọc theo khối" value={portalFilter} onChange={event => setPortalFilter(event.target.value as typeof portalFilter)} className={filterSelectClass}>
             <option value="ALL">Mọi khối</option>
             <option value="INTERNAL">Khối nội bộ</option>
@@ -623,8 +623,8 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
             <option value="ACTIVE">Hoạt động</option>
             <option value="INACTIVE">Ngừng hoạt động</option>
           </select>
-          {(activeFilterCount > 0 || searchTerm.trim()) && <button type="button" onClick={clearFilters} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-rule px-2.5 text-[0.75rem] font-bold text-slate-600 transition-colors hover:border-risk-border hover:text-risk"><X className="h-3.5 w-3.5" />Bỏ lọc</button>}
-          <span data-numeric className="ml-auto text-[0.75rem] font-semibold text-slate-500">{filteredUsers.length}/{users.length} người dùng</span>
+          {(activeFilterCount > 0 || searchTerm.trim()) && <button type="button" onClick={clearFilters} className="inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-rule px-2.5 text-xs font-bold text-slate-600 transition-colors hover:border-risk-border hover:text-risk"><X className="h-3.5 w-3.5" />Bỏ lọc</button>}
+          <span data-numeric className="ml-auto text-xs font-semibold text-slate-500">{filteredUsers.length}/{users.length} người dùng</span>
         </div>
       </div>
 
@@ -649,17 +649,17 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
               <article key={team.id} className="overflow-hidden rounded-2xl border border-rule bg-slate-50 shadow-panel">
                 <div className="border-b border-rule bg-white p-4">
                   <div className="flex items-start justify-between gap-3">
-                    <div><div className="text-[0.75rem] font-bold text-brand-600">Nhóm nội bộ</div><h4 className="mt-1 text-base font-bold text-slate-900">{team.name}</h4><p className="mt-1 text-[0.75rem] text-slate-500">{team.code} · {teamUsers.length} người dùng</p></div>
+                    <div><div className="text-xs font-bold text-brand-600">Nhóm nội bộ</div><h4 className="mt-1 text-base font-bold text-slate-900">{team.name}</h4><p className="mt-1 text-xs text-slate-500">{team.code} · {teamUsers.length} người dùng</p></div>
                     <Users className="h-5 w-5 text-brand-600" />
                   </div>
                 </div>
                 <div className="space-y-3 p-4">
                   <div>
-                    <div className="mb-2 flex items-center gap-2 text-[0.75rem] font-bold text-amber-700"><UserCheck className="h-3.5 w-3.5" /> Phê duyệt HT</div>
+                    <div className="mb-2 flex items-center gap-2 text-xs font-bold text-amber-700"><UserCheck className="h-3.5 w-3.5" /> Phê duyệt HT</div>
                     {lead ? <UserCard user={lead} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === lead.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} /> : <div className="rounded-xl border border-dashed border-amber-300 bg-amber-50 p-3 text-xs font-semibold text-amber-800">Chưa phân công phê duyệt HT.</div>}
                   </div>
                   <div>
-                    <div className="mb-2 text-[0.75rem] font-bold text-slate-500">Thành viên nhóm</div>
+                    <div className="mb-2 text-xs font-bold text-slate-500">Thành viên nhóm</div>
                     <div className="grid gap-2 sm:grid-cols-2">{members.map(member => <UserCard key={member.id} user={member} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === member.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
                     {!members.length && <div className="rounded-xl border border-dashed border-slate-300 p-3 text-xs text-slate-500">Chưa có thành viên phù hợp bộ lọc.</div>}
                   </div>
@@ -685,8 +685,8 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
             return (
               <article key={cluster.id} className="rounded-2xl border border-rule bg-white p-4 shadow-panel sm:p-5">
                 <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                  <div className="flex items-center gap-3"><span className="rounded-xl bg-brand-500 p-2 text-white"><MapPinned className="h-4 w-4" /></span><div><div className="text-[0.75rem] font-bold text-slate-400">Cụm địa bàn</div><h4 className="text-base font-bold text-slate-900">{cluster.name}</h4></div></div>
-                  <span className="rounded-full bg-slate-100 px-3 py-1 text-[0.75rem] font-bold text-slate-600">{clusterBranches.length} chi nhánh · {clusterUserCount} người dùng</span>
+                  <div className="flex items-center gap-3"><span className="rounded-xl bg-brand-500 p-2 text-white"><MapPinned className="h-4 w-4" /></span><div><div className="text-xs font-bold text-slate-400">Cụm địa bàn</div><h4 className="text-base font-bold text-slate-900">{cluster.name}</h4></div></div>
+                  <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-bold text-slate-600">{clusterBranches.length} chi nhánh · {clusterUserCount} người dùng</span>
                 </div>
                 <div className="mt-4 grid gap-4 xl:grid-cols-2">
                   {clusterBranches.map(branch => {
@@ -695,10 +695,10 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
                     const officers = branchUsers.filter(user => user.primaryRole !== 'BRANCH_CONTROLLER');
                     return (
                       <section key={branch.id} className="rounded-xl border border-rule bg-slate-50 p-3 sm:p-4">
-                        <div className="flex items-center justify-between gap-2"><div><div className="text-[0.75rem] font-bold text-brand-600">Chi nhánh {branch.code}</div><h5 className="mt-0.5 text-sm font-bold text-slate-900">{branch.name}</h5></div><Building2 className="h-5 w-5 text-brand-600" /></div>
+                        <div className="flex items-center justify-between gap-2"><div><div className="text-xs font-bold text-brand-600">Chi nhánh {branch.code}</div><h5 className="mt-0.5 text-sm font-bold text-slate-900">{branch.name}</h5></div><Building2 className="h-5 w-5 text-brand-600" /></div>
                         <div className="mt-3 space-y-3">
-                          <div><div className="mb-2 text-[0.75rem] font-bold text-amber-700">Kiểm soát chi nhánh</div><div className="mb-2 text-[0.75rem] text-slate-500">Kiểm tra hồ sơ và chuyển phê duyệt HT.</div><div className="grid gap-2">{controllers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>{!controllers.length && <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2 text-[0.75rem] text-amber-800">Chưa có người kiểm soát.</div>}</div>
-                          <div><div className="mb-2 text-[0.75rem] font-bold text-slate-500">Cán bộ theo Phòng / PGD</div><div className="grid gap-2">{officers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>{!officers.length && <div className="rounded-lg border border-dashed border-slate-300 p-2 text-[0.75rem] text-slate-500">Chưa có cán bộ phù hợp bộ lọc.</div>}</div>
+                          <div><div className="mb-2 text-xs font-bold text-amber-700">Kiểm soát chi nhánh</div><div className="mb-2 text-xs text-slate-500">Kiểm tra hồ sơ và chuyển phê duyệt HT.</div><div className="grid gap-2">{controllers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>{!controllers.length && <div className="rounded-lg border border-dashed border-amber-300 bg-amber-50 p-2 text-xs text-amber-800">Chưa có người kiểm soát.</div>}</div>
+                          <div><div className="mb-2 text-xs font-bold text-slate-500">Cán bộ theo Phòng / PGD</div><div className="grid gap-2">{officers.map(user => <UserCard key={user.id} user={user} compact onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>{!officers.length && <div className="rounded-lg border border-dashed border-slate-300 p-2 text-xs text-slate-500">Chưa có cán bộ phù hợp bộ lọc.</div>}</div>
                         </div>
                       </section>
                     );
@@ -710,10 +710,10 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
           {unassignedUsers.length > 0 && (
             <article className="rounded-2xl border border-dashed border-amber-300 bg-amber-50 p-4 shadow-panel sm:p-5">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-amber-200 pb-3">
-                <div><div className="text-[0.75rem] font-bold text-amber-700">Chưa phân công</div><h4 className="mt-1 text-base font-bold text-slate-900">Người dùng chưa có địa bàn</h4></div>
-                <span className="rounded-full bg-white px-3 py-1 text-[0.75rem] font-bold text-amber-800">{unassignedUsers.length} người dùng</span>
+                <div><div className="text-xs font-bold text-amber-700">Chưa phân công</div><h4 className="mt-1 text-base font-bold text-slate-900">Người dùng chưa có địa bàn</h4></div>
+                <span className="rounded-full bg-white px-3 py-1 text-xs font-bold text-amber-800">{unassignedUsers.length} người dùng</span>
               </div>
-              <p className="mt-3 text-[0.75rem] font-semibold text-amber-800">Có thể mở hồ sơ và vào Sửa để phân công Cụm, Chi nhánh, Phòng / PGD sau.</p>
+              <p className="mt-3 text-xs font-semibold text-amber-800">Có thể mở hồ sơ và vào Sửa để phân công Cụm, Chi nhánh, Phòng / PGD sau.</p>
               <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-3">{unassignedUsers.map(user => <UserCard key={user.id} user={user} onAuthenticatorChange={handleAuthenticatorChange} updatingAuthenticator={updatingAuthenticatorId === user.id} onEdit={handleEditUser} onDelete={handleDeleteUser} onHandover={setHandoverUser} onResetPassword={handleResetPassword} onSendResetEmail={handleSendResetEmail} />)}</div>
             </article>
           )}
@@ -732,8 +732,8 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
                 <label className="text-xs font-bold text-slate-700">Họ và tên<input value={fullName} onChange={event => setFullName(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule px-3 text-xs font-medium outline-none focus:border-brand-500" required /></label>
                 <label className="text-xs font-bold text-slate-700">Email doanh nghiệp<input type="email" value={email} onChange={event => setEmail(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule px-3 text-xs font-medium outline-none focus:border-brand-500" required /></label>
               </div>
-              <label className="block text-xs font-bold text-slate-700">Email Google Workspace để cấp quyền tệp đính kèm<input type="email" value={googleWorkspaceEmail} onChange={event => setGoogleWorkspaceEmail(event.target.value)} placeholder="Để trống nếu trùng email doanh nghiệp" className="mt-1.5 min-h-11 w-full rounded-xl border border-rule px-3 text-xs font-medium outline-none focus:border-brand-500" /><span className="mt-1 block text-[0.75rem] font-medium text-slate-500">Dùng để cấp quyền Google Drive; không thay đổi email hoặc mật khẩu đăng nhập.</span></label>
-              <label className="block text-xs font-bold text-slate-700">Mật khẩu ban đầu (tùy chọn)<input type="password" value={initialPassword} onChange={event => setInitialPassword(event.target.value)} minLength={12} placeholder="Bỏ trống để sinh mật khẩu tạm" className="mt-1.5 min-h-11 w-full rounded-xl border border-rule px-3 text-xs font-medium outline-none focus:border-brand-500" /><span className="mt-1 block text-[0.75rem] font-medium text-slate-500">Nếu bỏ trống, hệ thống sinh mật khẩu tạm và chỉ hiển thị một lần sau khi tạo.</span></label>
+              <label className="block text-xs font-bold text-slate-700">Email Google Workspace để cấp quyền tệp đính kèm<input type="email" value={googleWorkspaceEmail} onChange={event => setGoogleWorkspaceEmail(event.target.value)} placeholder="Để trống nếu trùng email doanh nghiệp" className="mt-1.5 min-h-11 w-full rounded-xl border border-rule px-3 text-xs font-medium outline-none focus:border-brand-500" /><span className="mt-1 block text-xs font-medium text-slate-500">Dùng để cấp quyền Google Drive; không thay đổi email hoặc mật khẩu đăng nhập.</span></label>
+              <label className="block text-xs font-bold text-slate-700">Mật khẩu ban đầu (tùy chọn)<input type="password" value={initialPassword} onChange={event => setInitialPassword(event.target.value)} minLength={12} placeholder="Bỏ trống để sinh mật khẩu tạm" className="mt-1.5 min-h-11 w-full rounded-xl border border-rule px-3 text-xs font-medium outline-none focus:border-brand-500" /><span className="mt-1 block text-xs font-medium text-slate-500">Nếu bỏ trống, hệ thống sinh mật khẩu tạm và chỉ hiển thị một lần sau khi tạo.</span></label>
               <div className="grid gap-4 sm:grid-cols-2">
                 <label className="text-xs font-bold text-slate-700">Khối người dùng<select value={portal} onChange={event => handlePortalChange(event.target.value as 'INTERNAL' | 'BRANCH')} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs"><option value="INTERNAL">Khối nội bộ</option><option value="BRANCH">Mạng lưới chi nhánh</option></select></label>
                 <label className="text-xs font-bold text-slate-700">Vai trò<select value={role} onChange={event => setRole(event.target.value as UserRole)} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs">
@@ -747,8 +747,8 @@ export const UserManager: React.FC<Props> = ({ users, orgUnits, loading = false,
 
               {portal === 'BRANCH' && (
                 <div className="space-y-4 rounded-xl border border-info-border bg-info-surface/60 p-4">
-                  <p className="text-[0.75rem] font-semibold text-info">Cụm dùng để lọc danh sách; quyền được cấp theo chi nhánh.</p>
-                  <p className="text-[0.75rem] font-semibold text-info">Phân công là tùy chọn; có thể tạo tài khoản trước rồi vào Sửa để phân luồng sau.</p>
+                  <p className="text-xs font-semibold text-info">Cụm dùng để lọc danh sách; quyền được cấp theo chi nhánh.</p>
+                  <p className="text-xs font-semibold text-info">Phân công là tùy chọn; có thể tạo tài khoản trước rồi vào Sửa để phân luồng sau.</p>
                   <label className="block text-xs font-bold text-slate-700">Cụm địa bàn<select value={selectedCluster} onChange={event => { setSelectedCluster(event.target.value); setSelectedBranch(''); setSelectedDepartment(''); }} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs"><option value="">-- Chưa phân công --</option>{clusters.map(cluster => <option key={cluster.id} value={cluster.id}>{cluster.name}</option>)}</select></label>
                   <label className="block text-xs font-bold text-slate-700">Chi nhánh<select value={selectedBranch} onChange={event => { setSelectedBranch(event.target.value); setSelectedDepartment(''); }} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs" disabled={!selectedCluster}><option value="">-- Chưa phân công --</option>{branchesInCluster.map(branch => <option key={branch.id} value={branch.code}>{branch.code} · {branch.name}</option>)}</select></label>
                   <label className="block text-xs font-bold text-slate-700">Phòng / PGD<select value={selectedDepartment} onChange={event => setSelectedDepartment(event.target.value)} className="mt-1.5 min-h-11 w-full rounded-xl border border-rule bg-white px-3 text-xs" disabled={!selectedBranch}><option value="">-- Chưa phân công --</option>{departments.map(department => <option key={department.id} value={department.name}>{department.name}</option>)}</select></label>

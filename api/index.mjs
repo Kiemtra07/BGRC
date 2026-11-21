@@ -590,15 +590,21 @@ var init_evidence = __esm({
 
 // shared/contracts/workflow.ts
 import { z as z7 } from "zod";
-var nextApproverUserId, SubmitBranchCommandSchema, BranchControlApproveCommandSchema, BranchControlRejectCommandSchema, BranchLeaderApproveCommandSchema, BranchLeaderRejectCommandSchema, SetFindingSpecialCaseSchema, ReassignApprovalRouteSchema, InternalWaiveCommandSchema, InternalRejectCommandSchema;
+var nextApproverUserId, ApproverSelectionsSchema, SubmitBranchCommandSchema, BranchControlApproveCommandSchema, BranchControlRejectCommandSchema, BranchLeaderApproveCommandSchema, BranchLeaderRejectCommandSchema, SetFindingSpecialCaseSchema, ReassignApprovalRouteSchema, InternalWaiveCommandSchema, InternalRejectCommandSchema;
 var init_workflow = __esm({
   "shared/contracts/workflow.ts"() {
     "use strict";
     nextApproverUserId = z7.string().trim().min(1).max(120).optional();
+    ApproverSelectionsSchema = z7.object({
+      BRANCH_CONTROLLER: nextApproverUserId,
+      BRANCH_LEADER: nextApproverUserId,
+      INTERNAL_APPROVER: nextApproverUserId
+    });
     SubmitBranchCommandSchema = z7.object({
       expectedVersion: z7.number().int().min(1),
       resolutionNotes: z7.string().min(5, "Gi\u1EA3i tr\xECnh kh\u1EAFc ph\u1EE5c b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 5 k\xFD t\u1EF1"),
-      nextApproverUserId
+      nextApproverUserId,
+      approverSelections: ApproverSelectionsSchema.optional()
     });
     BranchControlApproveCommandSchema = z7.object({
       expectedVersion: z7.number().int().min(1),
@@ -1990,6 +1996,21 @@ function pinStageApprover(route, stage, userId, assignedAt) {
   };
   return { ...base, [fieldByStage[stage]]: userId };
 }
+function routeStagesFor(workflowType, isSpecialCase) {
+  if (workflowType === "ONE_TIER") return ["INTERNAL_APPROVER"];
+  return workflowType === "THREE_TIER" || isSpecialCase ? ["BRANCH_CONTROLLER", "BRANCH_LEADER", "INTERNAL_APPROVER"] : ["BRANCH_CONTROLLER", "INTERNAL_APPROVER"];
+}
+function strictestWorkflowType(left, right) {
+  return workflowTypeRank[right] > workflowTypeRank[left] ? right : left;
+}
+function submitWorkflowType(configured, selections) {
+  const requested = selections.BRANCH_LEADER ? "THREE_TIER" : selections.BRANCH_CONTROLLER ? "TWO_TIER" : "ONE_TIER";
+  return strictestWorkflowType(configured, requested);
+}
+function addableStagesFor(configured, isSpecialCase) {
+  if (configured === "ONE_TIER") return ["BRANCH_CONTROLLER", "BRANCH_LEADER"];
+  return configured === "TWO_TIER" && !isSpecialCase ? ["BRANCH_LEADER"] : [];
+}
 function resolveApprovalRoute(finding, workflowType, actor, users, assignedAt, options = {}) {
   const candidates = approvalCandidatesForFinding(finding, users);
   const requiresBranchLeaderApproval = workflowType === "THREE_TIER" || Boolean(finding.isSpecialCase);
@@ -2000,13 +2021,13 @@ function resolveApprovalRoute(finding, workflowType, actor, users, assignedAt, o
   ].filter((id) => Boolean(id)))];
   for (const branchControllerUserId of controllerChoices) {
     const leaderPool = candidates.branchLeaders.filter((candidate) => candidate.id !== branchControllerUserId);
-    const branchLeaderUserId = requiresBranchLeaderApproval ? stillEligible(leaderPool, options.previous?.branchLeaderUserId) ?? selectIndependentApprover(actor.id, leaderPool) : void 0;
+    const branchLeaderUserId = requiresBranchLeaderApproval ? options.leaderUserId ?? stillEligible(leaderPool, options.previous?.branchLeaderUserId) ?? selectIndependentApprover(actor.id, leaderPool) : void 0;
     if (requiresBranchLeaderApproval && !branchLeaderUserId) continue;
     const internalPool = candidates.internalApprovers.filter((candidate) => candidate.id !== branchControllerUserId && candidate.id !== branchLeaderUserId);
     return {
       branchControllerUserId,
       branchLeaderUserId,
-      internalApproverUserId: stillEligible(internalPool, options.previous?.internalApproverUserId),
+      internalApproverUserId: options.internalApproverUserId ?? stillEligible(internalPool, options.previous?.internalApproverUserId),
       requiresBranchLeaderApproval,
       assignedByUserId: actor.id,
       assignedAt,
@@ -2035,7 +2056,7 @@ function reassignApprovalStage(route, stage, assignedUserId, record) {
     ]
   };
 }
-var fieldByStage, stageOrder;
+var fieldByStage, stageOrder, workflowTypeRank;
 var init_approval_assignment = __esm({
   "server/src/modules/workflow/approval-assignment.ts"() {
     "use strict";
@@ -2046,6 +2067,7 @@ var init_approval_assignment = __esm({
       INTERNAL_APPROVER: "internalApproverUserId"
     };
     stageOrder = ["BRANCH_CONTROLLER", "BRANCH_LEADER", "INTERNAL_APPROVER"];
+    workflowTypeRank = { ONE_TIER: 1, TWO_TIER: 2, THREE_TIER: 3 };
   }
 });
 
@@ -2263,7 +2285,7 @@ function spreadsheetColumnName(columnCount) {
   }
   return result;
 }
-var DRIVE_SCOPE, DRIVE_API, DRIVE_UPLOAD_API, SHEETS_API, FOLDER_MIME_TYPE, SPREADSHEET_MIME_TYPE, GoogleDriveAdapter, googleDriveService;
+var DRIVE_SCOPE, DRIVE_API, DRIVE_UPLOAD_API, SHEETS_API, FOLDER_MIME_TYPE, SPREADSHEET_MIME_TYPE, QUARANTINE_FOLDER_NAME, GoogleDriveAdapter, googleDriveService;
 var init_google_drive = __esm({
   "server/src/adapters/google-drive.ts"() {
     "use strict";
@@ -2276,6 +2298,7 @@ var init_google_drive = __esm({
     SHEETS_API = "https://sheets.googleapis.com/v4";
     FOLDER_MIME_TYPE = "application/vnd.google-apps.folder";
     SPREADSHEET_MIME_TYPE = "application/vnd.google-apps.spreadsheet";
+    QUARANTINE_FOLDER_NAME = "_quarantine";
     GoogleDriveAdapter = class {
       localFallbackDir;
       storageMode;
@@ -2493,13 +2516,69 @@ var init_google_drive = __esm({
           return true;
         }
         if (this.storageMode !== "local") throw this.invalidModeProblem();
-        const matchingFile = fs.readdirSync(this.localFallbackDir, { recursive: true }).find((file) => path2.basename(file).startsWith(`${driveFileId}_`));
+        const matchingFile = this.findLocalFile(driveFileId);
         if (!matchingFile) return false;
         const target = path2.resolve(this.localFallbackDir, matchingFile);
         if (target !== this.localFallbackDir && !target.startsWith(`${this.localFallbackDir}${path2.sep}`)) {
           throw new HttpProblem(400, "UNSAFE_STORAGE_PATH", "\u0110\u01B0\u1EDDng d\u1EABn l\u01B0u tr\u1EEF kh\xF4ng h\u1EE3p l\u1EC7", "\u0110\u01B0\u1EDDng d\u1EABn t\u1EC7p minh ch\u1EE9ng v\u01B0\u1EE3t ngo\xE0i th\u01B0 m\u1EE5c local cho ph\xE9p.");
         }
         fs.unlinkSync(target);
+        return true;
+      }
+      /**
+       * Đưa tệp của minh chứng đã thu hồi ra khỏi thư mục làm việc: không xóa, vì hồ sơ kiểm toán có thể
+       * cần đối chiếu lại, nhưng không còn nằm ở nơi người khác được chia sẻ hay đọc. Chạy lại an toàn.
+       * Trả `false` khi không tìm thấy tệp.
+       */
+      async quarantineEvidenceFile(driveFileId) {
+        if (!/^[A-Za-z0-9_-]{1,255}$/.test(driveFileId)) {
+          throw new HttpProblem(422, "EVIDENCE_FILE_ID_INVALID", "M\xE3 t\u1EC7p minh ch\u1EE9ng kh\xF4ng h\u1EE3p l\u1EC7", "M\xE3 t\u1EC7p kh\xF4ng \u0111\u01B0\u1EE3c ch\u1EE9a \u0111\u01B0\u1EDDng d\u1EABn ho\u1EB7c k\xFD t\u1EF1 kh\xF4ng h\u1EE3p l\u1EC7.");
+        }
+        if (this.storageMode === "google-drive") return this.quarantineGoogleFile(driveFileId);
+        if (this.storageMode !== "local") throw this.invalidModeProblem();
+        const matchingFile = this.findLocalFile(driveFileId);
+        if (!matchingFile) return false;
+        const source = path2.resolve(this.localFallbackDir, matchingFile);
+        const target = path2.resolve(this.localFallbackDir, QUARANTINE_FOLDER_NAME, matchingFile);
+        for (const candidate of [source, target]) {
+          if (!candidate.startsWith(`${this.localFallbackDir}${path2.sep}`)) {
+            throw new HttpProblem(400, "UNSAFE_STORAGE_PATH", "\u0110\u01B0\u1EDDng d\u1EABn l\u01B0u tr\u1EEF kh\xF4ng h\u1EE3p l\u1EC7", "\u0110\u01B0\u1EDDng d\u1EABn t\u1EC7p minh ch\u1EE9ng v\u01B0\u1EE3t ngo\xE0i th\u01B0 m\u1EE5c local cho ph\xE9p.");
+          }
+        }
+        fs.mkdirSync(path2.dirname(target), { recursive: true });
+        fs.renameSync(source, target);
+        return true;
+      }
+      findLocalFile(driveFileId) {
+        return fs.readdirSync(this.localFallbackDir, { recursive: true }).find((file) => path2.basename(file).startsWith(`${driveFileId}_`) && file.split(path2.sep)[0] !== QUARANTINE_FOLDER_NAME);
+      }
+      async quarantineGoogleFile(driveFileId) {
+        this.requireGoogleMode();
+        const fileUrl = `${DRIVE_API}/files/${encodeURIComponent(driveFileId)}`;
+        let lookup;
+        try {
+          lookup = await this.fetchImpl(`${fileUrl}?fields=id,parents&supportsAllDrives=true`, { headers: { Authorization: `Bearer ${await this.getAccessToken()}` } });
+        } catch {
+          throw new HttpProblem(503, "GOOGLE_API_UNAVAILABLE", "Google Drive kh\xF4ng kh\u1EA3 d\u1EE5ng", "Kh\xF4ng k\u1EBFt n\u1ED1i \u0111\u01B0\u1EE3c Google Drive \u0111\u1EC3 c\xE1ch ly t\u1EC7p.");
+        }
+        if (lookup.status === 404) return false;
+        if (!lookup.ok) throw new HttpProblem(503, "GOOGLE_API_UNAVAILABLE", "Google Drive kh\xF4ng kh\u1EA3 d\u1EE5ng", `Google Drive tr\u1EA3 HTTP ${lookup.status} khi c\xE1ch ly t\u1EC7p.`);
+        const metadata = await lookup.json();
+        const quarantineFolderId = await this.ensureGoogleFolderPath(QUARANTINE_FOLDER_NAME);
+        const currentParents = metadata.parents ?? [];
+        if (!currentParents.includes(quarantineFolderId)) {
+          const move = new URLSearchParams({ addParents: quarantineFolderId, supportsAllDrives: "true" });
+          if (currentParents.length) move.set("removeParents", currentParents.join(","));
+          await this.driveFetch(`${fileUrl}?${move}`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: "{}" });
+        }
+        const listed = await this.driveFetchJson(
+          `${fileUrl}/permissions?${new URLSearchParams({ fields: "permissions(id,role,permissionDetails(inherited))", supportsAllDrives: "true" })}`
+        );
+        for (const permission of listed.permissions ?? []) {
+          const inheritedOnly = Boolean(permission.permissionDetails?.length) && permission.permissionDetails.every((detail) => detail.inherited);
+          if (permission.role === "owner" || inheritedOnly) continue;
+          await this.driveFetch(`${fileUrl}/permissions/${encodeURIComponent(permission.id)}?supportsAllDrives=true`, { method: "DELETE" });
+        }
         return true;
       }
       async getFileContentStream(driveFileId) {
@@ -2512,7 +2591,7 @@ var init_google_drive = __esm({
         }
         if (this.storageMode !== "local") throw this.invalidModeProblem();
         if (driveFileId === "drive_mock_001" || driveFileId === "drive_mock_002") return { stream: Readable.from(createLocalPreviewPdf()), fileName: `${driveFileId}_local-preview.pdf`, mimeType: "application/pdf" };
-        const matchingFile = fs.readdirSync(this.localFallbackDir, { recursive: true }).find((file) => path2.basename(file).startsWith(`${driveFileId}_`));
+        const matchingFile = this.findLocalFile(driveFileId);
         if (!matchingFile) return null;
         const mimeTypes = { ".pdf": "application/pdf", ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document", ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png" };
         return { stream: fs.createReadStream(path2.join(this.localFallbackDir, matchingFile)), fileName: path2.basename(matchingFile).replace(`${driveFileId}_`, ""), mimeType: mimeTypes[path2.extname(matchingFile).toLowerCase()] ?? "application/octet-stream" };
@@ -4882,15 +4961,20 @@ var init_password = __esm({
 
 // server/src/security/session-store.ts
 import { createHash, randomBytes as randomBytes2 } from "node:crypto";
-var AuthSessionStore;
+function sessionTokenDigest(token) {
+  return createHash("sha256").update(token).digest("hex");
+}
+var PURGE_INTERVAL_MS, AuthSessionStore;
 var init_session_store = __esm({
   "server/src/security/session-store.ts"() {
     "use strict";
+    PURGE_INTERVAL_MS = 6e4;
     AuthSessionStore = class {
       now;
       ttlMs;
       onChange;
       sessionRecords;
+      lastPurgeAtMs = 0;
       constructor(options = {}) {
         this.now = options.now ?? (() => /* @__PURE__ */ new Date());
         this.ttlMs = options.ttlMs ?? 8 * 60 * 60 * 1e3;
@@ -4898,7 +4982,7 @@ var init_session_store = __esm({
         this.onChange = options.onChange;
       }
       digest(token) {
-        return createHash("sha256").update(token).digest("hex");
+        return sessionTokenDigest(token);
       }
       publish() {
         this.onChange?.(this.records());
@@ -4920,11 +5004,13 @@ var init_session_store = __esm({
         return { token, record: structuredClone(record) };
       }
       resolve(token) {
-        this.purgeExpired();
         if (!token) return void 0;
-        const record = this.sessionRecords.find((item) => item.tokenDigest === this.digest(token) && !item.revokedAt);
-        if (!record) return void 0;
-        record.lastSeenAt = this.now().toISOString();
+        const nowMs = this.now().getTime();
+        if (nowMs - this.lastPurgeAtMs >= PURGE_INTERVAL_MS) this.purgeExpired();
+        const digest = this.digest(token);
+        const record = this.sessionRecords.find((item) => item.tokenDigest === digest && !item.revokedAt);
+        if (!record || Date.parse(record.expiresAt) <= nowMs) return void 0;
+        record.lastSeenAt = new Date(nowMs).toISOString();
         return structuredClone(record);
       }
       revoke(token) {
@@ -4961,6 +5047,7 @@ var init_session_store = __esm({
       }
       purgeExpired() {
         const nowMs = this.now().getTime();
+        this.lastPurgeAtMs = nowMs;
         const before = this.sessionRecords.length;
         this.sessionRecords = this.sessionRecords.filter((item) => !item.revokedAt && Date.parse(item.expiresAt) > nowMs);
         if (this.sessionRecords.length !== before) this.publish();
@@ -4973,8 +5060,199 @@ var init_session_store = __esm({
   }
 });
 
+// server/src/repositories/auth-sessions.ts
+function toIso2(value) {
+  if (value instanceof Date) return value.toISOString();
+  if (typeof value !== "string") return void 0;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : void 0;
+}
+function toRecord(row) {
+  return {
+    id: String(row.session_id),
+    userId: String(row.user_id),
+    tokenDigest: String(row.token_digest),
+    createdAt: toIso2(row.created_at) ?? (/* @__PURE__ */ new Date(0)).toISOString(),
+    lastSeenAt: toIso2(row.last_seen_at) ?? (/* @__PURE__ */ new Date(0)).toISOString(),
+    expiresAt: toIso2(row.expires_at) ?? (/* @__PURE__ */ new Date(0)).toISOString(),
+    ...toIso2(row.step_up_at) ? { stepUpAt: toIso2(row.step_up_at) } : {},
+    ...toIso2(row.revoked_at) ? { revokedAt: toIso2(row.revoked_at) } : {}
+  };
+}
+var PostgresAuthSessions;
+var init_auth_sessions = __esm({
+  "server/src/repositories/auth-sessions.ts"() {
+    "use strict";
+    init_postgres_transaction();
+    PostgresAuthSessions = class {
+      constructor(pool2) {
+        this.pool = pool2;
+      }
+      async insert(record) {
+        await withBackendTransaction(this.pool, async (client) => {
+          await client.query(
+            `INSERT INTO auth_sessions(session_id, user_id, token_digest, created_at, last_seen_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, $6)`,
+            [record.id, record.userId, record.tokenDigest, record.createdAt, record.lastSeenAt, record.expiresAt]
+          );
+        });
+      }
+      /** Phiên còn hiệu lực theo digest, hoặc `undefined`. Việc kiểm hạn do người gọi quyết định. */
+      async findActiveByDigest(tokenDigest) {
+        return withBackendTransaction(this.pool, async (client) => {
+          const result = await client.query(
+            `SELECT session_id, user_id, token_digest, created_at, last_seen_at, expires_at, step_up_at, revoked_at
+           FROM auth_sessions
+          WHERE token_digest = $1 AND revoked_at IS NULL`,
+            [tokenDigest]
+          );
+          return result.rows[0] ? toRecord(result.rows[0]) : void 0;
+        });
+      }
+      async touch(sessionId, seenAt) {
+        await withBackendTransaction(this.pool, async (client) => {
+          await client.query("UPDATE auth_sessions SET last_seen_at = $2 WHERE session_id = $1", [sessionId, seenAt]);
+        });
+      }
+      async markStepUp(tokenDigest, at) {
+        return withBackendTransaction(this.pool, async (client) => {
+          const result = await client.query(
+            "UPDATE auth_sessions SET step_up_at = $2 WHERE token_digest = $1 AND revoked_at IS NULL",
+            [tokenDigest, at]
+          );
+          return (result.rowCount ?? 0) > 0;
+        });
+      }
+      async revokeByDigest(tokenDigest, at) {
+        return withBackendTransaction(this.pool, async (client) => {
+          const result = await client.query(
+            "UPDATE auth_sessions SET revoked_at = $2 WHERE token_digest = $1 AND revoked_at IS NULL",
+            [tokenDigest, at]
+          );
+          return (result.rowCount ?? 0) > 0;
+        });
+      }
+      async revokeById(sessionId, at) {
+        await withBackendTransaction(this.pool, async (client) => {
+          await client.query("UPDATE auth_sessions SET revoked_at = $2 WHERE session_id = $1", [sessionId, at]);
+        });
+      }
+      async revokeAllForUser(userId, at) {
+        return withBackendTransaction(this.pool, async (client) => {
+          const result = await client.query(
+            "UPDATE auth_sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL",
+            [userId, at]
+          );
+          return result.rowCount ?? 0;
+        });
+      }
+      /** Xóa phiên đã hết hạn hoặc đã thu hồi trước mốc `before` để bảng không phình. */
+      async purge(before) {
+        await withBackendTransaction(this.pool, async (client) => {
+          await client.query("DELETE FROM auth_sessions WHERE expires_at < $1 OR revoked_at < $1", [before]);
+        });
+      }
+    };
+  }
+});
+
+// server/src/security/session-backend.ts
+import { randomBytes as randomBytes3 } from "node:crypto";
+var SnapshotSessionBackend, DAY_MS2, TableSessionBackend;
+var init_session_backend = __esm({
+  "server/src/security/session-backend.ts"() {
+    "use strict";
+    init_session_store();
+    SnapshotSessionBackend = class {
+      constructor(store, onChange = () => void 0) {
+        this.store = store;
+        this.onChange = onChange;
+      }
+      async create(userId) {
+        const created = this.store().create(userId);
+        this.onChange(this.store().records());
+        return created;
+      }
+      async resolve(token) {
+        return this.store().resolve(token);
+      }
+      async revoke(token) {
+        const revoked = this.store().revoke(token);
+        this.onChange(this.store().records());
+        return revoked;
+      }
+      async markStepUp(token) {
+        const marked = this.store().markStepUp(token);
+        this.onChange(this.store().records());
+        return marked;
+      }
+      async revokeAllForUser(userId) {
+        const revoked = this.store().revokeAllForUser(userId);
+        this.onChange(this.store().records());
+        return revoked;
+      }
+    };
+    DAY_MS2 = 24 * 60 * 60 * 1e3;
+    TableSessionBackend = class {
+      constructor(sessions, options = {}) {
+        this.sessions = sessions;
+        this.now = options.now ?? (() => /* @__PURE__ */ new Date());
+        this.ttlMs = options.ttlMs ?? 8 * 60 * 60 * 1e3;
+        this.idleMs = options.idleMs ?? 0;
+        this.touchAfterMs = options.touchAfterMs ?? 2 * 60 * 1e3;
+      }
+      now;
+      ttlMs;
+      idleMs;
+      touchAfterMs;
+      async create(userId) {
+        const createdAt = this.now();
+        await this.sessions.purge(new Date(createdAt.getTime() - DAY_MS2).toISOString());
+        const token = randomBytes3(32).toString("hex");
+        const record = {
+          id: `session-${randomBytes3(16).toString("hex")}`,
+          userId,
+          tokenDigest: sessionTokenDigest(token),
+          createdAt: createdAt.toISOString(),
+          lastSeenAt: createdAt.toISOString(),
+          expiresAt: new Date(createdAt.getTime() + this.ttlMs).toISOString()
+        };
+        await this.sessions.insert(record);
+        return { token, record };
+      }
+      async resolve(token) {
+        if (!token) return void 0;
+        const record = await this.sessions.findActiveByDigest(sessionTokenDigest(token));
+        if (!record) return void 0;
+        const nowMs = this.now().getTime();
+        if (Date.parse(record.expiresAt) <= nowMs) return void 0;
+        const idleFor = nowMs - Date.parse(record.lastSeenAt);
+        if (this.idleMs > 0 && idleFor > this.idleMs) {
+          await this.sessions.revokeById(record.id, new Date(nowMs).toISOString());
+          return void 0;
+        }
+        if (idleFor > this.touchAfterMs) {
+          const seenAt = new Date(nowMs).toISOString();
+          await this.sessions.touch(record.id, seenAt);
+          return { ...record, lastSeenAt: seenAt };
+        }
+        return record;
+      }
+      revoke(token) {
+        return token ? this.sessions.revokeByDigest(sessionTokenDigest(token), this.now().toISOString()) : Promise.resolve(false);
+      }
+      markStepUp(token) {
+        return token ? this.sessions.markStepUp(sessionTokenDigest(token), this.now().toISOString()) : Promise.resolve(false);
+      }
+      revokeAllForUser(userId) {
+        return this.sessions.revokeAllForUser(userId, this.now().toISOString());
+      }
+    };
+  }
+});
+
 // server/src/security/totp.ts
-import { createCipheriv, createDecipheriv, createHmac, randomBytes as randomBytes3, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
+import { createCipheriv, createDecipheriv, createHmac, randomBytes as randomBytes4, timingSafeEqual as timingSafeEqual2 } from "node:crypto";
 function decodeBase32(value) {
   const normalized = value.replace(/[=\s-]/g, "").toUpperCase();
   if (!normalized || !/^[A-Z2-7]+$/.test(normalized)) throw new Error("Invalid TOTP secret.");
@@ -5013,7 +5291,7 @@ function counterBuffer(counter) {
   return result;
 }
 function generateTotpSecret() {
-  return encodeBase32(randomBytes3(20));
+  return encodeBase32(randomBytes4(20));
 }
 function generateTotpCode(secret, timestampMs = Date.now(), digits = TOTP_DIGITS) {
   if (![6, 8].includes(digits)) throw new Error("TOTP digits must be 6 or 8.");
@@ -5054,7 +5332,7 @@ function encryptionKey(value) {
 }
 function encryptTotpSecret(secret, key) {
   decodeBase32(secret);
-  const iv = randomBytes3(12);
+  const iv = randomBytes4(12);
   const cipher = createCipheriv("aes-256-gcm", encryptionKey(key), iv);
   const encrypted = Buffer.concat([cipher.update(secret), cipher.final()]);
   return ["v1", iv, cipher.getAuthTag(), encrypted].map((part) => part.toString("base64url")).join(".");
@@ -5952,6 +6230,14 @@ function percentile(values, percentileValue) {
   const ordered = [...values].sort((left, right) => left - right);
   return ordered[Math.min(ordered.length - 1, Math.ceil(ordered.length * percentileValue) - 1)];
 }
+function resolveRequestSession(request) {
+  let pending = requestSessions.get(request);
+  if (!pending) {
+    pending = sessionBackend.resolve(cookieValue(request, "audit_bgs_session") ?? "");
+    requestSessions.set(request, pending);
+  }
+  return pending;
+}
 function cookieValue(request, name) {
   const cookieHeader = request.headers.cookie;
   if (!cookieHeader) return void 0;
@@ -6023,9 +6309,8 @@ function assertOidcStateBound(request, state) {
   }
 }
 async function createAuthenticatedSession(user, reply) {
-  const session = authSessionStore.create(user.id);
-  authSessions = authSessionStore.records();
-  await persistLocalState();
+  const session = await sessionBackend.create(user.id);
+  await persistSessionChange();
   const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
   const csrfToken = csrfCookieValue();
   reply.header("set-cookie", [
@@ -6227,6 +6512,25 @@ function generateTemporaryPassword() {
   const bytes = crypto9.randomBytes(20);
   return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join("");
 }
+async function authSessionsTableExists(poolLike) {
+  const client = await poolLike.connect();
+  try {
+    const result = await client.query("SELECT to_regclass('public.auth_sessions') IS NOT NULL AS present");
+    return result.rows[0]?.present === true;
+  } catch {
+    return false;
+  } finally {
+    client.release();
+  }
+}
+function sessionIdleMs() {
+  const minutes = Number(process.env.SESSION_IDLE_MINUTES ?? "30");
+  return Number.isFinite(minutes) && minutes > 0 ? Math.floor(minutes) * 6e4 : 0;
+}
+async function persistSessionChange() {
+  if (usesSessionTable) await flushSecurityEvents();
+  else await persistLocalState();
+}
 function recordWorkflowEvent(event) {
   workflowEvents.push(event);
   if (workflowEventLedger) pendingWorkflowEvents.push(structuredClone(event));
@@ -6414,7 +6718,7 @@ function restoreDurableLocalState(restored, workflowEventsOverride) {
   findingFollows = restored.findingFollows ?? [];
   workspaceAccepted = restored.workspaceAccepted ?? [];
   workspaceWatchTargets = restored.workspaceWatchTargets ?? [];
-  authSessions = restored.authSessions ?? [];
+  authSessions = usesSessionTable ? [] : restored.authSessions ?? [];
   authenticatorCredentials = restored.authenticatorCredentials ?? [];
   securityEvents = securityEventLedger ? securityEvents : restored.securityEvents ?? [];
   loginAttempts = restored.loginAttempts ?? [];
@@ -6714,10 +7018,9 @@ function getCurrentUser(req) {
   }
   return user;
 }
-function requireRecentStepUp(req) {
+async function requireRecentStepUp(req) {
   if (process.env.NODE_ENV === "test" && process.env.ALLOW_TEST_USER_HEADER !== "false" && typeof req.headers["x-user-id"] === "string") return;
-  const token = cookieValue(req, "audit_bgs_session");
-  const session = authSessionStore.resolve(token ?? "");
+  const session = await resolveRequestSession(req);
   const steppedUpAt = session?.stepUpAt ? Date.parse(session.stepUpAt) : Number.NaN;
   if (!session || !Number.isFinite(steppedUpAt) || Date.now() - steppedUpAt > STEP_UP_TTL_MS) {
     throw new HttpProblem(403, "STEP_UP_REQUIRED", "C\u1EA7n x\xE1c th\u1EF1c l\u1EA1i", "Nh\u1EADp l\u1EA1i m\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i tr\u01B0\u1EDBc khi thay \u0111\u1ED5i c\u1EA5u h\xECnh b\u1EA3o m\u1EADt.");
@@ -7512,8 +7815,8 @@ function buildReadinessPayload(dataStore, evidenceStorage, options = {}) {
     message
   };
 }
-function optionalAdminViewer(request) {
-  const session = authSessionStore.resolve(cookieValue(request, "audit_bgs_session") ?? "");
+async function optionalAdminViewer(request) {
+  const session = await resolveRequestSession(request);
   if (!session) return void 0;
   const user = appUsers.find((item) => item.id === session.userId && item.isActive);
   return user?.roles.includes("ADMIN") ? user : void 0;
@@ -8165,9 +8468,13 @@ async function runStagedImportBackgroundCheckpoint(payload) {
     expectedCheckpointRowNumber: parsed.checkpointRowNumber
   });
 }
-function workflowTypeOf(finding) {
+function configuredWorkflowTypeOf(finding) {
   const pinnedVersion = reportChannelVersions.find((version) => version.id === finding.channelVersionId);
   return pinnedVersion?.snapshot.workflowConfig?.workflowType ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.workflowType ?? "TWO_TIER";
+}
+function workflowTypeOf(finding) {
+  const configured = configuredWorkflowTypeOf(finding);
+  return finding.routeWorkflowType ? strictestWorkflowType(configured, finding.routeWorkflowType) : configured;
 }
 function requireEligibleRecipient(requestedUserId, eligible) {
   if (!requestedUserId) return void 0;
@@ -8190,10 +8497,22 @@ function recipientNote(next) {
   const name = appUsers.find((candidate) => candidate.id === userId)?.fullName;
   return name ? ` Ng\u01B0\u1EDDi nh\u1EADn: ${name}.` : "";
 }
+function validateApproverSelections(finding, workflowType, actor, selections) {
+  const stages = routeStagesFor(workflowType, Boolean(finding.isSpecialCase));
+  let chosen;
+  const assignedAt = (/* @__PURE__ */ new Date()).toISOString();
+  for (const stage of stages) {
+    const selected = selections[stage];
+    if (!selected) continue;
+    requireEligibleRecipient(selected, eligibleRecipientsForStage(finding, stage, actor.id, chosen, appUsers));
+    chosen = pinStageApprover(chosen, stage, selected, assignedAt);
+  }
+}
 function buildFindingApprovalRoute(finding) {
   const pinnedVersion = reportChannelVersions.find((version) => version.id === finding.channelVersionId);
-  const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.workflowType ?? "TWO_TIER";
-  const configured = pinnedVersion?.snapshot.workflowConfig?.stages ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.stages ?? defaultWorkflowConfig(finding.channelId, workflowType).stages;
+  const configuredType = configuredWorkflowTypeOf(finding);
+  const workflowType = workflowTypeOf(finding);
+  const configured = workflowType === configuredType ? pinnedVersion?.snapshot.workflowConfig?.stages ?? reportChannels.find((channel) => channel.id === finding.channelId)?.workflowConfig?.stages ?? defaultWorkflowConfig(finding.channelId, workflowType).stages : defaultWorkflowConfig(finding.channelId, workflowType).stages;
   const leaderApplies = workflowType === "THREE_TIER" || workflowType === "TWO_TIER" && Boolean(finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase);
   const leaderStage = configured.find((stage) => stage.statusCode === "SUBMITTED_BRANCH_LEADER") ?? defaultWorkflowConfig(finding.channelId, "THREE_TIER").stages.find((stage) => stage.statusCode === "SUBMITTED_BRANCH_LEADER");
   const ordered = configured.filter((stage) => stage.statusCode !== "SUBMITTED_BRANCH_LEADER");
@@ -8334,6 +8653,25 @@ function evidenceOrphanRetentionMs() {
   const configuredHours = Number(process.env.EVIDENCE_ORPHAN_RETENTION_HOURS ?? "24");
   const hours = Number.isFinite(configuredHours) ? Math.min(168, Math.max(1, Math.floor(configuredHours))) : 24;
   return hours * 60 * 60 * 1e3;
+}
+async function quarantineRevokedEvidenceFile(evidence) {
+  try {
+    await googleDriveService.quarantineEvidenceFile(evidence.driveFileId);
+    evidence.storageQuarantinedAt = (/* @__PURE__ */ new Date()).toISOString();
+    return true;
+  } catch (error) {
+    app.log.warn({ err: error, evidenceId: evidence.id }, "Ch\u01B0a c\xE1ch ly \u0111\u01B0\u1EE3c t\u1EC7p c\u1EE7a minh ch\u1EE9ng \u0111\xE3 thu h\u1ED3i; s\u1EBD th\u1EED l\u1EA1i \u1EDF l\u01B0\u1EE3t b\u1EA3o tr\xEC sau.");
+    return false;
+  }
+}
+async function sweepRevokedEvidenceQuarantine() {
+  const pending = evidences.filter((evidence) => evidence.status === "REVOKED" && !evidence.storageQuarantinedAt);
+  let quarantinedCount = 0;
+  for (const evidence of pending) {
+    if (await quarantineRevokedEvidenceFile(evidence)) quarantinedCount += 1;
+  }
+  if (quarantinedCount > 0) await persistLocalState();
+  return { pendingCount: pending.length, quarantinedCount, failedCount: pending.length - quarantinedCount };
 }
 async function cleanupExpiredEvidenceUploads(asOf = /* @__PURE__ */ new Date()) {
   const expired = pendingEvidenceUploads.filter((upload) => {
@@ -8478,7 +8816,7 @@ async function startServer() {
     process.exit(1);
   }
 }
-var app, allowedOrigins, API_CONTENT_SECURITY_POLICY, requestStartedAt, requestMeasurements, REQUEST_MEASUREMENT_LIMIT, lastSuccessfulSlaRunAt, internalSlaPath, internalOutboxPath, isEvidenceScanCallbackPath, publicPaths, requestUsers, idempotencyRequests, authSessionStore, supabaseAuthAdapter, unsafeHttpMethods, CSRF_COOKIE, CSRF_HEADER, CSRF_TOKEN_TTL_SECONDS, STEP_UP_TTL_MS, OIDC_STATE_COOKIE, OIDC_STATE_TTL_SECONDS, orgUnits, appUsers, localCredentialDirectory, seedUserDirectory, auditCampaigns, defaultSlaConfig, wholeNumberAtLeast, reportChannels, findings, workflowEvents, pendingWorkflowEvents, evidences, importBatches, stagingRows, pendingEvidenceUploads, slaExtensions, reportDefinitions, dashboardDefinitions, REPORT_EXPORT_MAX_ROWS, DEFAULT_REPORT_EXPORT_FIELDS, DEFAULT_REPORT_FILTER_FIELDS, DEFAULT_REPORT_METRICS, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows, workspaceAccepted, workspaceWatchTargets, reportChannelVersions, authSessions, authenticatorCredentials, googleDriveOAuthCredential, securityEvents, pendingSecurityEvents, SECURITY_EVENT_RETENTION, loginAttempts, usedTotpCounters, recoveryCodeSets, DEMO_SEED_ENABLED, DEMO_SEED_IDS, credentialDirectory, unknownUserPasswordHash, stateRepository, workflowEventLedger, securityEventLedger, postgresAuthSecurityState, postgresOutbox, findingRecords, findingsReadPath, usesPostgresIdempotency, idempotencyStore, hydratedState, repositoryHydrationBaseline, channelSlaBackfilled, STARTER_FORM_TEMPLATES, durableState, runtimeStateGate, runtimeRequestReleases, LOGIN_FAILURE_LIMIT, LOGIN_FAILURE_WINDOW_MS, LOGIN_LOCKOUT_MS, LOGIN_BURST_LIMIT, LOGIN_BURST_WINDOW_MS, loginBurstWindowStartedAt, loginBurstCount, mfaAttemptKey, reauthAttemptKey, TOTP_REPLAY_RETENTION_STEPS, reportFieldAccessors, workflowStatusLabels, slaStatusLabels, REDACTED_DIAGNOSTIC, catalogManagerRoles, HANDOVER_INELIGIBLE_MESSAGE, handoverStageLabels, PORT;
+var app, allowedOrigins, API_CONTENT_SECURITY_POLICY, requestStartedAt, requestMeasurements, REQUEST_MEASUREMENT_LIMIT, lastSuccessfulSlaRunAt, internalSlaPath, internalOutboxPath, isEvidenceScanCallbackPath, publicPaths, requestUsers, requestSessions, idempotencyRequests, authSessionStore, sessionBackend, supabaseAuthAdapter, unsafeHttpMethods, CSRF_COOKIE, CSRF_HEADER, CSRF_TOKEN_TTL_SECONDS, STEP_UP_TTL_MS, OIDC_STATE_COOKIE, OIDC_STATE_TTL_SECONDS, orgUnits, appUsers, localCredentialDirectory, seedUserDirectory, auditCampaigns, defaultSlaConfig, wholeNumberAtLeast, reportChannels, findings, workflowEvents, pendingWorkflowEvents, evidences, importBatches, stagingRows, pendingEvidenceUploads, slaExtensions, reportDefinitions, dashboardDefinitions, REPORT_EXPORT_MAX_ROWS, DEFAULT_REPORT_EXPORT_FIELDS, DEFAULT_REPORT_FILTER_FIELDS, DEFAULT_REPORT_METRICS, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows, workspaceAccepted, workspaceWatchTargets, reportChannelVersions, authSessions, authenticatorCredentials, googleDriveOAuthCredential, securityEvents, pendingSecurityEvents, SECURITY_EVENT_RETENTION, loginAttempts, usedTotpCounters, recoveryCodeSets, DEMO_SEED_ENABLED, DEMO_SEED_IDS, credentialDirectory, unknownUserPasswordHash, stateRepository, workflowEventLedger, securityEventLedger, postgresAuthSecurityState, postgresAuthSessions, usesSessionTable, postgresOutbox, findingRecords, findingsReadPath, usesPostgresIdempotency, idempotencyStore, hydratedState, repositoryHydrationBaseline, channelSlaBackfilled, STARTER_FORM_TEMPLATES, durableState, runtimeStateGate, runtimeRequestReleases, LOGIN_FAILURE_LIMIT, LOGIN_FAILURE_WINDOW_MS, LOGIN_LOCKOUT_MS, LOGIN_BURST_LIMIT, LOGIN_BURST_WINDOW_MS, loginBurstWindowStartedAt, loginBurstCount, mfaAttemptKey, reauthAttemptKey, TOTP_REPLAY_RETENTION_STEPS, reportFieldAccessors, workflowStatusLabels, slaStatusLabels, REDACTED_DIAGNOSTIC, catalogManagerRoles, HANDOVER_INELIGIBLE_MESSAGE, handoverStageLabels, PORT;
 var init_app = __esm({
   async "server/src/app.ts"() {
     "use strict";
@@ -8512,6 +8850,8 @@ var init_app = __esm({
     init_access_control();
     init_password();
     init_session_store();
+    init_auth_sessions();
+    init_session_backend();
     init_totp();
     init_evidence_content();
     init_google_drive_oauth_state();
@@ -8577,6 +8917,7 @@ var init_app = __esm({
       internalOutboxPath
     ]);
     requestUsers = /* @__PURE__ */ new WeakMap();
+    requestSessions = /* @__PURE__ */ new WeakMap();
     idempotencyRequests = /* @__PURE__ */ new WeakMap();
     supabaseAuthAdapter = process.env.AUTH_MODE === "supabase" && process.env.SUPABASE_URL && (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY) ? createSupabaseAuthAdapter({
       url: process.env.SUPABASE_URL,
@@ -8603,14 +8944,17 @@ var init_app = __esm({
         return;
       }
       const allowTestUserHeader = process.env.NODE_ENV === "test" && process.env.ALLOW_TEST_USER_HEADER !== "false";
-      const user = allowTestUserHeader && request.headers["x-user-id"] ? resolveLocalUser(request.headers["x-user-id"], appUsers) : (() => {
-        const session = authSessionStore.resolve(cookieValue(request, "audit_bgs_session") ?? "");
+      let user;
+      if (allowTestUserHeader && request.headers["x-user-id"]) {
+        user = resolveLocalUser(request.headers["x-user-id"], appUsers);
+      } else {
+        const session = await resolveRequestSession(request);
         const sessionUser = session ? appUsers.find((item) => item.id === session.userId && item.isActive) : void 0;
         if (!sessionUser) {
           throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Vui l\xF2ng \u0111\u0103ng nh\u1EADp \u0111\u1EC3 ti\u1EBFp t\u1EE5c.");
         }
-        return sessionUser;
-      })();
+        user = sessionUser;
+      }
       requestUsers.set(request, user);
     });
     app.setErrorHandler((error, request, reply) => {
@@ -9137,6 +9481,14 @@ var init_app = __esm({
     workflowEventLedger = stateRepository instanceof PostgresStateRepository ? new PostgresWorkflowEventLedger({ pool }) : void 0;
     securityEventLedger = stateRepository instanceof PostgresStateRepository ? new PostgresSecurityEventLedger({ pool }) : void 0;
     postgresAuthSecurityState = stateRepository instanceof PostgresStateRepository ? new PostgresAuthSecurityState(pool) : void 0;
+    postgresAuthSessions = stateRepository instanceof PostgresStateRepository && await authSessionsTableExists(pool) ? new PostgresAuthSessions(pool) : void 0;
+    usesSessionTable = Boolean(postgresAuthSessions);
+    if (stateRepository instanceof PostgresStateRepository && !usesSessionTable) {
+      app.log.warn("Ch\u01B0a c\xF3 b\u1EA3ng auth_sessions (migration 0132): phi\xEAn \u0111\u0103ng nh\u1EADp t\u1EA1m th\u1EDDi n\u1EB1m trong snapshot.");
+    }
+    sessionBackend = postgresAuthSessions ? new TableSessionBackend(postgresAuthSessions, { idleMs: sessionIdleMs() }) : new SnapshotSessionBackend(() => authSessionStore, (records) => {
+      authSessions = records;
+    });
     postgresOutbox = stateRepository instanceof PostgresStateRepository ? new PostgresOutbox(pool) : void 0;
     findingRecords = stateRepository instanceof PostgresStateRepository ? new PostgresFindingRecords({ pool }) : void 0;
     findingsReadPath = process.env.FINDINGS_READ_PATH === "sql" && findingRecords ? "sql" : "memory";
@@ -9265,7 +9617,7 @@ var init_app = __esm({
     findingFollows = hydratedState.findingFollows ?? [];
     workspaceAccepted = hydratedState.workspaceAccepted ?? [];
     workspaceWatchTargets = hydratedState.workspaceWatchTargets ?? [];
-    authSessions = hydratedState.authSessions ?? [];
+    authSessions = usesSessionTable ? [] : hydratedState.authSessions ?? [];
     authenticatorCredentials = hydratedState.authenticatorCredentials ?? [];
     securityEvents = hydratedState.securityEvents ?? [];
     loginAttempts = hydratedState.loginAttempts ?? [];
@@ -9443,7 +9795,7 @@ var init_app = __esm({
       await stateRepository.getStatus(),
       await googleDriveService.getStorageStatus(),
       {
-        includeDiagnostics: Boolean(optionalAdminViewer(req)),
+        includeDiagnostics: Boolean(await optionalAdminViewer(req)),
         authMode: process.env.AUTH_MODE,
         runtimeEnvironment: process.env.NODE_ENV,
         scannerConfigured: evidenceScannerConfigurationStatus(process.env) === "configured"
@@ -9459,12 +9811,14 @@ var init_app = __esm({
           throw new HttpProblem(503, "CRON_DATABASE_UNAVAILABLE", "Database ch\u01B0a s\u1EB5n s\xE0ng", dataStore.warning ?? "Cron kh\xF4ng th\u1EC3 k\u1EBFt n\u1ED1i PostgreSQL.");
         }
         const orphanEvidenceUploads = await cleanupExpiredEvidenceUploads();
+        const revokedEvidenceQuarantine = await sweepRevokedEvidenceQuarantine();
         return {
           success: true,
           maintenance: {
             databaseActivity: true,
             dataStore: { mode: dataStore.mode, durable: dataStore.durable },
-            orphanEvidenceUploads
+            orphanEvidenceUploads,
+            revokedEvidenceQuarantine
           },
           ...await evaluateCurrentSlaState()
         };
@@ -9752,8 +10106,8 @@ var init_app = __esm({
         return reply.code(204).send();
       }
       const token = cookieValue(req, "audit_bgs_session");
-      const endingSession = token ? authSessionStore.resolve(token) : void 0;
-      if (token) authSessionStore.revoke(token);
+      const endingSession = token ? await sessionBackend.resolve(token) : void 0;
+      if (token) await sessionBackend.revoke(token);
       if (endingSession) {
         const owner = appUsers.find((item) => item.id === endingSession.userId);
         recordSecurityEvent({
@@ -9766,7 +10120,6 @@ var init_app = __esm({
           ipAddress: req.ip
         });
       }
-      authSessions = authSessionStore.records();
       await persistLocalState();
       const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
       reply.header("set-cookie", [
@@ -9779,7 +10132,7 @@ var init_app = __esm({
       const user = getCurrentUser(req);
       const body = StepUpSchema.parse(req.body);
       const token = cookieValue(req, "audit_bgs_session");
-      const session = authSessionStore.resolve(token ?? "");
+      const session = await resolveRequestSession(req);
       if (!session || session.userId !== user.id) throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Vui l\xF2ng \u0111\u0103ng nh\u1EADp l\u1EA1i \u0111\u1EC3 x\xE1c th\u1EF1c l\u1EA1i.");
       if (process.env.AUTH_MODE === "supabase") throw new HttpProblem(501, "STEP_UP_NOT_SUPPORTED", "Ch\u01B0a h\u1ED7 tr\u1EE3 x\xE1c th\u1EF1c l\u1EA1i", "C\u1EA5u h\xECnh Supabase c\u1EA7n lu\u1ED3ng x\xE1c th\u1EF1c l\u1EA1i ri\xEAng tr\u01B0\u1EDBc khi cho ph\xE9p thay \u0111\u1ED5i b\u1EA3o m\u1EADt.");
       const attemptKey = reauthAttemptKey(user);
@@ -9799,8 +10152,7 @@ var init_app = __esm({
         }
       }
       await clearLoginFailures(attemptKey);
-      if (!authSessionStore.markStepUp(token ?? "")) throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Phi\xEAn \u0111\u0103ng nh\u1EADp \u0111\xE3 h\u1EBFt h\u1EA1n.");
-      authSessions = authSessionStore.records();
+      if (!await sessionBackend.markStepUp(token ?? "")) throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Phi\xEAn \u0111\u0103ng nh\u1EADp \u0111\xE3 h\u1EBFt h\u1EA1n.");
       recordUserSecurityEvent(req, user, { type: "AUTH_STEP_UP_SUCCEEDED", outcome: "SUCCESS", detail: "X\xE1c th\u1EF1c l\u1EA1i phi\xEAn tr\u01B0\u1EDBc thao t\xE1c nh\u1EA1y c\u1EA3m." });
       await persistLocalState();
       return reply.code(204).send();
@@ -9850,7 +10202,16 @@ var init_app = __esm({
           throw new HttpProblem(422, "PASSWORD_RESET_REDIRECT_INVALID", "\u0110\u1ECBa ch\u1EC9 kh\xF4i ph\u1EE5c kh\xF4ng h\u1EE3p l\u1EC7", "Li\xEAn k\u1EBFt kh\xF4i ph\u1EE5c ph\u1EA3i tr\u1ECF v\u1EC1 trang reset c\u1EE7a \u1EE9ng d\u1EE5ng.");
         }
       }
-      await supabaseAuthAdapter.sendPasswordReset(body.email.toLocaleLowerCase("en-US"), redirectTo);
+      const recipient = body.email.toLocaleLowerCase("en-US");
+      const resetKey = `reset:${recipient}`;
+      const nowMs = Date.now();
+      try {
+        await assertLoginNotLocked(resetKey, nowMs);
+      } catch {
+        return reply.code(204).send();
+      }
+      await recordLoginFailure(resetKey, nowMs);
+      await supabaseAuthAdapter.sendPasswordReset(recipient, redirectTo);
       return reply.code(204).send();
     });
     app.post("/api/v1/auth/password", async (req) => {
@@ -9872,8 +10233,7 @@ var init_app = __esm({
       }
       await clearLoginFailures(attemptKey);
       credential.passwordHash = await hashPassword(body.password);
-      const revokedSessions = authSessionStore.revokeAllForUser(user.id);
-      authSessions = authSessionStore.records();
+      const revokedSessions = await sessionBackend.revokeAllForUser(user.id);
       recordUserSecurityEvent(req, user, { type: "AUTH_PASSWORD_CHANGED", outcome: "SUCCESS", detail: `Ng\u01B0\u1EDDi d\xF9ng t\u1EF1 \u0111\u1ED5i m\u1EADt kh\u1EA9u; thu h\u1ED3i ${revokedSessions} phi\xEAn.` });
       await persistLocalState();
       return { user };
@@ -10165,7 +10525,7 @@ var init_app = __esm({
     });
     app.post("/api/v1/admin/users", async (req) => {
       requireAdmin(getCurrentUser(req));
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const response = await createUserAccount(req, CreateUserSchema.parse(req.body));
       await persistLocalState();
       return response;
@@ -10173,7 +10533,7 @@ var init_app = __esm({
     app.post("/api/v1/admin/users/imports/commit", async (req, reply) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const body = BulkUserImportSchema.parse(req.body);
       const idempotency = await idempotencyContext(req, actor, body);
       if (idempotency.replay) return reply.code(201).send(idempotency.replay);
@@ -10203,7 +10563,7 @@ var init_app = __esm({
     app.patch("/api/v1/admin/users/:id", async (req) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const body = UpdateUserSchema.parse(req.body);
       const user = appUsers.find((item) => item.id === req.params.id);
       if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
@@ -10260,8 +10620,7 @@ var init_app = __esm({
         }
       }
       if (body.isActive === false) {
-        const revokedSessions = authSessionStore.revokeAllForUser(user.id);
-        authSessions = authSessionStore.records();
+        const revokedSessions = await sessionBackend.revokeAllForUser(user.id);
         recordUserSecurityEvent(req, actor, { type: "ADMIN_USER_DISABLED", outcome: "SUCCESS", subject: user.username, detail: `Kh\xF3a t\xE0i kho\u1EA3n ${user.fullName}; thu h\u1ED3i ${revokedSessions} phi\xEAn.` });
       } else {
         recordUserSecurityEvent(req, actor, { type: "ADMIN_USER_UPDATED", outcome: "SUCCESS", subject: user.username, detail: `C\u1EADp nh\u1EADt h\u1ED3 s\u01A1 t\xE0i kho\u1EA3n ${user.fullName}.` });
@@ -10272,7 +10631,7 @@ var init_app = __esm({
     app.delete("/api/v1/admin/users/:id", async (req, reply) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const index = appUsers.findIndex((item) => item.id === req.params.id);
       if (index < 0) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
       const user = appUsers[index];
@@ -10282,8 +10641,7 @@ var init_app = __esm({
       appUsers.splice(index, 1);
       credentialDirectory = credentialDirectory.filter((entry) => entry.userId !== user.id);
       authenticatorCredentials = authenticatorCredentials.filter((entry) => entry.userId !== user.id);
-      authSessionStore.revokeAllForUser(user.id);
-      authSessions = authSessionStore.records();
+      await sessionBackend.revokeAllForUser(user.id);
       recordUserSecurityEvent(req, actor, { type: "ADMIN_USER_DELETED", outcome: "SUCCESS", subject: user.username, detail: `X\xF3a t\xE0i kho\u1EA3n ${user.fullName}.` });
       await persistLocalState();
       return reply.code(204).send();
@@ -10304,7 +10662,7 @@ var init_app = __esm({
     app.post("/api/v1/admin/handovers", async (req) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const dto = ExecuteHandoverSchema.parse(req.body);
       const from = requireHandoverUser(dto.fromUserId, "Ng\u01B0\u1EDDi b\xE0n giao");
       const to = requireHandoverUser(dto.toUserId, "Ng\u01B0\u1EDDi nh\u1EADn");
@@ -10379,7 +10737,7 @@ var init_app = __esm({
     app.put("/api/v1/admin/security-settings", async (req) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const body = SecuritySettingsSchema.parse(req.body);
       const previous = securitySettings.mfaPolicy;
       const configured = new Set(authenticatorCredentials.filter(isAuthenticatorConfirmed).map((item) => item.userId));
@@ -10406,7 +10764,7 @@ var init_app = __esm({
     app.put("/api/v1/admin/users/:id/authenticator", async (req) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const body = UpdateAuthenticatorSchema.parse(req.body);
       const user = appUsers.find((item) => item.id === req.params.id);
       if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
@@ -10431,8 +10789,7 @@ var init_app = __esm({
         usedTotpCounters = usedTotpCounters.filter((record) => record.userId !== user.id);
         recoveryCodeSets = recoveryCodeSets.filter((record) => record.userId !== user.id);
         user.authenticatorConfigured = false;
-        const revokedSessions = authSessionStore.revokeAllForUser(user.id);
-        authSessions = authSessionStore.records();
+        const revokedSessions = await sessionBackend.revokeAllForUser(user.id);
         recordUserSecurityEvent(req, actor, {
           type: "ADMIN_AUTHENTICATOR_TOGGLED",
           outcome: "SUCCESS",
@@ -10455,7 +10812,7 @@ var init_app = __esm({
     app.post("/api/v1/admin/users/:id/authenticator/confirm", async (req) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const body = ConfirmAuthenticatorEnrollmentSchema.parse(req.body);
       const user = appUsers.find((item) => item.id === req.params.id);
       if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
@@ -10484,7 +10841,7 @@ var init_app = __esm({
     app.post("/api/v1/admin/users/:id/authenticator/recovery-codes", async (req) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const user = appUsers.find((item) => item.id === req.params.id);
       if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
       if (!authenticatorCredentials.some((item) => item.userId === user.id && isAuthenticatorConfirmed(item))) {
@@ -10506,7 +10863,7 @@ var init_app = __esm({
     });
     app.post("/api/v1/admin/users/:id/password", async (req) => {
       requireAdmin(getCurrentUser(req));
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const body = ResetUserPasswordSchema.parse(req.body ?? {});
       const user = appUsers.find((item) => item.id === req.params.id);
       if (!user) {
@@ -10523,7 +10880,7 @@ var init_app = __esm({
         if (existing) existing.passwordHash = passwordHash;
         else credentialDirectory.push({ userId: user.id, username: user.username.toLocaleLowerCase("vi-VN"), passwordHash });
       }
-      const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+      const revokedSessions = await sessionBackend.revokeAllForUser(user.id);
       await clearLoginFailures(user.username.toLocaleLowerCase("vi-VN"));
       recordUserSecurityEvent(req, getCurrentUser(req), {
         type: "ADMIN_USER_PASSWORD_RESET",
@@ -10531,14 +10888,13 @@ var init_app = __esm({
         subject: user.username,
         detail: `\u0110\u1EB7t l\u1EA1i m\u1EADt kh\u1EA9u cho ${user.fullName}; thu h\u1ED3i ${revokedSessions} phi\xEAn \u0111ang m\u1EDF.`
       });
-      authSessions = authSessionStore.records();
       await persistLocalState();
       return { user, temporaryPassword };
     });
     app.post("/api/v1/admin/users/:id/password-reset-email", async (req, reply) => {
       const actor = getCurrentUser(req);
       requireAdmin(actor);
-      requireRecentStepUp(req);
+      await requireRecentStepUp(req);
       const user = appUsers.find((item) => item.id === req.params.id);
       if (!user) throw new HttpProblem(404, "USER_NOT_FOUND", "Kh\xF4ng t\xECm th\u1EA5y t\xE0i kho\u1EA3n", "T\xE0i kho\u1EA3n kh\xF4ng t\u1ED3n t\u1EA1i.");
       if (process.env.AUTH_MODE !== "supabase" || !supabaseAuthAdapter) {
@@ -11205,9 +11561,55 @@ var init_app = __esm({
         throw error;
       }
     });
+    app.get("/api/v1/findings/:id/submit-route-options", async (req) => {
+      const user = getCurrentUser(req);
+      const finding = getScopedFindingOrThrow(req.params.id, user);
+      if (!user.roles.includes("BRANCH_INPUT") || finding.workflowStatus !== "PENDING" && finding.workflowStatus !== "REJECTED") {
+        return { steps: [], addableSteps: [], addedStages: [] };
+      }
+      const configuredType = configuredWorkflowTypeOf(finding);
+      const isSpecialCase = Boolean(finding.isSpecialCase);
+      const defaultNames = new Map(defaultWorkflowConfig(finding.channelId, "THREE_TIER").stages.flatMap((step) => {
+        const stage = approvalStageForStatus(step.statusCode);
+        return stage ? [[stage, step.stageName]] : [];
+      }));
+      const stageNames = new Map(buildFindingApprovalRoute(finding).steps.flatMap((step) => {
+        const stage = approvalStageForStatus(step.statusCode);
+        return stage ? [[stage, step.stageName]] : [];
+      }));
+      const previous = finding.approvalRoute;
+      const suggestedSoFar = /* @__PURE__ */ new Set();
+      const describeStage = (stage) => {
+        const eligible = eligibleRecipientsForStage(finding, stage, user.id, void 0, appUsers);
+        const isHeadOffice = stage === "INTERNAL_APPROVER";
+        const pinned = pinnedApproverForStage(previous, stage);
+        const suggested = eligible.find((candidate) => candidate.id === pinned && !suggestedSoFar.has(candidate.id)) ?? (isHeadOffice ? void 0 : eligible.find((candidate) => !suggestedSoFar.has(candidate.id)));
+        if (suggested) suggestedSoFar.add(suggested.id);
+        return {
+          stage,
+          stageName: stageNames.get(stage) ?? defaultNames.get(stage) ?? handoverStageLabels[stage],
+          options: eligible.map((candidate) => ({ id: candidate.id, fullName: candidate.fullName, department: candidate.department })),
+          suggestedUserId: suggested?.id,
+          allowSharedQueue: isHeadOffice
+        };
+      };
+      const baseStages = routeStagesFor(configuredType, isSpecialCase);
+      const steps = baseStages.map(describeStage);
+      const addableSteps = addableStagesFor(configuredType, isSpecialCase).map(describeStage);
+      const addedStages = routeStagesFor(workflowTypeOf(finding), isSpecialCase).filter((stage) => !baseStages.includes(stage));
+      return { steps, addableSteps, addedStages };
+    });
     app.get("/api/v1/findings/:id/next-approvers", async (req) => {
       const user = getCurrentUser(req);
       const finding = getScopedFindingOrThrow(req.params.id, user);
+      const forwardingRoles = {
+        PENDING: "BRANCH_INPUT",
+        REJECTED: "BRANCH_INPUT",
+        SUBMITTED_BRANCH: "BRANCH_CONTROLLER",
+        SUBMITTED_BRANCH_LEADER: "BRANCH_LEADER"
+      };
+      const forwardingRole = forwardingRoles[finding.workflowStatus];
+      if (!forwardingRole || !user.roles.includes(forwardingRole)) return { options: [], allowSharedQueue: false };
       const nextStatus = workflowService.nextStatusAfterForward(finding, workflowTypeOf(finding));
       const stage = nextStatus && approvalStageForStatus(nextStatus);
       if (!stage) return { options: [], allowSharedQueue: false };
@@ -11350,15 +11752,20 @@ var init_app = __esm({
         if (dto.expectedVersion !== finding.version) {
           throw new HttpProblem(409, "VERSION_CONFLICT", "Xung \u0111\u1ED9t phi\xEAn b\u1EA3n", `H\u1ED3 s\u01A1 \u0111\xE3 \u0111\u01B0\u1EE3c c\u1EADp nh\u1EADt b\u1EDFi ng\u01B0\u1EDDi kh\xE1c (version hi\u1EC7n t\u1EA1i: ${finding.version}, expected: ${dto.expectedVersion}).`);
         }
-        const workflowType = workflowTypeOf(finding);
+        const configuredType = configuredWorkflowTypeOf(finding);
+        const selections = dto.approverSelections ?? {};
+        const workflowType = submitWorkflowType(configuredType, selections);
         requireAvailableEvidence(finding);
+        validateApproverSelections(finding, workflowType, user, selections);
         if (workflowType !== "ONE_TIER") {
-          const controllerUserId = requireEligibleRecipient(
+          const controllerUserId = selections.BRANCH_CONTROLLER ?? requireEligibleRecipient(
             dto.nextApproverUserId,
             eligibleRecipientsForStage(finding, "BRANCH_CONTROLLER", user.id, void 0, appUsers)
           );
           const approvalRoute = resolveApprovalRoute(finding, workflowType, user, appUsers, (/* @__PURE__ */ new Date()).toISOString(), {
             controllerUserId,
+            leaderUserId: selections.BRANCH_LEADER,
+            internalApproverUserId: selections.INTERNAL_APPROVER,
             previous: finding.approvalRoute
           });
           if (!approvalRoute) {
@@ -11368,7 +11775,7 @@ var init_app = __esm({
         }
         const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
         if (workflowType === "ONE_TIER") {
-          const headOfficeUserId = requireEligibleRecipient(
+          const headOfficeUserId = selections.INTERNAL_APPROVER ?? requireEligibleRecipient(
             dto.nextApproverUserId,
             eligibleRecipientsForStage(finding, "INTERNAL_APPROVER", user.id, void 0, appUsers)
           );
@@ -11379,6 +11786,7 @@ var init_app = __esm({
             };
           }
         }
+        updated.routeWorkflowType = workflowType !== configuredType ? workflowType : void 0;
         Object.assign(finding, updated);
         recordWorkflowEvent({
           id: `evt-${crypto9.randomUUID()}`,
@@ -11706,6 +12114,7 @@ var init_app = __esm({
       evidence.updatedAt = revokedAt;
       finding.evidenceCount = availableEvidencesForFinding(finding.id).length;
       finding.updatedAt = revokedAt;
+      await quarantineRevokedEvidenceFile(evidence);
       await persistLocalState();
       return reply.code(204).send();
     });
@@ -11934,7 +12343,7 @@ var init_app = __esm({
         outcome: "SUCCESS",
         detail: `Xu\u1EA5t b\xE1o c\xE1o ${request.format.toUpperCase()} g\u1ED3m ${rows.length} d\xF2ng trong ph\u1EA1m vi d\u1EEF li\u1EC7u \u0111\u01B0\u1EE3c c\u1EA5p.`
       });
-      await persistLocalState();
+      await flushSecurityEvents();
       const configuration = normalizedReportCatalogConfiguration();
       const configuredFields = configuration.fields;
       const configuredMetrics = configuration.metrics;

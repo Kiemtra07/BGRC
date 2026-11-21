@@ -148,7 +148,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
               <h4 className="text-xs font-bold text-info">
                 Có {waitingInternalReview} hồ sơ sai sót đã được cụm chi nhánh phê duyệt và chuyển lên chờ Khối Nội bộ đóng lỗi.
               </h4>
-              <p className="text-[0.75rem] text-info mt-0.5">
+              <p className="text-xs text-info mt-0.5">
                 Vui lòng kiểm tra các tệp đính kèm trên Google Drive và thực hiện phê duyệt.
               </p>
             </div>
@@ -230,7 +230,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
               <h3 className="text-sm font-bold text-slate-900">
                  Phân bố sai sót theo nhóm nghiệp vụ (TD01–TD06)
               </h3>
-              <p className="text-[0.75rem] text-slate-500">So sánh số lượng phát sinh và tỷ lệ đã giải quyết</p>
+              <p className="text-xs text-slate-500">So sánh số lượng phát sinh và tỷ lệ đã giải quyết</p>
             </div>
             <BarChart3 className="w-4 h-4 text-slate-400" />
           </div>
@@ -256,7 +256,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
               <h3 className="text-sm font-bold text-slate-900">
                  Tiến độ xử lý theo chi nhánh
               </h3>
-              <p className="text-[0.75rem] text-slate-500">Số lỗi phát sinh và số lỗi đã duyệt bỏ</p>
+              <p className="text-xs text-slate-500">Số lỗi phát sinh và số lỗi đã duyệt bỏ</p>
             </div>
             <Building2 className="w-4 h-4 text-slate-400" />
           </div>
@@ -377,7 +377,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
                       {/* Name & CIF */}
                       <td className="p-3.5">
                         <div className="font-bold text-slate-900">{cust.customerName}</div>
-                        <div className="text-[0.75rem] font-mono font-semibold text-brand-600 mt-0.5">
+                        <div className="text-xs font-mono font-semibold text-brand-600 mt-0.5">
                           CIF: {cust.cif} • {cust.loanGroup}
                         </div>
                       </td>
@@ -385,13 +385,13 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
                       {/* Branch */}
                       <td className="p-3.5 text-slate-700">
                         <div className="font-semibold">{cust.branchName}</div>
-                        <div className="text-[0.75rem] text-slate-500">{cust.department} ({cust.clusterName})</div>
+                        <div className="text-xs text-slate-500">{cust.department} ({cust.clusterName})</div>
                       </td>
 
                       {/* Debt */}
                       <td className="p-3.5 font-bold text-slate-900">
                         {cust.creditBalance.toLocaleString()} Tr.đ
-                        <div className="text-[0.75rem] text-slate-400 font-normal">TSBĐ: {cust.collateralValue.toLocaleString()} Tr</div>
+                        <div className="text-xs text-slate-400 font-normal">TSBĐ: {cust.collateralValue.toLocaleString()} Tr</div>
                       </td>
 
                       {/* Errors Badges */}
@@ -403,7 +403,7 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
                             return (
                               <span
                                 key={err.id}
-                                className={`px-2 py-0.5 rounded-md font-mono text-[0.75rem] font-bold border ${
+                                className={`px-2 py-0.5 rounded-md font-mono text-xs font-bold border ${
                                   isResolved
                                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200 line-through opacity-70'
                                     : isWaiting
@@ -422,27 +422,27 @@ export const InternalDashboard: React.FC<InternalDashboardProps> = ({
                       {/* Drive Files */}
                       <td className="p-3.5">
                         {driveCount > 0 ? (
-                          <span className="inline-flex items-center gap-1 text-[0.75rem] font-semibold text-brand-700 bg-brand-50 px-2 py-0.5 rounded-md border border-brand-200">
+                          <span className="inline-flex items-center gap-1 text-xs font-semibold text-brand-700 bg-brand-50 px-2 py-0.5 rounded-md border border-brand-200">
                             <HardDrive className="w-3.5 h-3.5 text-brand-500" />
                             {driveCount} file trên Drive
                           </span>
                         ) : (
-                          <span className="text-[0.75rem] text-slate-400">Chưa có file</span>
+                          <span className="text-xs text-slate-400">Chưa có file</span>
                         )}
                       </td>
 
                       {/* Status */}
                       <td className="p-3.5">
                         {allResolved ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[0.75rem] font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
                             <CheckCircle2 className="w-3 h-3" /> Đã Bỏ Toàn Bộ Lỗi
                           </span>
                         ) : hasWaitingInternal ? (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[0.75rem] font-bold bg-info-surface text-info border border-info-border">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-info-surface text-info border border-info-border">
                             <ShieldCheck className="w-3 h-3 text-info" /> Chờ Khối Duyệt Bỏ Lỗi
                           </span>
                         ) : (
-                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-[0.75rem] font-bold bg-amber-50 text-amber-800 border border-amber-200">
+                          <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-bold bg-amber-50 text-amber-800 border border-amber-200">
                             <Clock className="w-3 h-3 text-amber-600" /> Đang Chờ Chi Nhánh
                           </span>
                         )}

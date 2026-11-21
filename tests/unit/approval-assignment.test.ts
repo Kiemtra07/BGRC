@@ -5,8 +5,10 @@ import {
   approvalStagesHeldBy,
   eligibleRecipientsForStage,
   pinStageApprover,
+  addableStagesFor,
   resolveApprovalRoute,
   selectIndependentApprover,
+  submitWorkflowType,
 } from '../../server/src/modules/workflow/approval-assignment';
 import type { Finding, UserProfile } from '../../shared/contracts';
 
@@ -61,6 +63,25 @@ describe('approval assignment', () => {
 
     // Không còn người nào khác cho bước Lãnh đạo thì dừng tuyến, không dồn hai bước cho một người.
     expect(resolveApprovalRoute(finding, 'THREE_TIER', submitter, [submitter, dual], assignedAt)).toBeUndefined();
+  });
+
+  describe('steps the submitter adds on top of the configured route', () => {
+    it('only ever adds review: the effective type never drops below the configured one', () => {
+      expect(submitWorkflowType('ONE_TIER', {})).toBe('ONE_TIER');
+      expect(submitWorkflowType('ONE_TIER', { INTERNAL_APPROVER: 'head' })).toBe('ONE_TIER');
+      expect(submitWorkflowType('ONE_TIER', { BRANCH_CONTROLLER: 'controller' })).toBe('TWO_TIER');
+      expect(submitWorkflowType('ONE_TIER', { BRANCH_LEADER: 'leader' })).toBe('THREE_TIER');
+      expect(submitWorkflowType('TWO_TIER', { BRANCH_CONTROLLER: 'controller' })).toBe('TWO_TIER');
+      expect(submitWorkflowType('TWO_TIER', { BRANCH_LEADER: 'leader' })).toBe('THREE_TIER');
+      expect(submitWorkflowType('THREE_TIER', {})).toBe('THREE_TIER');
+    });
+
+    it('offers the missing review stages in route order', () => {
+      expect(addableStagesFor('ONE_TIER', false)).toEqual(['BRANCH_CONTROLLER', 'BRANCH_LEADER']);
+      expect(addableStagesFor('TWO_TIER', false)).toEqual(['BRANCH_LEADER']);
+      expect(addableStagesFor('TWO_TIER', true)).toEqual([]);
+      expect(addableStagesFor('THREE_TIER', false)).toEqual([]);
+    });
   });
 
   describe('choosing the recipient of the next step', () => {

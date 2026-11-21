@@ -105,3 +105,55 @@ Chưa commit. `npm run ci` đạt: 405 unit, 180 integration, 3 contract, secret
 | B12 | `.clasp.json` đã vào `.gitignore`. | không |
 
 Chưa làm, còn ở đợt sau: `/reports/summary` và `/dashboards/summary` vẫn trả tổng giá trị ảnh hưởng không theo ẩn trường (chỉ là số tổng hợp, không có định danh khách hàng; `/reports/summary` giao diện không còn gọi).
+
+## 8. Tình trạng xử lý đợt hai (2026-11-21)
+
+Chưa commit. `npm run ci` đạt: 405 unit, 183 integration, 3 contract.
+
+| Mã | Kết quả | Test |
+|---|---|---|
+| Tối ưu 4 | `AuthSessionStore.resolve` băm token một lần và chỉ dọn phiên hết hạn mỗi 60 giây. Đo với 2.000 phiên, 2.000 lượt tra: 1,74 ms xuống 0,015 ms mỗi lượt. | `auth-session.test.ts` (hành vi không đổi) |
+| Tối ưu 1 (một phần) | Xuất báo cáo chỉ ghi nhật ký an ninh, không ghi lại cả snapshot. | `report-export-*` hiện có |
+| B8 | `next-approvers` chỉ trả danh sách cho người đang được chuyển bước đó (nộp, Kiểm soát, Lãnh đạo). Người khác nhận danh sách rỗng. | `approval-routing.test.ts` |
+| B10 | Quên mật khẩu giới hạn 8 thư mỗi 15 phút cho một địa chỉ. Vượt ngưỡng vẫn trả 204 và không gửi. | `forgot-password-limit.test.ts` |
+
+Chưa làm và lý do:
+
+- **L7 (hạn nhàn rỗi của phiên):** `lastSeenAt` hiện chỉ nằm trong bộ nhớ và chỉ được ghi khi có thao tác ghi khác. Đặt hạn nhàn rỗi bây giờ sẽ đăng xuất nhầm người chỉ đang đọc. Cần chuyển phiên sang bảng riêng trước.
+- **Tối ưu 1 (phần còn lại):** phiên, theo dõi và tiếp nhận công việc vẫn ghi cả snapshot. Phiên cần migration và bảng riêng, làm cùng L7.
+
+### B4: cách ly tệp minh chứng bị thu hồi (2026-11-21)
+
+Chưa commit. `npm run ci` đạt: 407 unit, 184 integration, 3 contract.
+
+- Thu hồi minh chứng vẫn có hiệu lực ngay trong hồ sơ. Sau đó tệp được chuyển vào `_quarantine`, không xóa.
+- Local: tệp dời sang `<kho>/_quarantine/<đường dẫn cũ>`. Tìm tệp theo mã bỏ qua thư mục cách ly, nên không bị phục vụ hay dọn nhầm.
+- Google Drive: chuyển tệp sang thư mục `_quarantine` ngay dưới gốc lưu trữ (tạo nếu chưa có) và gỡ quyền chia sẻ trực tiếp, giữ chủ sở hữu. Quyền thừa kế mất cùng thư mục cũ. Chạy lại an toàn.
+- Chuyển tệp lỗi thì bản ghi chưa có `storageQuarantinedAt` và cron bảo trì hằng ngày thử lại; kết quả nằm ở `maintenance.revokedEvidenceQuarantine`.
+- Test: `evidence-storage.test.ts` (Drive và local), `evidence-revoke-quarantine.test.ts` (từ tải lên tới thu hồi, và cron).
+
+Chưa kiểm trên Drive thật: cần thử với thư mục thử nghiệm, đặc biệt trường hợp tệp và thư mục `_quarantine` nằm ở hai Shared Drive khác nhau (Drive không cho chuyển chéo). Tệp bị scanner từ chối hoặc nguồn bị sửa (`REJECTED`) chưa được cách ly, nằm ngoài phạm vi này.
+
+## 9. Phiên đăng nhập sang bảng riêng và hạn nhàn rỗi (2026-11-21)
+
+Chưa commit. `npm run ci` đạt: 422 unit, 187 integration, 3 contract, dry-run 30 migration.
+
+- Migration `0132_auth_sessions.sql`: bảng `auth_sessions` (chỉ lưu SHA-256 của token), RLS chỉ cho backend, chỉ mục theo `user_id` và `expires_at`.
+- Ở PostgreSQL, đăng nhập, đăng xuất, xác thực lại và thu hồi phiên chỉ chạm một hàng và không còn ghi snapshot (`persistSessionChange` chỉ đẩy dấu vết an ninh vào sổ). Local JSON và bộ nhớ giữ phiên trong snapshot như cũ, qua cùng giao diện `SessionBackend`.
+- Hạn nhàn rỗi (L7) chạy trên bảng: mặc định 30 phút, đổi bằng `SESSION_IDLE_MINUTES` (0 là tắt). Lần hoạt động cuối chỉ được ghi khi đã cũ hơn 2 phút, nên đọc dữ liệu không kéo theo ghi ở mỗi yêu cầu. Hạn tuyệt đối 8 giờ giữ nguyên.
+- Nếu mã được triển khai trước khi chạy migration, lúc khởi động hệ thống phát hiện chưa có bảng, ghi cảnh báo và tạm giữ phiên trong snapshot thay vì làm hỏng đăng nhập. Sau migration, lần khởi động kế tiếp tự chuyển sang bảng.
+- `npm run acceptance:preflight` kiểm thêm sự tồn tại của `auth_sessions`.
+- Test: `auth-sessions-repository.test.ts` chạy cùng một bộ hành vi trên cả hai nơi lưu phiên và kiểm hạn nhàn rỗi, ngưỡng ghi lại lần hoạt động cuối.
+
+Cần biết khi triển khai: người đang đăng nhập lúc chuyển sang bảng sẽ phải đăng nhập lại một lần, vì phiên cũ nằm trong snapshot. Các bản ghi phiên cũ trong snapshot vẫn còn nhưng không còn được dùng. Chưa đo trên PostgreSQL thật; baseline bộ nhớ không phản ánh phần này.
+
+## 10. Chỉnh giao diện hiển thị (2026-11-21)
+
+Kiểm ở các bề rộng 320, 375, 768, 1024, 1440 trên đăng nhập, danh sách, hồ sơ, báo cáo và các màn quản trị bằng đo phần tử tràn, cắt và chữ bị rút gọn.
+
+- Chữ: cỡ nhỏ nhất 13px (trước 12px, 904 chỗ dùng) và chữ nội dung 15px, nén chữ tiêu đề đăng nhập bớt chặt và giãn dòng để dấu tiếng Việt không dính nhau, khử răng cưa chữ.
+- Tên khách hàng, mã lỗi và tên loại báo cáo xuống tối đa hai dòng và có chú giải đầy đủ thay vì bị cắt bằng dấu ba chấm.
+- Danh sách hồ sơ chuyển sang dạng thẻ dưới 1280px (bảng cần 820px nên bị cuộn ngang ở 1024px).
+- Menu xuất báo cáo không còn tràn ra ngoài màn hình ở bề rộng hẹp.
+- Ngăn kéo bên trái khi đóng không còn nhận phím Tab.
+- Test `ui-legibility.test.ts` giữ các quy tắc trên.

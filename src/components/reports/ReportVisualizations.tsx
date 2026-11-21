@@ -15,11 +15,11 @@ export const ReportCrosstab: React.FC<{ pivot: ReportPivotResult; metric?: Repor
   <div className="min-w-0 overflow-hidden rounded-2xl border border-rule bg-white shadow-panel" data-testid="report-crosstab">
     <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-3">
       <h3 className="text-sm font-bold text-slate-900">Bảng chéo</h3>
-      <span className="text-[0.75rem] font-semibold text-slate-500">Theo {pivot.columns.length} cột · {metric?.label || 'Chỉ số'}</span>
+      <span className="text-xs font-semibold text-slate-500">Theo {pivot.columns.length} cột · {metric?.label || 'Chỉ số'}</span>
     </div>
     <div className="overflow-x-auto">
       <table className="w-full min-w-[680px] text-left text-xs">
-        <thead className="bg-slate-50 text-[0.75rem] font-bold text-slate-500"><tr><th className="sticky left-0 bg-slate-50 px-4 py-3">Hàng</th>{pivot.columns.map(column => <th key={column.key} className="px-4 py-3 text-right">{column.label}</th>)}<th className="px-4 py-3 text-right">Tổng</th></tr></thead>
+        <thead className="bg-slate-50 text-xs font-bold text-slate-500"><tr><th className="sticky left-0 bg-slate-50 px-4 py-3">Hàng</th>{pivot.columns.map(column => <th key={column.key} className="px-4 py-3 text-right">{column.label}</th>)}<th className="px-4 py-3 text-right">Tổng</th></tr></thead>
         <tbody className="divide-y divide-slate-100">{pivot.rows.map(row => <tr key={row.key}><td className="sticky left-0 bg-white px-4 py-3 font-semibold text-slate-800">{row.label}</td>{pivot.columns.map(column => <td key={column.key} className="px-4 py-3 text-right text-slate-700">{onDrill ? <button type="button" onClick={() => onDrill(row.key, column.key)} className="underline-offset-2 hover:text-brand-600 hover:underline">{metricValue(row.values[column.key] || 0, metric)}</button> : metricValue(row.values[column.key] || 0, metric)}</td>)}<td className="px-4 py-3 text-right font-black text-brand-600">{onDrill ? <button type="button" onClick={() => onDrill(row.key)} className="underline-offset-2 hover:underline">{metricValue(row.total, metric)}</button> : metricValue(row.total, metric)}</td></tr>)}</tbody>
       </table>
     </div>

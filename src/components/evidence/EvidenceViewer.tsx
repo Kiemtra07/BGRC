@@ -165,7 +165,7 @@ const PdfViewer: React.FC<{ blob: Blob; fileName: string }> = ({ blob, fileName 
     <div className="grid h-full min-h-[480px] grid-rows-[auto_minmax(0,1fr)] bg-slate-200" data-testid="pdf-viewer">
       <div className="flex min-h-12 flex-wrap items-center gap-1.5 border-b border-slate-300 bg-slate-900 px-2 py-2 text-white sm:px-3" aria-label="Thanh công cụ PDF">
         <ToolButton label="Trang trước" onClick={() => setPageNumber(value => Math.max(1, value - 1))} disabled={pageNumber <= 1}><ChevronLeft /></ToolButton>
-        <label className="flex h-10 items-center gap-1 rounded-lg bg-white/10 px-2 text-[0.75rem] font-bold">
+        <label className="flex h-10 items-center gap-1 rounded-lg bg-white/10 px-2 text-xs font-bold">
           <span>Trang</span>
           <input aria-label="Chọn trang" type="number" min={1} max={document?.numPages || 1} value={pageNumber} onChange={event => setPageNumber(Math.max(1, Math.min(document?.numPages || 1, Number(event.target.value) || 1)))} className="h-7 w-12 rounded bg-white px-1 text-center text-slate-900" />
           <span>/ {document?.numPages || '…'}</span>
@@ -173,13 +173,13 @@ const PdfViewer: React.FC<{ blob: Blob; fileName: string }> = ({ blob, fileName 
         <ToolButton label="Trang sau" onClick={() => setPageNumber(value => Math.min(document?.numPages || value, value + 1))} disabled={!document || pageNumber >= document.numPages}><ChevronRight /></ToolButton>
         <span className="mx-0.5 h-6 w-px bg-white/20" />
         <ToolButton label="Thu nhỏ" onClick={() => setScale(value => Math.max(0.5, Number((value - 0.15).toFixed(2))))}><Minus /></ToolButton>
-        <span className="min-w-12 text-center text-[0.75rem] font-bold">{Math.round(scale * 100)}%</span>
+        <span className="min-w-12 text-center text-xs font-bold">{Math.round(scale * 100)}%</span>
         <ToolButton label="Phóng to" onClick={() => setScale(value => Math.min(3, Number((value + 0.15).toFixed(2))))}><Plus /></ToolButton>
         <ToolButton label="Vừa trang giấy" onClick={fitPage}><Scan /></ToolButton>
         <ToolButton label="Vừa chiều rộng" onClick={fitWidth}><Expand /></ToolButton>
         <ToolButton label="Xoay trang" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCw /></ToolButton>
         <div className="ml-auto flex items-center gap-1.5">
-          <span className="hidden items-center gap-1 text-[0.75rem] text-slate-300 xl:flex"><Grip className="h-3.5 w-3.5" />Kéo để di chuyển</span>
+          <span className="hidden items-center gap-1 text-xs text-slate-300 xl:flex"><Grip className="h-3.5 w-3.5" />Kéo để di chuyển</span>
           {objectUrl && <a href={objectUrl} download={fileName} aria-label="Tải xuống" className="flex h-10 w-10 items-center justify-center rounded-lg hover:bg-white/10"><Download className="h-4 w-4" /></a>}
         </div>
       </div>
@@ -216,13 +216,13 @@ const ExcelViewer: React.FC<{ blob: Blob; fileName: string }> = ({ blob, fileNam
   return (
     <div className="grid h-full min-h-[480px] grid-rows-[auto_minmax(0,1fr)] bg-white" data-testid="excel-viewer">
       <div className="flex min-h-12 flex-wrap items-center gap-2 border-b border-slate-300 bg-slate-900 px-3 py-2 text-white" aria-label="Thanh công cụ Excel">
-        <label className="flex h-10 items-center gap-2 text-[0.75rem] font-bold">Trang tính
+        <label className="flex h-10 items-center gap-2 text-xs font-bold">Trang tính
           <select aria-label="Chọn trang tính" value={activeSheet.sheet} onChange={event => setSheetName(event.target.value)} className="h-9 max-w-48 rounded-lg bg-white px-2 text-slate-900">
             {sheets.map(sheet => <option key={sheet.sheet} value={sheet.sheet}>{sheet.sheet}</option>)}
           </select>
         </label>
         <ToolButton label="Thu nhỏ" onClick={() => setZoom(value => Math.max(70, value - 10))}><Minus /></ToolButton>
-        <span className="min-w-12 text-center text-[0.75rem] font-bold">{zoom}%</span>
+        <span className="min-w-12 text-center text-xs font-bold">{zoom}%</span>
         <ToolButton label="Phóng to" onClick={() => setZoom(value => Math.min(160, value + 10))}><Plus /></ToolButton>
         {objectUrl && <a href={objectUrl} download={fileName} aria-label="Tải xuống" className="ml-auto flex h-10 w-10 items-center justify-center rounded-lg hover:bg-white/10"><Download className="h-4 w-4" /></a>}
       </div>
@@ -231,9 +231,9 @@ const ExcelViewer: React.FC<{ blob: Blob; fileName: string }> = ({ blob, fileNam
           <tbody>
             {activeSheet.data.map((row, rowIndex) => (
               <tr key={rowIndex}>
-                <th className="sticky left-0 z-20 min-w-12 border-b border-r border-slate-300 bg-slate-200 px-2 py-1 text-center text-[0.75rem] font-bold text-slate-500">{rowIndex + 1}</th>
+                <th className="sticky left-0 z-20 min-w-12 border-b border-r border-slate-300 bg-slate-200 px-2 py-1 text-center text-xs font-bold text-slate-500">{rowIndex + 1}</th>
                 {row.map((cell, columnIndex) => (
-                  <td key={columnIndex} className={`min-w-32 max-w-80 whitespace-pre-wrap border-b border-r border-rule px-2 py-1.5 text-[0.75rem] text-slate-800 ${rowIndex === 0 ? 'sticky top-0 z-10 bg-brand-50 font-bold text-brand-600' : 'bg-white'}`}>{formatCell(cell)}</td>
+                  <td key={columnIndex} className={`min-w-32 max-w-80 whitespace-pre-wrap border-b border-r border-rule px-2 py-1.5 text-xs text-slate-800 ${rowIndex === 0 ? 'sticky top-0 z-10 bg-brand-50 font-bold text-brand-600' : 'bg-white'}`}>{formatCell(cell)}</td>
                 ))}
               </tr>
             ))}
@@ -254,7 +254,7 @@ const ImageViewer: React.FC<{ blob: Blob; fileName: string }> = ({ blob, fileNam
     <div className="grid h-full min-h-[480px] grid-rows-[auto_minmax(0,1fr)] bg-slate-200">
       <div className="flex min-h-12 items-center gap-1.5 bg-slate-900 px-3 py-2 text-white">
         <ToolButton label="Thu nhỏ" onClick={() => setScale(value => Math.max(0.5, value - 0.15))}><Minus /></ToolButton>
-        <span className="min-w-12 text-center text-[0.75rem] font-bold">{Math.round(scale * 100)}%</span>
+        <span className="min-w-12 text-center text-xs font-bold">{Math.round(scale * 100)}%</span>
         <ToolButton label="Phóng to" onClick={() => setScale(value => Math.min(3, value + 0.15))}><Plus /></ToolButton>
         <ToolButton label="Xoay trang" onClick={() => setRotation(value => (value + 90) % 360)}><RotateCw /></ToolButton>
         <a href={objectUrl} download={fileName} aria-label="Tải xuống" className="ml-auto flex h-10 w-10 items-center justify-center rounded-lg hover:bg-white/10"><Download className="h-4 w-4" /></a>

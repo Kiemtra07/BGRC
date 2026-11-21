@@ -74,7 +74,7 @@ export const UserProfileEditModal: React.FC<Props> = ({ user, orgUnits, busy = f
   return <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/75 p-3 backdrop-blur-sm">
     <div role="dialog" aria-modal="true" aria-labelledby="user-profile-edit-title" className="max-h-[94dvh] w-full max-w-2xl overflow-y-auto rounded-2xl border border-rule bg-white shadow-2xl">
       <div className="sticky top-0 z-10 flex items-center justify-between bg-brand-500 px-5 py-4 text-white">
-        <div><p className="text-[0.75rem] font-bold uppercase tracking-[0.16em] text-teal-100">Hồ sơ cá nhân</p><h2 id="user-profile-edit-title" className="mt-0.5 text-base font-bold">Sửa hồ sơ người dùng</h2></div>
+        <div><p className="text-xs font-bold uppercase tracking-[0.16em] text-teal-100">Hồ sơ cá nhân</p><h2 id="user-profile-edit-title" className="mt-0.5 text-base font-bold">Sửa hồ sơ người dùng</h2></div>
         <button type="button" aria-label="Đóng hồ sơ người dùng" onClick={onClose} className="rounded-lg p-2 hover:bg-white/10"><X className="h-4 w-4" /></button>
       </div>
       <form onSubmit={save} className="space-y-5 p-5">
@@ -91,11 +91,11 @@ export const UserProfileEditModal: React.FC<Props> = ({ user, orgUnits, busy = f
           <Field label="Email doanh nghiệp"><input required type="email" value={email} onChange={event => setEmail(event.target.value)} /></Field>
           <Field label="Số điện thoại"><input value={phone} onChange={event => setPhone(event.target.value)} /></Field>
         </div>
-        <Field label="Email Google Workspace để cấp quyền tệp đính kèm"><input type="email" value={googleWorkspaceEmail} onChange={event => setGoogleWorkspaceEmail(event.target.value)} placeholder="Để trống nếu trùng email doanh nghiệp" /><span className="mt-1 block text-[0.75rem] font-medium text-slate-500">Dùng để cấp quyền Google Drive; không thay đổi email đăng nhập.</span></Field>
+        <Field label="Email Google Workspace để cấp quyền tệp đính kèm"><input type="email" value={googleWorkspaceEmail} onChange={event => setGoogleWorkspaceEmail(event.target.value)} placeholder="Để trống nếu trùng email doanh nghiệp" /><span className="mt-1 block text-xs font-medium text-slate-500">Dùng để cấp quyền Google Drive; không thay đổi email đăng nhập.</span></Field>
         <div className="space-y-4 rounded-xl border border-info-border bg-info-surface/60 p-4">
           <div>
             <h3 className="text-xs font-extrabold text-slate-800">Phân công tổ chức</h3>
-            <p className="mt-1 text-[0.75rem] font-medium text-info">Có thể phân công sau. Nếu đã có phân công, hệ thống tự đổ đúng Cụm, Chi nhánh và Phòng / PGD hiện tại để bạn đổi khi cần.</p>
+            <p className="mt-1 text-xs font-medium text-info">Có thể phân công sau. Nếu đã có phân công, hệ thống tự đổ đúng Cụm, Chi nhánh và Phòng / PGD hiện tại để bạn đổi khi cần.</p>
           </div>
           {user.portal === 'INTERNAL' ? (
             <label className="block text-xs font-bold text-slate-700">Nhóm nội bộ<select value={selectedInternalTeam} onChange={event => setSelectedInternalTeam(event.target.value)} className={fieldInputClass}><option value="">-- Chưa phân công --</option>{internalTeams.map(team => <option key={team.id} value={team.id}>{team.code} · {team.name}</option>)}</select></label>
@@ -125,4 +125,4 @@ const Field: React.FC<{ label: string; children: React.ReactNode }> = ({ label, 
     })}
   </label>
 );
-const Info: React.FC<{ label: string; value: string; icon: React.ReactNode }> = ({ label, value, icon }) => <div className="rounded-xl border border-rule bg-slate-50 p-3"><div className="flex items-center gap-2 text-[0.75rem] font-bold text-slate-400">{icon}{label}</div><div className="mt-1 text-xs font-bold text-slate-800">{value}</div></div>;
+const Info: React.FC<{ label: string; value: string; icon: React.ReactNode }> = ({ label, value, icon }) => <div className="rounded-xl border border-rule bg-slate-50 p-3"><div className="flex items-center gap-2 text-xs font-bold text-slate-400">{icon}{label}</div><div className="mt-1 text-xs font-bold text-slate-800">{value}</div></div>;

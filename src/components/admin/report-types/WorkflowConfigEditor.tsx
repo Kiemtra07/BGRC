@@ -44,7 +44,7 @@ export const WorkflowConfigEditor: React.FC<Props> = ({ channelId, value, onChan
       })}
     </div>
 
-    <p className="text-[0.75rem] font-medium text-slate-500">Tên bước đặt ở đây là tên hiển thị trên tuyến duyệt của hồ sơ, người xử lý sẽ thấy đúng tên này.</p>
+    <p className="text-xs font-medium text-slate-500">Tên bước đặt ở đây là tên hiển thị trên tuyến duyệt của hồ sơ, người xử lý sẽ thấy đúng tên này.</p>
 
     <div data-testid="workflow-stage-diagram" className="flex flex-col gap-3 lg:flex-row lg:items-stretch">
       {value.stages.map((stage, index) => (
@@ -52,16 +52,16 @@ export const WorkflowConfigEditor: React.FC<Props> = ({ channelId, value, onChan
           {index === starInsertIndex && <>
             <ArrowRight className="mx-auto hidden h-4 w-4 shrink-0 self-center text-slate-400 lg:block" />
             <div data-testid="workflow-stage-conditional" className="flex-1 rounded-xl border border-dashed border-amber-300 bg-amber-50 p-4">
-              <span className="inline-flex items-center gap-1 text-[0.75rem] font-bold text-amber-700"><Star className="h-3 w-3 fill-amber-500 text-amber-500" />Bước có điều kiện</span>
+              <span className="inline-flex items-center gap-1 text-xs font-bold text-amber-700"><Star className="h-3 w-3 fill-amber-500 text-amber-500" />Bước có điều kiện</span>
               <p className="mt-2 text-sm font-bold text-slate-900">Lãnh đạo chi nhánh</p>
-              <p className="mt-2 text-[0.75rem] text-amber-800">Chỉ chèn vào tuyến khi hồ sơ được gắn dấu sao.</p>
+              <p className="mt-2 text-xs text-amber-800">Chỉ chèn vào tuyến khi hồ sơ được gắn dấu sao.</p>
             </div>
           </>}
           {index > 0 && <ArrowRight className="mx-auto hidden h-4 w-4 shrink-0 self-center text-slate-400 lg:block" />}
           <div className="flex-1 rounded-xl border border-rule bg-slate-50 p-4">
-            <span className="text-[0.75rem] font-bold text-brand-600">Bước {index + 1}</span>
+            <span className="text-xs font-bold text-brand-600">Bước {index + 1}</span>
             <input aria-label={`Tên bước ${index + 1}`} value={stage.stageName} onChange={event => renameStage(index, event.target.value)} className="mt-2 w-full rounded-lg border border-rule bg-white px-3 py-2 text-sm font-bold" />
-            <p className="mt-2 text-[0.75rem] text-slate-500">{roleSummary(stage.allowedRoles)}</p>
+            <p className="mt-2 text-xs text-slate-500">{roleSummary(stage.allowedRoles)}</p>
           </div>
         </React.Fragment>
       ))}

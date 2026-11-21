@@ -128,7 +128,7 @@ export const FindingGridWorkspace: React.FC<Props> = ({ findings, currentUser, o
     <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-rule bg-white p-3 shadow-panel">
       <div>
         <h3 className="text-sm font-black text-slate-900">Nhập liệu dạng bảng</h3>
-        <p className="mt-0.5 text-[0.75rem] text-slate-500">Nhập giải trình thẳng vào ô, chọn dòng rồi đẩy duyệt theo cấp. {selected.size > 0 && <strong className="text-brand-600">Đang chọn {selected.size} dòng.</strong>}</p>
+        <p className="mt-0.5 text-xs text-slate-500">Nhập giải trình thẳng vào ô, chọn dòng rồi đẩy duyệt theo cấp. {selected.size > 0 && <strong className="text-brand-600">Đang chọn {selected.size} dòng.</strong>}</p>
       </div>
       <div className="flex flex-wrap gap-2">
         {isBranchInput && <button type="button" disabled={!eligibleFor('SUBMIT').length || submitBlocked || running !== null} onClick={() => void runBulk('SUBMIT')} className="inline-flex min-h-10 items-center gap-2 rounded-xl bg-brand-500 px-3.5 py-2 text-xs font-bold text-white disabled:opacity-40">{running === 'SUBMIT' ? <Loader2 className="h-4 w-4 animate-spin" /> : <Send className="h-4 w-4" />}Đẩy duyệt ({eligibleFor('SUBMIT').length})</button>}
@@ -144,23 +144,23 @@ export const FindingGridWorkspace: React.FC<Props> = ({ findings, currentUser, o
     </div>
 
     {(isBranchController || isInternalApprover) && <div className="grid gap-2 sm:grid-cols-2">
-      <label className="text-[0.75rem] font-bold text-slate-600">Lý do chuyển trả / từ chối<input value={reason} onChange={event => setReason(event.target.value)} placeholder="Tối thiểu 5 ký tự" className="mt-1 min-h-10 w-full rounded-lg border border-rule px-3 text-xs" /></label>
-      {isInternalApprover && <label className="text-[0.75rem] font-bold text-slate-600">Số quyết định bỏ lỗi<input value={decisionNumber} onChange={event => setDecisionNumber(event.target.value)} placeholder="Ví dụ: 1234/QĐ-BIDV" className="mt-1 min-h-10 w-full rounded-lg border border-rule px-3 font-mono text-xs" /></label>}
+      <label className="text-xs font-bold text-slate-600">Lý do chuyển trả / từ chối<input value={reason} onChange={event => setReason(event.target.value)} placeholder="Tối thiểu 5 ký tự" className="mt-1 min-h-10 w-full rounded-lg border border-rule px-3 text-xs" /></label>
+      {isInternalApprover && <label className="text-xs font-bold text-slate-600">Số quyết định bỏ lỗi<input value={decisionNumber} onChange={event => setDecisionNumber(event.target.value)} placeholder="Ví dụ: 1234/QĐ-BIDV" className="mt-1 min-h-10 w-full rounded-lg border border-rule px-3 font-mono text-xs" /></label>}
     </div>}
 
-    {evidenceBoundCount > 0 && <p role="status" className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[0.75rem] font-semibold text-amber-900">
+    {evidenceBoundCount > 0 && <p role="status" className="flex items-start gap-2 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
       <Paperclip className="mt-px h-3.5 w-3.5 shrink-0" />
       <span>{evidenceBoundCount} hồ sơ yêu cầu tài liệu đính kèm nên không đẩy duyệt được từ bảng. Mở từng hồ sơ để tải minh chứng rồi mới duyệt.</span>
     </p>}
 
-    {outcome && <div role="status" className={`rounded-xl border px-3 py-2 text-[0.75rem] font-semibold ${outcome.failures.length ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-brand-200 bg-brand-50 text-brand-600'}`}>
+    {outcome && <div role="status" className={`rounded-xl border px-3 py-2 text-xs font-semibold ${outcome.failures.length ? 'border-amber-300 bg-amber-50 text-amber-900' : 'border-brand-200 bg-brand-50 text-brand-600'}`}>
       <p className="flex items-center gap-2">{outcome.failures.length ? <AlertTriangle className="h-3.5 w-3.5" /> : <CheckCircle2 className="h-3.5 w-3.5" />}Đã xử lý {outcome.succeeded} dòng{outcome.failures.length ? `, ${outcome.failures.length} dòng lỗi:` : '.'}</p>
       {outcome.failures.length > 0 && <ul className="mt-1 list-disc space-y-0.5 pl-5 font-normal">{outcome.failures.map(item => <li key={item.label}><strong>{item.label}</strong>: {item.reason}</li>)}</ul>}
     </div>}
 
     <div className="min-w-0 overflow-x-auto rounded-2xl border border-rule bg-white shadow-panel">
       <table className="w-full min-w-[1100px] text-left text-xs">
-        <thead className="bg-slate-50 text-[0.75rem] font-bold text-slate-500">
+        <thead className="bg-slate-50 text-xs font-bold text-slate-500">
           <tr>
             <th className="w-10 px-3 py-2"><input type="checkbox" aria-label="Chọn tất cả dòng thao tác được" className="h-4 w-4 accent-[#006b68]" checked={allSelected} disabled={selectableIds.size === 0} onChange={event => setSelected(event.target.checked ? new Set(selectableIds) : new Set())} /></th>
             <th className="px-3 py-2">CIF / Khách hàng</th>
@@ -181,16 +181,16 @@ export const FindingGridWorkspace: React.FC<Props> = ({ findings, currentUser, o
             const unsent = editable && note.trim() !== (finding.resolutionNotes ?? '').trim();
             return <tr key={finding.id} className={selected.has(finding.id) ? 'bg-brand-50/50' : undefined}>
               <td className="px-3 py-2 align-top"><input type="checkbox" aria-label={`Chọn ${finding.cif} ${finding.errorCode}`} className="mt-1 h-4 w-4 accent-[#006b68]" checked={selected.has(finding.id)} disabled={!selectableIds.has(finding.id)} onChange={() => toggle(finding.id)} /></td>
-              <td className="px-3 py-2 align-top"><div className="font-bold text-slate-900">{finding.customerName}</div><div className="mt-0.5 font-mono text-[0.75rem] font-bold text-brand-600">CIF {finding.cif}</div></td>
-              <td className="px-3 py-2 align-top font-mono text-[0.75rem] font-black text-brand-600">{finding.errorCode}</td>
+              <td className="px-3 py-2 align-top"><div className="font-bold text-slate-900">{finding.customerName}</div><div className="mt-0.5 font-mono text-xs font-bold text-brand-600">CIF {finding.cif}</div></td>
+              <td className="px-3 py-2 align-top font-mono text-xs font-black text-brand-600">{finding.errorCode}</td>
               <td className="max-w-[260px] px-3 py-2 align-top text-slate-700">{finding.errorTitle}</td>
-              <td className="px-3 py-2 align-top">{finding.riskLevel ? <span className={`rounded-md px-2 py-1 text-[0.75rem] font-bold ring-1 ${riskTone[finding.riskLevel]}`}>{riskLevelLabels[finding.riskLevel]}</span> : <span className="text-[0.75rem] text-slate-400">Chưa chấm</span>}</td>
-              <td className="px-3 py-2 align-top text-[0.75rem] font-semibold text-slate-600">{workflowStatusLabels[finding.workflowStatus]}</td>
-              <td className="px-3 py-2 align-top text-[0.75rem] text-slate-600">{new Date(`${finding.deadlineDate}T00:00:00`).toLocaleDateString('vi-VN')}</td>
+              <td className="px-3 py-2 align-top">{finding.riskLevel ? <span className={`rounded-md px-2 py-1 text-xs font-bold ring-1 ${riskTone[finding.riskLevel]}`}>{riskLevelLabels[finding.riskLevel]}</span> : <span className="text-xs text-slate-400">Chưa chấm</span>}</td>
+              <td className="px-3 py-2 align-top text-xs font-semibold text-slate-600">{workflowStatusLabels[finding.workflowStatus]}</td>
+              <td className="px-3 py-2 align-top text-xs text-slate-600">{new Date(`${finding.deadlineDate}T00:00:00`).toLocaleDateString('vi-VN')}</td>
               <td className="px-3 py-2 align-top">
                 {editable
-                  ? <><textarea rows={2} value={note} onChange={event => setDrafts(current => ({ ...current, [finding.id]: event.target.value }))} placeholder="Nhập giải trình, tối thiểu 5 ký tự..." className="w-full rounded-lg border border-rule px-2 py-1.5 text-[0.75rem]" aria-label={`Giải trình ${finding.cif} ${finding.errorCode}`} />{unsent && <span className="mt-0.5 block text-[0.75rem] font-bold text-amber-700">Chưa gửi</span>}</>
-                  : <span className="block text-[0.75rem] text-slate-500">{locked ? 'Cần đính kèm tài liệu tại hồ sơ' : note || '—'}</span>}
+                  ? <><textarea rows={2} value={note} onChange={event => setDrafts(current => ({ ...current, [finding.id]: event.target.value }))} placeholder="Nhập giải trình, tối thiểu 5 ký tự..." className="w-full rounded-lg border border-rule px-2 py-1.5 text-xs" aria-label={`Giải trình ${finding.cif} ${finding.errorCode}`} />{unsent && <span className="mt-0.5 block text-xs font-bold text-amber-700">Chưa gửi</span>}</>
+                  : <span className="block text-xs text-slate-500">{locked ? 'Cần đính kèm tài liệu tại hồ sơ' : note || '—'}</span>}
               </td>
               <td className="px-3 py-2 align-top"><button type="button" aria-label={`Mở hồ sơ ${finding.cif}`} onClick={() => onOpenCase(finding)} className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-brand-600"><ChevronRight className="h-4 w-4" /></button></td>
             </tr>;

@@ -253,6 +253,67 @@ describe('local evidence upload guard', () => {
     expect(requests.find(request => request.url.includes('/files/drive-file-123') && request.init?.method === 'DELETE')).toBeDefined();
   });
 
+  it('moves a revoked Drive file into the quarantine folder and drops its direct sharing', async () => {
+    const requests: Array<{ url: string; method: string }> = [];
+    const fetchImpl: typeof fetch = async (input, init) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      requests.push({ url, method });
+      if (url.includes('/files/root-folder')) {
+        return Response.json({ id: 'root-folder', driveId: 'shared-drive-1', mimeType: 'application/vnd.google-apps.folder', trashed: false, capabilities: { canAddChildren: true } });
+      }
+      if (url.includes('/files?') && url.includes('q=')) return Response.json({ files: [] });
+      if (url.includes('/files?supportsAllDrives=true') && method === 'POST') return Response.json({ id: 'quarantine-folder' });
+      if (url.includes('/files/drive-file-123/permissions/') && method === 'DELETE') return new Response(null, { status: 204 });
+      if (url.includes('/files/drive-file-123/permissions')) {
+        return Response.json({ permissions: [
+          { id: 'perm-owner', type: 'user', role: 'owner' },
+          { id: 'perm-viewer', type: 'user', role: 'reader' },
+        ] });
+      }
+      if (url.includes('/files/drive-file-123') && method === 'PATCH') return Response.json({ id: 'drive-file-123' });
+      if (url.includes('/files/drive-file-123')) return Response.json({ id: 'drive-file-123', parents: ['campaign-folder'] });
+      throw new Error(`Unexpected Drive request: ${method} ${url}`);
+    };
+    const adapter = new GoogleDriveAdapter({
+      storageMode: 'google-drive',
+      googleDriveRootFolderId: 'root-folder',
+      accessTokenProvider: async () => 'token-for-test',
+      fetchImpl,
+    });
+
+    await expect(adapter.quarantineEvidenceFile('drive-file-123')).resolves.toBe(true);
+
+    const move = requests.find(request => request.method === 'PATCH');
+    expect(move).toBeDefined();
+    const moveUrl = new URL(move!.url);
+    expect(moveUrl.searchParams.get('addParents')).toBe('quarantine-folder');
+    expect(moveUrl.searchParams.get('removeParents')).toBe('campaign-folder');
+    const removed = requests.filter(request => request.method === 'DELETE').map(request => request.url);
+    expect(removed.some(url => url.includes('perm-viewer'))).toBe(true);
+    expect(removed.some(url => url.includes('perm-owner'))).toBe(false);
+    expect(requests.some(request => request.method === 'DELETE' && request.url.includes('/files/drive-file-123?'))).toBe(false);
+  });
+
+  it('moves a revoked local file into the quarantine folder and reports a missing one', async () => {
+    const directory = temporaryEvidenceDirectory();
+    const adapter = new GoogleDriveAdapter({ storageMode: 'local', localEvidenceDir: directory });
+    const uploaded = await adapter.uploadEvidenceFile({
+      fileName: 'chung-tu.pdf', fileBuffer: Buffer.from('%PDF-1.7 noi dung'), mimeType: 'application/pdf',
+      folderPath: 'AUDIT/2026/CN_635', findingId: 'finding-1',
+    });
+
+    await expect(adapter.quarantineEvidenceFile(uploaded.driveFileId)).resolves.toBe(true);
+
+    const files = fs.readdirSync(directory, { recursive: true }) as string[];
+    const stored = files.filter(file => path.basename(file).startsWith(`${uploaded.driveFileId}_`));
+    expect(stored).toHaveLength(1);
+    expect(stored[0].split(path.sep)[0]).toBe('_quarantine');
+    expect(fs.readFileSync(path.join(directory, stored[0]), 'utf8')).toContain('noi dung');
+    await expect(adapter.quarantineEvidenceFile(uploaded.driveFileId)).resolves.toBe(false);
+    await expect(adapter.getFileContentStream(uploaded.driveFileId)).resolves.toBeNull();
+  });
+
   it('starts a resumable upload from the provisioned campaign folder when provided', async () => {
     const folderQueries: string[] = [];
     const fetchImpl: typeof fetch = async (input, init) => {

@@ -4,11 +4,12 @@ import {
   FileText, ListChecks, Loader2, PanelRightClose, PanelRightOpen, Paperclip, Plus,
   RefreshCw, ShieldCheck, Star, Trash2, UploadCloud, XCircle,
 } from 'lucide-react';
-import { RiskLevel, businessLineLabels, canManageEvidenceAtBranch, EvidenceObject, Finding, MyWorkQueue, NextApprovalRecipients, riskLevelLabels, UserProfile, WorkspaceTargetCommandDTO, WorkspaceTargetType } from '../../../shared/contracts';
+import { RiskLevel, businessLineLabels, canManageEvidenceAtBranch, EvidenceObject, Finding, ApproverSelectionsDTO, MyWorkQueue, NextApprovalRecipients, riskLevelLabels, UserProfile, WorkspaceTargetCommandDTO, WorkspaceTargetType } from '../../../shared/contracts';
 import { api } from '../../services/api';
 import { slaStatusLabels, userRoleLabels, workflowActionLabels, workflowEventLabels, workflowStatusLabels } from '../../content/ui-copy';
 import { EvidenceViewer } from '../evidence/EvidenceViewer';
 import { ApprovalRouteStepper } from './ApprovalRouteStepper';
+import { SubmitRoutePicker } from './SubmitRoutePicker';
 
 interface Props {
   findings: Finding[];
@@ -75,7 +76,7 @@ export const FindingDetailPage: React.FC<Props> = ({
   const [newSubItem, setNewSubItem] = useState('');
   const [reviewNote, setReviewNote] = useState('');
   const [recipients, setRecipients] = useState<NextApprovalRecipients | null>(null);
-  const [nextApproverId, setNextApproverId] = useState('');
+  const [submitSelections, setSubmitSelections] = useState<ApproverSelectionsDTO | undefined>(undefined);
 
   const finding = useMemo(() => items.find(item => item.id === selectedId) || items[0], [items, selectedId]);
   const isBranchInput = currentUser.roles.includes('BRANCH_INPUT');
@@ -91,7 +92,6 @@ export const FindingDetailPage: React.FC<Props> = ({
   const canForward = (isBranchInput && (status === 'PENDING' || status === 'REJECTED'))
     || (isBranchController && status === 'SUBMITTED_BRANCH')
     || (isBranchLeader && status === 'SUBMITTED_BRANCH_LEADER');
-  const nextApproverUserId = nextApproverId || undefined;
   const isInternalReviewer = hasInternalReviewerRole && isAssignedTo(route?.internalApproverUserId);
   const waitingForSomeoneElse = (status === 'SUBMITTED_BRANCH' && hasControllerRole && !isBranchController)
     || (status === 'SUBMITTED_BRANCH_LEADER' && hasLeaderRole && !isBranchLeader)
@@ -134,16 +134,14 @@ export const FindingDetailPage: React.FC<Props> = ({
     return () => { active = false; };
   }, [finding?.id]);
 
-  // Thiếu danh sách người nhận thì ô chọn ẩn đi và server dùng người mặc định của bước.
+  // Người nhận bước kế tiếp chỉ để hiển thị; thiếu thì khối thông báo ẩn đi và máy chủ vẫn đi theo tuyến đã ghim.
   useEffect(() => {
     setRecipients(null);
-    setNextApproverId('');
     if (!finding?.id || !canForward) return;
     let active = true;
     api.getNextApprovers(finding.id).then(result => {
       if (!active) return;
       setRecipients(result);
-      setNextApproverId(result.suggestedUserId ?? '');
     }).catch(() => undefined);
     return () => { active = false; };
   }, [finding?.id, finding?.version, canForward]);
@@ -308,20 +306,20 @@ export const FindingDetailPage: React.FC<Props> = ({
             <div className="flex min-w-0 gap-3">
               <button onClick={onBack} aria-label="Quay lại danh sách hồ sơ" className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-white/10 hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70"><ArrowLeft className="h-5 w-5" /></button>
               <div className="min-w-0">
-                <div className="mb-1.5 flex flex-wrap items-center gap-2 text-[0.75rem] font-bold sm:text-[0.75rem]">
+                <div className="mb-1.5 flex flex-wrap items-center gap-2 text-xs font-bold sm:text-xs">
                   <span className="rounded-md bg-white/12 px-2 py-1 font-mono">CIF {finding.cif}</span>
                   <span className="rounded-md bg-white/12 px-2 py-1">{items.length} mã lỗi</span>
                   <span className="rounded-md bg-white/12 px-2 py-1">CN {finding.branchCode}</span>
                 </div>
-                <h1 className="flex min-w-0 items-center gap-2 text-sm font-black sm:text-lg"><span className="truncate">{finding.customerName}</span>{canFlagSpecialCase ? <button type="button" aria-label="Đánh dấu khách hàng là trường hợp đặc biệt" aria-pressed={customerIsSpecialCase} title={canEditCustomerSpecialCase ? 'Trường hợp đặc biệt' : 'Dấu sao đã khóa sau khi gửi duyệt'} disabled={busy || !canEditCustomerSpecialCase} onClick={() => void toggleSpecialCase(!customerIsSpecialCase)} className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-60 ${customerIsSpecialCase ? 'border-amber-300 bg-amber-400/20 text-amber-300' : 'border-white/25 bg-white/10 text-white/70 hover:bg-white/20'}`}><Star className={`h-4 w-4 ${customerIsSpecialCase ? 'fill-current' : ''}`} /></button> : customerIsSpecialCase && <span title="Trường hợp đặc biệt" aria-label="Trường hợp đặc biệt" className="inline-flex shrink-0 text-amber-300"><Star className="h-4 w-4 fill-current" /></span>}</h1>
-                <p className="mt-1 truncate text-[0.75rem] text-teal-50 sm:text-xs">{finding.branchName} · {finding.department || 'Chưa phân phòng'}</p>
+                <h1 className="flex min-w-0 items-center gap-2 text-sm font-black sm:text-lg"><span className="line-clamp-2 break-words" title={finding.customerName}>{finding.customerName}</span>{canFlagSpecialCase ? <button type="button" aria-label="Đánh dấu khách hàng là trường hợp đặc biệt" aria-pressed={customerIsSpecialCase} title={canEditCustomerSpecialCase ? 'Trường hợp đặc biệt' : 'Dấu sao đã khóa sau khi gửi duyệt'} disabled={busy || !canEditCustomerSpecialCase} onClick={() => void toggleSpecialCase(!customerIsSpecialCase)} className={`inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-300 disabled:cursor-not-allowed disabled:opacity-60 ${customerIsSpecialCase ? 'border-amber-300 bg-amber-400/20 text-amber-300' : 'border-white/25 bg-white/10 text-white/70 hover:bg-white/20'}`}><Star className={`h-4 w-4 ${customerIsSpecialCase ? 'fill-current' : ''}`} /></button> : customerIsSpecialCase && <span title="Trường hợp đặc biệt" aria-label="Trường hợp đặc biệt" className="inline-flex shrink-0 text-amber-300"><Star className="h-4 w-4 fill-current" /></span>}</h1>
+                <p className="mt-1 truncate text-xs text-teal-50 sm:text-xs">{finding.branchName} · {finding.department || 'Chưa phân phòng'}</p>
               </div>
             </div>
             <div className="min-w-0 border-t border-white/15 pt-3 lg:border-l lg:border-t-0 lg:pl-4 lg:pt-0" aria-labelledby="finding-tabs-title">
               <div className="mb-2 flex min-h-8 flex-wrap items-center justify-between gap-2">
                 <div className="flex items-center gap-2">
-                  <h2 id="finding-tabs-title" className="text-[0.75rem] font-black text-teal-50">Các mã lỗi của khách hàng</h2>
-                  <span className="rounded-full bg-white/15 px-2 py-0.5 text-[0.75rem] font-black text-white">{items.length}</span>
+                  <h2 id="finding-tabs-title" className="text-xs font-black text-teal-50">Các mã lỗi của khách hàng</h2>
+                  <span className="rounded-full bg-white/15 px-2 py-0.5 text-xs font-black text-white">{items.length}</span>
                 </div>
               </div>
               <div className="flex min-w-0 items-stretch gap-2">
@@ -331,9 +329,9 @@ export const FindingDetailPage: React.FC<Props> = ({
                     return <button key={item.id} role="tab" aria-selected={active} onClick={() => setSelectedId(item.id)} className={`min-h-14 min-w-[190px] snap-start rounded-xl border px-3 py-2 text-left transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 sm:min-w-[220px] ${active ? 'border-white bg-white text-slate-900 shadow-lg' : 'border-white/25 bg-white/10 text-white hover:bg-white/20'}`}>
                       <span className="flex items-center justify-between gap-2">
                         <span className={`font-mono text-xs font-black ${active ? 'text-brand-600' : 'text-white'}`}>{item.errorCode}</span>
-                        <span aria-label={`Trạng thái SLA: ${slaStatusLabels[item.slaStatus]}`} className={`rounded border px-1.5 py-0.5 text-[0.75rem] font-bold ${active ? slaTone[item.slaStatus] : 'border-white/20 bg-white/10 text-white'}`}>{slaStatusLabels[item.slaStatus]}</span>
+                        <span aria-label={`Trạng thái SLA: ${slaStatusLabels[item.slaStatus]}`} className={`rounded border px-1.5 py-0.5 text-xs font-bold ${active ? slaTone[item.slaStatus] : 'border-white/20 bg-white/10 text-white'}`}>{slaStatusLabels[item.slaStatus]}</span>
                       </span>
-                      <span className={`mt-1 block truncate text-[0.75rem] font-semibold ${active ? 'text-slate-700' : 'text-teal-50'}`}>{item.errorTitle}</span>
+                      <span title={item.errorTitle} className={`mt-1 line-clamp-2 break-words text-xs font-semibold ${active ? 'text-slate-700' : 'text-teal-50'}`}>{item.errorTitle}</span>
                     </button>;
                   })}
                 </div>
@@ -346,7 +344,7 @@ export const FindingDetailPage: React.FC<Props> = ({
                   <button type="button" onClick={togglePriorityMonitoring} disabled={busy} aria-label={priorityWatchTarget?.isPriority ? 'Bỏ ưu tiên giám sát' : 'Ưu tiên giám sát'} aria-pressed={Boolean(priorityWatchTarget?.isPriority)} title={priorityWatchTarget?.isPriority ? 'Bỏ ưu tiên giám sát' : 'Ưu tiên giám sát'} className={`grid min-h-11 w-11 place-items-center rounded-xl border focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 disabled:opacity-50 ${priorityWatchTarget?.isPriority ? 'border-amber-300 bg-amber-300 text-amber-950' : 'border-white/20 bg-white/10 text-white hover:bg-white/20'}`}><Star className={`h-4 w-4 ${priorityWatchTarget?.isPriority ? 'fill-current' : ''}`} /></button>
                   <div className="relative">
                     <button onClick={() => setWatchMenuOpen(value => !value)} disabled={busy} aria-expanded={watchMenuOpen} aria-haspopup="menu" className="inline-flex min-h-11 items-center gap-2 rounded-xl border border-white/20 bg-white/10 px-3 py-2 text-xs font-bold text-white hover:bg-white/20 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/70 disabled:opacity-50"><Eye className="h-4 w-4" /><span className="hidden sm:inline">Theo dõi</span><ChevronDown className="h-3.5 w-3.5" /></button>
-                    {watchMenuOpen && <div role="menu" className="absolute right-0 top-12 z-20 w-64 overflow-hidden rounded-xl border border-rule bg-white p-1.5 text-slate-800 shadow-2xl">
+                    {watchMenuOpen && <div role="menu" className="absolute right-0 top-12 z-20 w-64 max-w-[calc(100vw-2rem)] overflow-hidden rounded-xl border border-rule bg-white p-1.5 text-slate-800 shadow-2xl">
                       <WatchOption label="Cụm địa bàn" value={finding.clusterName} active={Boolean(matchingWatchTarget('CLUSTER'))} onClick={() => toggleWatchTarget('CLUSTER')} />
                       <WatchOption label="Chi nhánh" value={finding.branchName} active={Boolean(matchingWatchTarget('BRANCH'))} onClick={() => toggleWatchTarget('BRANCH')} />
                       <WatchOption label="Khách hàng" value={finding.customerName} active={Boolean(matchingWatchTarget('CUSTOMER'))} onClick={() => toggleWatchTarget('CUSTOMER')} />
@@ -382,9 +380,9 @@ export const FindingDetailPage: React.FC<Props> = ({
             </div>
             {finding.evidences?.length ? <>
               <div className="flex gap-2 overflow-x-auto border-b border-rule bg-slate-50 p-2">
-                {finding.evidences.map(evidence => <button key={evidence.id} onClick={() => setSelectedEvidence(evidence)} className={`flex min-h-11 min-w-[220px] items-center gap-2 rounded-xl border p-2 text-left text-[0.75rem] ${selectedEvidence?.id === evidence.id ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500/10' : 'border-rule bg-white hover:bg-slate-50'}`}>
+                {finding.evidences.map(evidence => <button key={evidence.id} onClick={() => setSelectedEvidence(evidence)} className={`flex min-h-11 min-w-[220px] items-center gap-2 rounded-xl border p-2 text-left text-xs ${selectedEvidence?.id === evidence.id ? 'border-brand-500 bg-brand-50 ring-1 ring-brand-500/10' : 'border-rule bg-white hover:bg-slate-50'}`}>
                   <EvidenceIcon evidence={evidence} />
-                  <span className="min-w-0"><span className="block truncate font-bold text-slate-800">{evidence.fileName}</span><span className="mt-0.5 block text-[0.75rem] text-slate-500">{evidence.status === 'QUARANTINED' ? 'Đang chờ quét an toàn' : evidence.scanResult ? `Đã quét · ${evidence.scanResult.provider ?? 'Scanner'}` : formatBytes(evidence.fileSize)}</span></span>
+                  <span className="min-w-0"><span className="block truncate font-bold text-slate-800">{evidence.fileName}</span><span className="mt-0.5 block text-xs text-slate-500">{evidence.status === 'QUARANTINED' ? 'Đang chờ quét an toàn' : evidence.scanResult ? `Đã quét · ${evidence.scanResult.provider ?? 'Scanner'}` : formatBytes(evidence.fileSize)}</span></span>
                 </button>)}
               </div>
               {pendingEvidenceRemovalId === selectedEvidence?.id && <div className="flex flex-wrap items-center justify-between gap-2 border-b border-red-200 bg-red-50 px-3 py-2 text-xs text-red-800">
@@ -396,7 +394,7 @@ export const FindingDetailPage: React.FC<Props> = ({
                   </button>
                 </span>
               </div>}
-              {selectedEvidence?.scanResult && <div className={`border-b px-3 py-2 text-[0.75rem] ${selectedEvidence.scanResult.verdict === 'CLEAN' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-red-200 bg-red-50 text-red-900'}`}>
+              {selectedEvidence?.scanResult && <div className={`border-b px-3 py-2 text-xs ${selectedEvidence.scanResult.verdict === 'CLEAN' ? 'border-emerald-200 bg-emerald-50 text-emerald-900' : 'border-red-200 bg-red-50 text-red-900'}`}>
                 <strong>Kết quả quét: {selectedEvidence.scanResult.verdict === 'CLEAN' ? 'An toàn' : 'Bị từ chối'}</strong>
                 <span className="ml-1">· {selectedEvidence.scanResult.provider ?? 'Scanner tích hợp'} · {new Date(selectedEvidence.scanResult.scannedAt).toLocaleString('vi-VN')}</span>
                 {selectedEvidence.scanResult.scanReference && <span className="ml-1">· Mã {selectedEvidence.scanResult.scanReference}</span>}
@@ -413,10 +411,10 @@ export const FindingDetailPage: React.FC<Props> = ({
             <div>
               <div className="mb-3 flex flex-wrap items-center gap-2">
                 <span className="rounded-lg bg-brand-500 px-2.5 py-1 font-mono text-xs font-black text-white">{finding.errorCode}</span>
-                <span className={`rounded-lg border px-2.5 py-1 text-[0.75rem] font-bold ${statusMeta[finding.workflowStatus].tone}`}>{statusMeta[finding.workflowStatus].label}</span>
-                <span aria-label={`Trạng thái SLA: ${slaStatusLabels[finding.slaStatus]}`} className={`rounded-lg border px-2.5 py-1 text-[0.75rem] font-bold ${slaTone[finding.slaStatus]}`}>{slaStatusLabels[finding.slaStatus]}</span>
+                <span className={`rounded-lg border px-2.5 py-1 text-xs font-bold ${statusMeta[finding.workflowStatus].tone}`}>{statusMeta[finding.workflowStatus].label}</span>
+                <span aria-label={`Trạng thái SLA: ${slaStatusLabels[finding.slaStatus]}`} className={`rounded-lg border px-2.5 py-1 text-xs font-bold ${slaTone[finding.slaStatus]}`}>{slaStatusLabels[finding.slaStatus]}</span>
                 {/* Mức rủi ro do đoàn kiểm tra chấm trên CoPlus, đặt cạnh các nhãn trạng thái. */}
-                {finding.riskLevel && <span aria-label={`Mức độ rủi ro: ${riskLevelLabels[finding.riskLevel]}`} className={`rounded-lg border px-2.5 py-1 text-[0.75rem] font-bold ${riskTone[finding.riskLevel]}`}>Rủi ro {riskLevelLabels[finding.riskLevel].toLowerCase()}</span>}
+                {finding.riskLevel && <span aria-label={`Mức độ rủi ro: ${riskLevelLabels[finding.riskLevel]}`} className={`rounded-lg border px-2.5 py-1 text-xs font-bold ${riskTone[finding.riskLevel]}`}>Rủi ro {riskLevelLabels[finding.riskLevel].toLowerCase()}</span>}
               </div>
               <h2 id="finding-detail-title" className="text-sm font-black text-slate-900">Nội dung cần giải trình</h2>
               <p className="mt-2 text-justify text-sm font-bold leading-6 text-slate-800">{finding.errorTitle}</p>
@@ -449,30 +447,30 @@ export const FindingDetailPage: React.FC<Props> = ({
 
             {finding.rejectionReason && <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-justify text-xs text-red-800"><strong>Lý do chuyển trả:</strong> {finding.rejectionReason}</div>}
             {finding.resolutionNotes && <div className="rounded-xl border border-brand-200 bg-brand-50 p-3 text-justify text-xs leading-5 text-brand-800"><strong>Giải trình chi nhánh:</strong> {finding.resolutionNotes}</div>}
-            {finding.dynamicPayload && Object.keys(finding.dynamicPayload).length > 0 && <section className="overflow-hidden rounded-xl border border-rule" aria-label="Dữ liệu báo cáo"><h3 className="bg-slate-50 px-3 py-2 text-xs font-black text-slate-800">Dữ liệu báo cáo</h3><dl className={`grid gap-px bg-slate-200 ${finding.presentationMode === 'EXCEL_GRID' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>{Object.entries(finding.dynamicPayload).map(([key, value]) => <div key={key} className="bg-white p-3"><dt className="text-[0.75rem] font-bold text-slate-400">{key.replace(/_/g, ' ')}</dt><dd className="mt-1 text-justify text-xs font-semibold text-slate-800">{String(value ?? '')}</dd></div>)}</dl></section>}
+            {finding.dynamicPayload && Object.keys(finding.dynamicPayload).length > 0 && <section className="overflow-hidden rounded-xl border border-rule" aria-label="Dữ liệu báo cáo"><h3 className="bg-slate-50 px-3 py-2 text-xs font-black text-slate-800">Dữ liệu báo cáo</h3><dl className={`grid gap-px bg-slate-200 ${finding.presentationMode === 'EXCEL_GRID' ? 'sm:grid-cols-3' : 'sm:grid-cols-2'}`}>{Object.entries(finding.dynamicPayload).map(([key, value]) => <div key={key} className="bg-white p-3"><dt className="text-xs font-bold text-slate-400">{key.replace(/_/g, ' ')}</dt><dd className="mt-1 text-justify text-xs font-semibold text-slate-800">{String(value ?? '')}</dd></div>)}</dl></section>}
 
             {(finding.workflowStatus === 'PENDING' || finding.workflowStatus === 'REJECTED') && isBranchInput && <ActionPanel title="Chi nhánh khắc phục">
               <textarea value={resolutionNotes} onChange={event => setResolutionNotes(event.target.value)} rows={4} placeholder="Nêu rõ nội dung đã khắc phục, tài liệu và ngày hoàn thành..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-brand-500 focus:outline-none focus:ring-2 focus:ring-brand-500/15" />
-              <RecipientSelect recipients={recipients} value={nextApproverId} onChange={setNextApproverId} disabled={busy} />
-              <button disabled={busy || !hasAvailableEvidence || resolutionNotes.trim().length < 5} onClick={() => commit(() => api.submitBranch(finding.id, { expectedVersion: finding.version, resolutionNotes, nextApproverUserId }))} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.submitBranch} <ArrowRight className="h-4 w-4" /></button>
+              <SubmitRoutePicker findingId={finding.id} refreshToken={finding.version} creator={currentUser} disabled={busy} onChange={setSubmitSelections} />
+              <button disabled={busy || !hasAvailableEvidence || resolutionNotes.trim().length < 5} onClick={() => commit(() => api.submitBranch(finding.id, { expectedVersion: finding.version, resolutionNotes, approverSelections: submitSelections }))} className="flex min-h-11 w-full items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.submitBranch} <ArrowRight className="h-4 w-4" /></button>
             </ActionPanel>}
 
             {waitingForSomeoneElse && <p role="status" className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">Hồ sơ này đã giao cho người duyệt khác. Chỉ người đó duyệt hoặc trả được ở bước này.</p>}
 
             {finding.workflowStatus === 'SUBMITTED_BRANCH' && isBranchController && <ActionPanel title="Kiểm soát chi nhánh">
               <textarea value={rejectReason} onChange={event => setRejectReason(event.target.value)} rows={3} placeholder="Nhập lý do nếu cần chuyển trả hồ sơ..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-brand-500 focus:outline-none" />
-              <RecipientSelect recipients={recipients} value={nextApproverId} onChange={setNextApproverId} disabled={busy} />
+              <NextStepNotice recipients={recipients} />
               <div className="grid gap-2 sm:grid-cols-2">
-                <button disabled={busy || !hasAvailableEvidence || !allSubItemsAccepted} onClick={() => commit(() => api.branchControlApprove(finding.id, { expectedVersion: finding.version, notes: recipients?.stage === 'BRANCH_LEADER' ? 'Kiểm soát chi nhánh chuyển hồ sơ lên lãnh đạo chi nhánh.' : 'Kiểm soát chi nhánh chuyển hồ sơ phê duyệt HT.', nextApproverUserId }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4" />{recipients?.stage === 'BRANCH_LEADER' ? workflowActionLabels.branchApproveToLeader : workflowActionLabels.branchApprove}</button>
+                <button disabled={busy || !hasAvailableEvidence || !allSubItemsAccepted} onClick={() => commit(() => api.branchControlApprove(finding.id, { expectedVersion: finding.version, notes: recipients?.stage === 'BRANCH_LEADER' ? 'Kiểm soát chi nhánh chuyển hồ sơ lên lãnh đạo chi nhánh.' : 'Kiểm soát chi nhánh chuyển hồ sơ phê duyệt HT.' }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4" />{recipients?.stage === 'BRANCH_LEADER' ? workflowActionLabels.branchApproveToLeader : workflowActionLabels.branchApprove}</button>
                 <button disabled={busy || rejectReason.trim().length < 5} onClick={() => commit(() => api.branchControlReject(finding.id, { expectedVersion: finding.version, reason: rejectReason }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700 disabled:opacity-50"><XCircle className="h-4 w-4" />{workflowActionLabels.returnToBranch}</button>
               </div>
             </ActionPanel>}
 
             {finding.workflowStatus === 'SUBMITTED_BRANCH_LEADER' && isBranchLeader && <ActionPanel title="Lãnh đạo chi nhánh">
               <textarea value={rejectReason} onChange={event => setRejectReason(event.target.value)} rows={3} placeholder="Nhập lý do nếu cần chuyển trả hồ sơ..." className="w-full rounded-xl border border-slate-300 p-3 text-xs focus:border-brand-500 focus:outline-none" />
-              <RecipientSelect recipients={recipients} value={nextApproverId} onChange={setNextApproverId} disabled={busy} />
+              <NextStepNotice recipients={recipients} />
               <div className="grid gap-2 sm:grid-cols-2">
-                <button disabled={busy || !hasAvailableEvidence || !allSubItemsAccepted} onClick={() => commit(() => api.branchLeaderApprove(finding.id, { expectedVersion: finding.version, notes: 'Lãnh đạo chi nhánh chuyển hồ sơ phê duyệt nội bộ.', nextApproverUserId }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4" />Chuyển phê duyệt HT</button>
+                <button disabled={busy || !hasAvailableEvidence || !allSubItemsAccepted} onClick={() => commit(() => api.branchLeaderApprove(finding.id, { expectedVersion: finding.version, notes: 'Lãnh đạo chi nhánh chuyển hồ sơ phê duyệt nội bộ.' }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-3 text-xs font-bold text-white disabled:opacity-50"><CheckCircle2 className="h-4 w-4" />Chuyển phê duyệt HT</button>
                 <button disabled={busy || rejectReason.trim().length < 5} onClick={() => commit(() => api.branchLeaderReject(finding.id, { expectedVersion: finding.version, reason: rejectReason }))} className="flex min-h-11 items-center justify-center gap-2 rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-bold text-red-700 disabled:opacity-50"><XCircle className="h-4 w-4" />{workflowActionLabels.returnToBranch}</button>
               </div>
             </ActionPanel>}
@@ -488,7 +486,7 @@ export const FindingDetailPage: React.FC<Props> = ({
 
             {(finding.inspectionTeamCode || finding.sourceRecordCode || finding.businessLine || finding.penaltyProposalCode || finding.referenceDocument) && <details className="group border-t border-rule pt-3">
               <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between text-xs font-black text-slate-800">Nguồn kiểm tra <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[0.75rem]">
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                 <Detail label="Mã đoàn kiểm tra" value={finding.inspectionTeamCode || 'Chưa gắn đoàn'} />
                 <Detail label="Mã tiểu biên bản" value={finding.sourceRecordCode || 'Chưa có'} />
                 <Detail label="Loại nghiệp vụ" value={finding.businessLine ? businessLineLabels[finding.businessLine] : 'Chưa phân loại'} />
@@ -500,7 +498,7 @@ export const FindingDetailPage: React.FC<Props> = ({
 
             <details className="group border-t border-rule pt-3">
               <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between text-xs font-black text-slate-800">Thông tin biên bản <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
-              <div className="mt-2 grid grid-cols-2 gap-2 text-[0.75rem]">
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
                 <Detail label="Quyết định kiểm tra" value={finding.decisionNo || 'Chưa có'} />
                 <Detail label="Ngày kiểm tra" value={finding.auditDate ? new Date(finding.auditDate).toLocaleDateString('vi-VN') : 'Chưa có'} />
                 <Detail label="Cán bộ kiểm tra" value={finding.inspectorName || 'Chưa có'} />
@@ -523,30 +521,29 @@ export const FindingDetailPage: React.FC<Props> = ({
   );
 };
 
-const HistoryEntry: React.FC<{ event: NonNullable<Finding['history']>[number] }> = ({ event }) => <li className="relative border-l-2 border-brand-100 pl-3 text-[0.75rem] leading-4">
+const HistoryEntry: React.FC<{ event: NonNullable<Finding['history']>[number] }> = ({ event }) => <li className="relative border-l-2 border-brand-100 pl-3 text-xs leading-4">
   <span className="absolute -left-[5px] top-1 h-2 w-2 rounded-full bg-brand-500" />
   <strong className="text-slate-800">{event.actorName}</strong>
   <span className="block text-slate-500">{workflowEventLabels[event.command]} · {new Date(event.createdAt).toLocaleString('vi-VN')}</span>
   {event.notes && <span className="mt-1 block text-justify text-slate-600">{event.notes}</span>}
 </li>;
 
-const Detail: React.FC<{ label: string; value: string }> = ({ label, value }) => <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className="block text-[0.75rem] font-bold text-slate-400">{label}</span><span className="mt-1 block font-semibold text-slate-700">{value}</span></div>;
-const RecipientSelect: React.FC<{
-  recipients: NextApprovalRecipients | null;
-  value: string;
-  onChange: (userId: string) => void;
-  disabled: boolean;
-}> = ({ recipients, value, onChange, disabled }) => {
+const Detail: React.FC<{ label: string; value: string }> = ({ label, value }) => <div className="rounded-xl border border-slate-100 bg-slate-50 p-2.5"><span className="block text-xs font-bold text-slate-400">{label}</span><span className="mt-1 block font-semibold text-slate-700">{value}</span></div>;
+/**
+ * Hồ sơ đi tiếp theo tuyến người nộp đã chọn lúc nộp, nên người duyệt không chọn lại người nhận:
+ * duyệt xong là hồ sơ tự lên bước kế tiếp, tới đúng người đã được ghim ở bước đó.
+ */
+const NextStepNotice: React.FC<{ recipients: NextApprovalRecipients | null }> = ({ recipients }) => {
   if (!recipients?.stage) return null;
-  const empty = recipients.options.length === 0 && !recipients.allowSharedQueue;
-  return <label className="block text-xs">
-    <span className="mb-1 block font-bold text-slate-700">Người nhận ({userRoleLabels[recipients.stage]})</span>
-    <select value={value} onChange={event => onChange(event.target.value)} disabled={disabled || empty} className="min-h-11 w-full rounded-xl border border-slate-300 bg-white px-3 text-xs focus:border-brand-500 focus:outline-none disabled:opacity-60">
-      {recipients.allowSharedQueue && <option value="">Hàng chờ chung, ai tiếp nhận thì duyệt</option>}
-      {recipients.options.map(option => <option key={option.id} value={option.id}>{option.fullName}{option.department ? ` · ${option.department}` : ''}</option>)}
-    </select>
-    {empty && <span className="mt-1 block font-semibold text-red-700">Chưa có người phù hợp ở bước này. Báo quản trị viên bổ sung người phụ trách.</span>}
-  </label>;
+  const assignee = recipients.options.find(option => option.id === recipients.suggestedUserId);
+  const target = assignee
+    ? `${assignee.fullName}${assignee.department ? ` · ${assignee.department}` : ''}`
+    : recipients.allowSharedQueue ? 'Hàng chờ chung, ai tiếp nhận thì duyệt' : 'Chưa có người phụ trách, báo quản trị viên bổ sung';
+  const unresolved = !assignee && !recipients.allowSharedQueue;
+  return <p role="status" className={`rounded-xl border px-3 py-2 text-xs ${unresolved ? 'border-red-200 bg-red-50 text-red-800' : 'border-slate-200 bg-slate-50 text-slate-700'}`}>
+    <span className="block font-bold">Duyệt xong hồ sơ tự chuyển lên {userRoleLabels[recipients.stage]}</span>
+    <span className="mt-0.5 block">{target}</span>
+  </p>;
 };
 const ActionPanel: React.FC<{ title: string; children: React.ReactNode }> =({ title, children }) => <div className="space-y-3 border-t border-rule pt-4"><h3 className="flex items-center gap-2 text-xs font-black text-slate-900"><ShieldCheck className="h-4 w-4 text-brand-600" />{title}</h3>{children}</div>;
 
@@ -575,10 +572,10 @@ const SubItemReview: React.FC<SubItemReviewProps> = ({
   return <section className="rounded-xl border border-rule bg-slate-50/70 p-3" aria-labelledby="sub-item-title">
     <div className="flex items-center justify-between gap-2">
       <h3 id="sub-item-title" className="flex items-center gap-2 text-xs font-black text-slate-900"><ListChecks className="h-4 w-4 text-brand-600" />Các ý sai sót trong mã lỗi</h3>
-      <span className="rounded-full bg-white px-2 py-0.5 text-[0.75rem] font-black text-brand-600 ring-1 ring-slate-200">{subItems.length}</span>
+      <span className="rounded-full bg-white px-2 py-0.5 text-xs font-black text-brand-600 ring-1 ring-slate-200">{subItems.length}</span>
     </div>
     <details className="group mt-3">
-      <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between rounded-lg border border-rule bg-white px-3 text-[0.75rem] font-bold text-slate-600">Xem chi tiết các ý sai sót <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
+      <summary className="flex min-h-10 cursor-pointer list-none items-center justify-between rounded-lg border border-rule bg-white px-3 text-xs font-bold text-slate-600">Xem chi tiết các ý sai sót <ChevronDown className="h-4 w-4 transition group-open:rotate-180" /></summary>
       <div className="mt-3 space-y-2">
         {subItems.map((item, index) => {
         const checked = acceptedIds.has(item.id);
@@ -592,9 +589,9 @@ const SubItemReview: React.FC<SubItemReviewProps> = ({
           <span className="min-w-0 flex-1">
             <span className="flex items-start justify-between gap-2">
               <span className="text-justify text-xs font-bold leading-5 text-slate-800">{index + 1}. {item.content}</span>
-              <span className={`shrink-0 rounded-md border px-1.5 py-0.5 text-[0.75rem] font-bold ${status.tone}`}>{status.label}</span>
+              <span className={`shrink-0 rounded-md border px-1.5 py-0.5 text-xs font-bold ${status.tone}`}>{status.label}</span>
             </span>
-            {item.reviewerNote && <span className="mt-1 block text-[0.75rem] leading-4 text-slate-500">Nhận xét: {item.reviewerNote}</span>}
+            {item.reviewerNote && <span className="mt-1 block text-xs leading-4 text-slate-500">Nhận xét: {item.reviewerNote}</span>}
           </span>
           </label>;
         })}
@@ -607,7 +604,7 @@ const SubItemReview: React.FC<SubItemReviewProps> = ({
     </div>}
 
     {canReview && <div className="mt-3 space-y-2 border-t border-rule pt-3">
-      <p className="text-justify text-[0.75rem] leading-4 text-slate-600">Chọn các ý đủ căn cứ; các ý còn lại sẽ được trả bổ sung.</p>
+      <p className="text-justify text-xs leading-4 text-slate-600">Chọn các ý đủ căn cứ; các ý còn lại sẽ được trả bổ sung.</p>
       <textarea value={reviewNote} onChange={event => onReviewNoteChange(event.target.value)} rows={2} placeholder="Nhập nhận xét..." className="w-full rounded-xl border border-slate-300 bg-white p-3 text-xs focus:border-brand-500 focus:outline-none" />
       <button type="button" onClick={onReview} disabled={busy || reviewNote.trim().length < 5 || (isAcceptingAll && !hasAvailableEvidence)} className="min-h-11 w-full rounded-xl bg-brand-500 px-3 text-xs font-bold text-white disabled:opacity-50">{workflowActionLabels.saveSubItemReview}</button>
     </div>}
@@ -616,7 +613,7 @@ const SubItemReview: React.FC<SubItemReviewProps> = ({
 
 const WatchOption: React.FC<{ label: string; value: string; active: boolean; onClick: () => void }> = ({ label, value, active, onClick }) => <button type="button" role="menuitemcheckbox" aria-checked={active} onClick={onClick} className="flex min-h-12 w-full items-center gap-3 rounded-lg px-3 py-2 text-left hover:bg-brand-50">
   <span className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-md border ${active ? 'border-brand-500 bg-brand-500 text-white' : 'border-slate-300 text-transparent'}`}><CheckCircle2 className="h-3.5 w-3.5" /></span>
-  <span className="min-w-0"><span className="block text-[0.75rem] font-black text-slate-400">{active ? `Đang theo dõi ${label}` : `Theo dõi ${label}`}</span><span className="block truncate text-xs font-bold text-slate-800">{value}</span></span>
+  <span className="min-w-0"><span className="block text-xs font-black text-slate-400">{active ? `Đang theo dõi ${label}` : `Theo dõi ${label}`}</span><span className="block truncate text-xs font-bold text-slate-800">{value}</span></span>
 </button>;
 
 const EvidenceIcon: React.FC<{ evidence: EvidenceObject }> = ({ evidence }) => {

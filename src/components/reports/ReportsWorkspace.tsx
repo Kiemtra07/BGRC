@@ -396,8 +396,8 @@ export const ReportsWorkspace: React.FC = () => {
       <span className="min-w-0 truncate text-xs font-semibold text-slate-500">{activeTemplateName}</span>
 
       <div role="tablist" aria-label="Chế độ màn hình báo cáo" className="ml-auto flex shrink-0 gap-1 rounded-xl bg-slate-100 p-1">
-        <button type="button" role="tab" aria-selected={viewMode === 'result'} onClick={() => setViewMode('result')} className={`min-h-8 rounded-lg px-3 text-[0.75rem] font-bold transition-colors ${viewMode === 'result' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Kết quả</button>
-        <button type="button" role="tab" aria-selected={viewMode === 'design'} onClick={() => setViewMode('design')} className={`min-h-8 rounded-lg px-3 text-[0.75rem] font-bold transition-colors ${viewMode === 'design' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Tự thiết kế</button>
+        <button type="button" role="tab" aria-selected={viewMode === 'result'} onClick={() => setViewMode('result')} className={`min-h-8 rounded-lg px-3 text-xs font-bold transition-colors ${viewMode === 'result' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Kết quả</button>
+        <button type="button" role="tab" aria-selected={viewMode === 'design'} onClick={() => setViewMode('design')} className={`min-h-8 rounded-lg px-3 text-xs font-bold transition-colors ${viewMode === 'design' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Tự thiết kế</button>
       </div>
 
       <button type="button" onClick={() => void runReport()} disabled={!catalog || busy || Boolean(invalidQueryHint)} title={invalidQueryHint || 'Chạy báo cáo'} className="inline-flex min-h-10 shrink-0 items-center gap-1.5 rounded-xl bg-brand-500 px-3.5 text-xs font-bold text-white shadow-raised transition-colors hover:bg-brand-600 disabled:opacity-50">
@@ -406,9 +406,9 @@ export const ReportsWorkspace: React.FC = () => {
 
       <details ref={exportMenuRef} className="relative shrink-0">
         <summary className="inline-flex min-h-10 cursor-pointer list-none items-center gap-1.5 rounded-xl border border-rule bg-white px-3 text-xs font-bold text-slate-700 shadow-panel hover:border-brand-300 hover:text-brand-600">Xuất báo cáo<ChevronDown className="h-3.5 w-3.5" aria-hidden="true" /></summary>
-        <div className="absolute right-0 z-20 mt-1 w-64 rounded-xl border border-rule bg-white p-3 shadow-raised">
+        <div className="z-20 mt-1 rounded-xl border border-rule bg-white p-3 shadow-raised max-xl:fixed max-xl:inset-x-4 max-xl:mx-auto max-xl:max-w-sm xl:absolute xl:right-0 xl:w-64">
           <fieldset className="mb-2 space-y-1">
-            <legend className="mb-1 text-[0.75rem] font-black text-slate-500">Nội dung tệp</legend>
+            <legend className="mb-1 text-xs font-black text-slate-500">Nội dung tệp</legend>
             <label className="flex min-h-9 items-center gap-2 text-xs font-semibold text-slate-700"><input type="radio" name="export-section" checked={exportSection === 'design'} onChange={() => setExportSection('design')} />Theo bảng đang xem</label>
             <label className="flex min-h-9 items-center gap-2 text-xs font-semibold text-slate-700"><input type="radio" name="export-section" checked={exportSection === 'detail'} onChange={() => setExportSection('detail')} />Dòng chi tiết từng hồ sơ</label>
           </fieldset>
@@ -421,7 +421,7 @@ export const ReportsWorkspace: React.FC = () => {
 
     {error && <div role="alert" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-3 text-xs font-semibold text-red-800">
       <span className="min-w-0 flex-1">{error}</span>
-      <button type="button" onClick={() => void runReport()} disabled={!catalog || busy || Boolean(invalidQueryHint)} className="min-h-9 shrink-0 rounded-lg border border-red-300 bg-white px-3 text-[0.75rem] font-black text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50">Thử lại báo cáo</button>
+      <button type="button" onClick={() => void runReport()} disabled={!catalog || busy || Boolean(invalidQueryHint)} className="min-h-9 shrink-0 rounded-lg border border-red-300 bg-white px-3 text-xs font-black text-red-700 transition-colors hover:bg-red-100 disabled:cursor-not-allowed disabled:opacity-50">Thử lại báo cáo</button>
     </div>}
     {notice && <div role="status" className="rounded-xl border border-brand-200 bg-brand-50 p-3 text-xs font-semibold text-brand-600">{notice}</div>}
 
@@ -434,10 +434,10 @@ export const ReportsWorkspace: React.FC = () => {
           aria-pressed={selectedTemplateId === preset.id}
           onClick={() => applyTemplate(preset.id)}
           className={`min-h-11 w-64 shrink-0 snap-start rounded-xl border p-3 text-left transition-colors sm:w-auto ${selectedTemplateId === preset.id ? 'border-brand-500 bg-brand-50' : 'border-rule bg-white hover:border-brand-300'}`}
-        ><span className="block text-xs font-bold text-slate-900">{preset.name}</span><span className="mt-0.5 block text-[0.75rem] leading-relaxed text-slate-500">{preset.description}</span></button>)}
+        ><span className="block text-xs font-bold text-slate-900">{preset.name}</span><span className="mt-0.5 block text-xs leading-relaxed text-slate-500">{preset.description}</span></button>)}
       </div>
       {standardDefinitions.length > 0 && <div className="space-y-1.5" data-testid="report-standard-list">
-        <h4 className="text-[0.75rem] font-black text-slate-500">Báo cáo chuẩn</h4>
+        <h4 className="text-xs font-black text-slate-500">Báo cáo chuẩn</h4>
         <div className="flex flex-wrap gap-2">{standardDefinitions.map(definition => <button
           key={definition.id}
           type="button"
@@ -448,14 +448,14 @@ export const ReportsWorkspace: React.FC = () => {
         >{definition.name}</button>)}</div>
       </div>}
       {personalDefinitions.length > 0 && <div className="space-y-1.5" data-testid="report-saved-list">
-        <h4 className="text-[0.75rem] font-black text-slate-500">Báo cáo đã lưu</h4>
+        <h4 className="text-xs font-black text-slate-500">Báo cáo đã lưu</h4>
         <div className="flex flex-wrap gap-2">{personalDefinitions.map(definition => <button
           key={definition.id}
           type="button"
           aria-pressed={selectedTemplateId === definition.id}
           onClick={() => applyTemplate(definition.id)}
           className={`min-h-10 rounded-xl border px-3 text-xs font-bold ${selectedTemplateId === definition.id ? 'border-brand-500 bg-brand-50 text-brand-700' : 'border-rule bg-white text-slate-700 hover:border-brand-300'}`}
-        >{definition.name}{definition.visibility === 'ROLE_SHARED' && <span className="ml-1.5 rounded bg-slate-100 px-1.5 text-[0.75rem] font-semibold text-slate-600">chia sẻ</span>}</button>)}</div>
+        >{definition.name}{definition.visibility === 'ROLE_SHARED' && <span className="ml-1.5 rounded bg-slate-100 px-1.5 text-xs font-semibold text-slate-600">chia sẻ</span>}</button>)}</div>
       </div>}
     </section>
 
@@ -495,15 +495,15 @@ export const ReportsWorkspace: React.FC = () => {
             <select aria-label="Xem theo" value={query.groupBy} onChange={event => setGroupBy(event.target.value as ReportFieldKey)} className={ZONE_SELECT_CLASS}>{groupFields.map(field => <option key={field.key} value={field.key}>{field.label}</option>)}</select>
           </DropZone>
           <DropZone zone="values" icon={<Sigma className="h-3.5 w-3.5" />} title="Đo bằng" onDrop={dropInto}>
-            <div className="flex flex-wrap gap-1">{query.metrics.map(key => <span key={key} className="inline-flex items-center gap-1 rounded-lg bg-brand-50 py-1 pl-2 pr-1 text-[0.75rem] font-bold text-brand-600">
+            <div className="flex flex-wrap gap-1">{query.metrics.map(key => <span key={key} className="inline-flex items-center gap-1 rounded-lg bg-brand-50 py-1 pl-2 pr-1 text-xs font-bold text-brand-600">
               {metricsByKey.get(key)?.label || 'Chỉ số'}
               <button type="button" onClick={() => removeMetric(key)} disabled={query.metrics.length < 2} className="rounded p-0.5 hover:bg-brand-100 disabled:opacity-30" aria-label={`Bỏ chỉ số ${metricsByKey.get(key)?.label || ''}`}><X className="h-3 w-3" /></button>
             </span>)}</div>
           </DropZone>
           <DropZone zone="filters" icon={<Filter className="h-3.5 w-3.5" />} title="Bộ lọc" onDrop={dropInto}>
             <div className="flex flex-wrap gap-1">
-              {query.rules.map((rule, index) => <button key={`${rule.key}-${index}`} type="button" onClick={() => setOpenRuleIndex(current => current === index ? null : index)} className={`rounded-lg px-2 py-1 text-[0.75rem] font-bold ${openRuleIndex === index ? 'bg-brand-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>{describeRule(rule, fieldsByKey.get(rule.key), operatorsByKey.get(rule.operator)?.label)}</button>)}
-              <button type="button" onClick={() => addRule()} disabled={!filterFields.length} className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 px-2 py-1 text-[0.75rem] font-bold text-brand-600 hover:bg-brand-50 disabled:opacity-50"><Plus className="h-3 w-3" />Thêm điều kiện</button>
+              {query.rules.map((rule, index) => <button key={`${rule.key}-${index}`} type="button" onClick={() => setOpenRuleIndex(current => current === index ? null : index)} className={`rounded-lg px-2 py-1 text-xs font-bold ${openRuleIndex === index ? 'bg-brand-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}>{describeRule(rule, fieldsByKey.get(rule.key), operatorsByKey.get(rule.operator)?.label)}</button>)}
+              <button type="button" onClick={() => addRule()} disabled={!filterFields.length} className="inline-flex items-center gap-1 rounded-lg border border-dashed border-slate-300 px-2 py-1 text-xs font-bold text-brand-600 hover:bg-brand-50 disabled:opacity-50"><Plus className="h-3 w-3" />Thêm điều kiện</button>
             </div>
           </DropZone>
         </div>
@@ -511,13 +511,13 @@ export const ReportsWorkspace: React.FC = () => {
         {query.rules.length > 0 && <div className="mt-3 space-y-3" data-testid="report-filter-editor">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <span className="flex items-center gap-2 text-xs font-bold text-slate-700"><Filter className="h-3.5 w-3.5 text-brand-600" />Lọc dữ liệu<span className="font-medium text-slate-400">{query.rules.length}</span></span>
-            {query.rules.length > 1 && <label className="flex items-center gap-2 text-[0.75rem] font-semibold text-slate-600"><span>Điều kiện:</span><select aria-label="Cách ghép điều kiện" value={query.match} onChange={event => setQuery(current => ({ ...current, match: event.target.value as ReportRunRequest['match'] }))} className="min-h-9 rounded-lg border border-rule bg-white px-2 text-xs font-bold text-slate-700"><option value="ALL">Đồng thời thỏa tất cả</option><option value="ANY">Thỏa ít nhất một điều kiện</option></select></label>}
+            {query.rules.length > 1 && <label className="flex items-center gap-2 text-xs font-semibold text-slate-600"><span>Điều kiện:</span><select aria-label="Cách ghép điều kiện" value={query.match} onChange={event => setQuery(current => ({ ...current, match: event.target.value as ReportRunRequest['match'] }))} className="min-h-9 rounded-lg border border-rule bg-white px-2 text-xs font-bold text-slate-700"><option value="ALL">Đồng thời thỏa tất cả</option><option value="ANY">Thỏa ít nhất một điều kiện</option></select></label>}
           </div>
           {query.rules.map((rule, index) => openRuleIndex === index && <FilterRuleEditor key={`${index}-${rule.key}`} index={index} rule={rule} field={fieldsByKey.get(rule.key)} catalog={filterableCatalog} onChange={next => replaceRule(index, next)} onRemove={() => removeRule(index)} />)}
         </div>}
 
         <details data-testid="designer-advanced" open={advancedOpen} onToggle={event => setAdvancedOpen(event.currentTarget.open)} className="mt-4 rounded-xl border border-rule">
-          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between px-3 text-xs font-bold text-slate-700"><span>Nâng cao: bảng chéo và cột xuất</span><span className="text-[0.75rem] font-semibold text-slate-400">{advancedOpen ? 'Thu gọn' : 'Mở'}</span></summary>
+          <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between px-3 text-xs font-bold text-slate-700"><span>Nâng cao: bảng chéo và cột xuất</span><span className="text-xs font-semibold text-slate-400">{advancedOpen ? 'Thu gọn' : 'Mở'}</span></summary>
           <div className="space-y-4 border-t border-rule p-3">
             <div className="grid gap-px overflow-hidden rounded-xl border border-rule bg-slate-200 sm:max-w-sm" aria-label="Vùng bảng chéo">
               <DropZone zone="columns" icon={<Columns3 className="h-3.5 w-3.5" />} title="Chia cột theo" onDrop={dropInto}>
@@ -530,7 +530,7 @@ export const ReportsWorkspace: React.FC = () => {
           </div>
         </details>
 
-        {invalidQueryHint && <p role="status" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-[0.75rem] font-semibold text-amber-900">{invalidQueryHint}; sửa xong rồi bấm "Chạy báo cáo".</p>}
+        {invalidQueryHint && <p role="status" className="mt-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">{invalidQueryHint}; sửa xong rồi bấm "Chạy báo cáo".</p>}
 
         {showSaveForm && <div className="mt-3 space-y-3 rounded-xl bg-slate-50 p-3"><div className="flex flex-col gap-2 sm:flex-row"><label className="sr-only" htmlFor="report-name">Tên mẫu báo cáo</label><input id="report-name" value={reportName} onChange={event => setReportName(event.target.value)} className={`${CONTROL_CLASS} flex-1`} placeholder="Tên mẫu, ví dụ: Tồn đọng Chi nhánh 635" /><button type="button" disabled={saving} onClick={() => void saveDefinition()} className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-brand-500 px-4 py-2.5 text-xs font-bold text-white hover:bg-brand-600 disabled:opacity-50"><Save className="h-4 w-4" />{saving ? 'Đang lưu' : 'Lưu mẫu'}</button></div><RoleSharePicker selectedRoles={reportSharedRoles} onChange={setReportSharedRoles} /></div>}
       </div>
@@ -552,11 +552,11 @@ export const ReportsWorkspace: React.FC = () => {
     {viewMode === 'result' && result && <>
       <div className="flex flex-wrap items-center gap-2">
         <h3 className="text-sm font-black text-slate-800">Kết quả truy vấn</h3>
-        <span className="rounded-full bg-brand-500 px-2.5 py-1 text-[0.75rem] font-bold text-white">{result.matchedFindingCount.toLocaleString('vi-VN')} dòng</span>
-        {busy && <span role="status" className="text-[0.75rem] font-semibold text-slate-500">Đang cập nhật...</span>}
+        <span className="rounded-full bg-brand-500 px-2.5 py-1 text-xs font-bold text-white">{result.matchedFindingCount.toLocaleString('vi-VN')} dòng</span>
+        {busy && <span role="status" className="text-xs font-semibold text-slate-500">Đang cập nhật...</span>}
       </div>
       {/* CoPlus warns when the on-screen result is a truncated preview of the exportable data. */}
-      {result.groups.length >= query.limit && <p role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-[0.75rem] font-semibold text-amber-900">
+      {result.groups.length >= query.limit && <p role="status" className="rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs font-semibold text-amber-900">
         Màn hình chỉ hiển thị {query.limit} nhóm đầu tiên. Bấm "Xuất Excel" để tải toàn bộ dữ liệu chi tiết.
       </p>}
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{query.metrics.map(metricKey => <MetricCard key={metricKey} metric={metricsByKey.get(metricKey)} value={result.metricValues[metricKey] || 0} onDrill={() => setDrillTarget({ page: 1 })} />)}</div>
@@ -622,7 +622,7 @@ const DropZone: React.FC<{
     onDrop={event => { event.preventDefault(); setOver(false); const payload = readDrag(event); if (payload) onDrop(zone, payload); }}
     className={`flex min-h-[116px] min-w-0 flex-col p-3 transition ${over ? 'bg-brand-50 ring-2 ring-inset ring-brand-500' : 'bg-white'}`}
   >
-    <span className="mb-2 flex items-center gap-2 text-[0.75rem] font-black text-slate-500">{icon}{title}</span>
+    <span className="mb-2 flex items-center gap-2 text-xs font-black text-slate-500">{icon}{title}</span>
     <div className="min-w-0 flex-1">{children}</div>
   </div>;
 };
@@ -636,13 +636,13 @@ const ExportColumnPicker: React.FC<{ fields: ReportFieldDefinition[]; selected: 
       : fields.filter(field => selected.includes(field.key) || field.key === key).map(field => field.key),
   );
   return <details className="relative text-xs font-bold text-slate-600">
-    <summary className={`${CONTROL_CLASS} flex cursor-pointer list-none items-center justify-between`}><span>Cột xuất</span><span className="text-[0.75rem] font-bold text-brand-600">{selected.length} cột</span></summary>
+    <summary className={`${CONTROL_CLASS} flex cursor-pointer list-none items-center justify-between`}><span>Cột xuất</span><span className="text-xs font-bold text-brand-600">{selected.length} cột</span></summary>
     <div className="absolute z-20 mt-1 max-h-64 w-full min-w-[14rem] overflow-y-auto rounded-xl border border-rule bg-white p-2 shadow-lg">
-      {fields.map(field => <label key={field.key} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-[0.75rem] font-semibold text-slate-700 hover:bg-slate-50">
+      {fields.map(field => <label key={field.key} className="flex items-center gap-2 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-700 hover:bg-slate-50">
         <input type="checkbox" checked={selected.includes(field.key)} onChange={() => toggle(field.key)} />
         {field.label}
       </label>)}
-      {fields.length === 0 && <p className="p-2 text-[0.75rem] font-medium text-slate-500">Quản trị viên chưa bật cột nào cho việc xuất dữ liệu.</p>}
+      {fields.length === 0 && <p className="p-2 text-xs font-medium text-slate-500">Quản trị viên chưa bật cột nào cho việc xuất dữ liệu.</p>}
     </div>
   </details>;
 };
@@ -651,7 +651,7 @@ const ReportPresentationLoading = () => <div className="rounded-xl border border
 
 const RoleSharePicker: React.FC<{ selectedRoles: UserRole[]; onChange: (roles: UserRole[]) => void }> = ({ selectedRoles, onChange }) => <fieldset>
   <legend className="text-xs font-bold text-slate-600">Chia sẻ theo vai trò</legend>
-  <div className="mt-2 flex flex-wrap gap-2">{SHAREABLE_ROLES.map(role => <label key={role.key} className="flex min-h-9 items-center gap-1.5 rounded-lg border border-rule bg-white px-2 text-[0.75rem] font-semibold text-slate-700"><input type="checkbox" checked={selectedRoles.includes(role.key)} onChange={() => onChange(selectedRoles.includes(role.key) ? selectedRoles.filter(key => key !== role.key) : [...selectedRoles, role.key])} />{role.label}</label>)}</div>
+  <div className="mt-2 flex flex-wrap gap-2">{SHAREABLE_ROLES.map(role => <label key={role.key} className="flex min-h-9 items-center gap-1.5 rounded-lg border border-rule bg-white px-2 text-xs font-semibold text-slate-700"><input type="checkbox" checked={selectedRoles.includes(role.key)} onChange={() => onChange(selectedRoles.includes(role.key) ? selectedRoles.filter(key => key !== role.key) : [...selectedRoles, role.key])} />{role.label}</label>)}</div>
 </fieldset>;
 
 const DrillPanel: React.FC<{ groupLabel: string; loading: boolean; result: ReportDrillResult | null; onClose: () => void; onPage: (page: number) => void }> = ({ groupLabel, loading, result, onClose, onPage }) => {
@@ -661,7 +661,7 @@ const DrillPanel: React.FC<{ groupLabel: string; loading: boolean; result: Repor
       <div className="flex items-start justify-between gap-3 border-b border-rule px-4 py-3">
         <div>
           <h3 className="text-sm font-black text-slate-900">Hồ sơ chi tiết</h3>
-          <p className="mt-0.5 text-[0.75rem] font-medium text-slate-500">
+          <p className="mt-0.5 text-xs font-medium text-slate-500">
             {result?.rowLabel ? `${groupLabel}: ${result.rowLabel}` : 'Toàn bộ kết quả đang lọc'}
             {result?.columnLabel ? ` · ${result.columnLabel}` : ''}
             {result ? ` · ${result.total.toLocaleString('vi-VN')} dòng` : ''}
@@ -673,15 +673,15 @@ const DrillPanel: React.FC<{ groupLabel: string; loading: boolean; result: Repor
         {loading && <p className="p-5 text-xs font-semibold text-slate-500">Đang tải hồ sơ...</p>}
         {!loading && result && result.rows.length === 0 && <p className="p-5 text-xs text-slate-500">Không có hồ sơ nào trong ô này.</p>}
         {!loading && result && result.rows.length > 0 && <table className="w-full min-w-[720px] text-left text-xs">
-          <thead className="sticky top-0 bg-slate-50 text-[0.75rem] font-bold text-slate-500"><tr>
+          <thead className="sticky top-0 bg-slate-50 text-xs font-bold text-slate-500"><tr>
             <th className="px-3 py-2">Khách hàng</th><th className="px-3 py-2">Chi nhánh</th><th className="px-3 py-2">Mã lỗi</th>
             <th className="px-3 py-2">Trạng thái</th><th className="px-3 py-2">Hạn xử lý</th><th className="px-3 py-2 text-right">Giá trị ảnh hưởng</th>
           </tr></thead>
           <tbody className="divide-y divide-slate-100">{result.rows.map(row => <tr key={row.findingId}>
-            <td className="px-3 py-2"><span className="block font-semibold text-slate-800">{row.customerName ?? '-'}</span><span className="block text-[0.75rem] text-slate-500">{[row.cif ? `CIF ${row.cif}` : '', row.officerName ?? ''].filter(Boolean).join(' · ')}</span></td>
-            <td className="px-3 py-2 text-slate-700">{row.branchCode} · {row.branchName}{row.department ? <span className="block text-[0.75rem] text-slate-500">{row.department}</span> : null}</td>
-            <td className="px-3 py-2"><span className="block font-semibold text-slate-800">{row.errorCode}</span><span className="block max-w-[16rem] truncate text-[0.75rem] text-slate-500">{row.errorTitle}</span></td>
-            <td className="px-3 py-2 text-slate-700">{row.workflowStatusLabel}<span className="block text-[0.75rem] text-slate-500">{row.slaStatusLabel}</span></td>
+            <td className="px-3 py-2"><span className="block font-semibold text-slate-800">{row.customerName ?? '-'}</span><span className="block text-xs text-slate-500">{[row.cif ? `CIF ${row.cif}` : '', row.officerName ?? ''].filter(Boolean).join(' · ')}</span></td>
+            <td className="px-3 py-2 text-slate-700">{row.branchCode} · {row.branchName}{row.department ? <span className="block text-xs text-slate-500">{row.department}</span> : null}</td>
+            <td className="px-3 py-2"><span className="block font-semibold text-slate-800">{row.errorCode}</span><span className="block max-w-[16rem] truncate text-xs text-slate-500">{row.errorTitle}</span></td>
+            <td className="px-3 py-2 text-slate-700">{row.workflowStatusLabel}<span className="block text-xs text-slate-500">{row.slaStatusLabel}</span></td>
             <td className="px-3 py-2 text-slate-700">{row.deadlineDate}</td>
             <td className="px-3 py-2 text-right font-bold text-brand-600">{row.exposureAmount === undefined ? '-' : `${row.exposureAmount.toLocaleString('vi-VN')} triệu`}</td>
           </tr>)}</tbody>
@@ -710,12 +710,12 @@ const DashboardWorkspace: React.FC<{
   return <section data-testid="report-dashboard-workspace" className="space-y-3 rounded-2xl border border-rule bg-white p-4 shadow-panel sm:p-5">
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <p className="text-[0.75rem] font-black uppercase tracking-wide text-slate-400">Bảng điều khiển</p>
+        <p className="text-xs font-black uppercase tracking-wide text-slate-400">Bảng điều khiển</p>
         <h3 className="mt-1 text-base font-black text-slate-900">{dashboard.name}</h3>
       </div>
       <div role="tablist" aria-label="Chế độ bảng điều khiển" className="flex gap-1 rounded-xl bg-slate-100 p-1">
-        <button type="button" role="tab" aria-selected={mode === 'design'} onClick={() => onModeChange('design')} className={`min-h-9 rounded-lg px-3 text-[0.75rem] font-black transition-colors ${mode === 'design' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Thiết kế bảng điều khiển</button>
-        <button type="button" role="tab" aria-selected={mode === 'preview'} onClick={() => onModeChange('preview')} className={`min-h-9 rounded-lg px-3 text-[0.75rem] font-black transition-colors ${mode === 'preview' ? 'bg-brand-500 text-white' : 'text-slate-500 hover:text-slate-800'}`}>Xem trước bảng điều khiển</button>
+        <button type="button" role="tab" aria-selected={mode === 'design'} onClick={() => onModeChange('design')} className={`min-h-9 rounded-lg px-3 text-xs font-black transition-colors ${mode === 'design' ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}>Thiết kế bảng điều khiển</button>
+        <button type="button" role="tab" aria-selected={mode === 'preview'} onClick={() => onModeChange('preview')} className={`min-h-9 rounded-lg px-3 text-xs font-black transition-colors ${mode === 'preview' ? 'bg-brand-500 text-white' : 'text-slate-500 hover:text-slate-800'}`}>Xem trước bảng điều khiển</button>
       </div>
     </div>
     {mode === 'design'
@@ -728,15 +728,15 @@ const DashboardDesignView: React.FC<{ widgets: ReportDefinition[] }> = ({ widget
   <div className="flex flex-wrap items-center justify-between gap-2">
     <div>
       <h4 className="text-sm font-black text-slate-900">Thiết kế bảng điều khiển</h4>
-      <p className="mt-1 text-[0.75rem] font-medium text-slate-600">Bố cục dưới đây là các báo cáo đã chọn. Chuyển sang "Xem trước bảng điều khiển" để đọc số liệu thực tế.</p>
+      <p className="mt-1 text-xs font-medium text-slate-600">Bố cục dưới đây là các báo cáo đã chọn. Chuyển sang "Xem trước bảng điều khiển" để đọc số liệu thực tế.</p>
     </div>
-    <span className="rounded-full bg-white px-2.5 py-1 text-[0.75rem] font-black text-brand-700">{widgets.length} khối báo cáo</span>
+    <span className="rounded-full bg-white px-2.5 py-1 text-xs font-black text-brand-700">{widgets.length} khối báo cáo</span>
   </div>
   {widgets.length > 0
     ? <div className="mt-3 grid gap-3 md:grid-cols-2">{widgets.map((definition, index) => <article key={definition.id} className="rounded-xl border border-rule bg-white p-3">
-      <div className="flex items-center justify-between gap-2"><span className="rounded-md bg-slate-100 px-2 py-1 text-[0.75rem] font-black text-slate-500">Vị trí {index + 1}</span><span className="text-[0.75rem] font-bold text-slate-400">Báo cáo</span></div>
+      <div className="flex items-center justify-between gap-2"><span className="rounded-md bg-slate-100 px-2 py-1 text-xs font-black text-slate-500">Vị trí {index + 1}</span><span className="text-xs font-bold text-slate-400">Báo cáo</span></div>
       <h5 className="mt-3 text-sm font-black text-slate-900">{definition.name}</h5>
-      <p className="mt-1 text-[0.75rem] font-medium text-slate-500">{definition.query ? `${definition.query.metrics.length} chỉ số · nhóm theo ${definition.query.groupBy}` : 'Chưa có truy vấn mới'}</p>
+      <p className="mt-1 text-xs font-medium text-slate-500">{definition.query ? `${definition.query.metrics.length} chỉ số · nhóm theo ${definition.query.groupBy}` : 'Chưa có truy vấn mới'}</p>
     </article>)}</div>
     : <p className="mt-3 rounded-lg bg-white p-3 text-xs font-semibold text-slate-500">Chưa có báo cáo hợp lệ trong bảng điều khiển này.</p>}
 </div>;
@@ -759,7 +759,7 @@ const ReportDashboard: React.FC<{ dashboard: DashboardDefinition; definitions: R
   }, [widgets]);
 
   return <section data-testid="report-dashboard" className="rounded-2xl border border-rule bg-slate-50 p-4 shadow-panel sm:p-5">
-    <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-black text-slate-900">{dashboard.name}</h3><span className="text-[0.75rem] font-semibold text-slate-500">{widgets.length} báo cáo</span></div>
+    <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><h3 className="text-sm font-black text-slate-900">{dashboard.name}</h3><span className="text-xs font-semibold text-slate-500">{widgets.length} báo cáo</span></div>
     {loadError && <p role="alert" className="mb-3 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-xs font-semibold text-red-800">{loadError}</p>}
     {loading ? <p className="text-sm text-slate-500">Đang cập nhật bảng điều khiển...</p> : <div className="grid gap-3 lg:grid-cols-2">{widgets.map(definition => {
       const outcome = results[definition.id];
@@ -771,7 +771,7 @@ const ReportDashboard: React.FC<{ dashboard: DashboardDefinition; definitions: R
         <p className="mt-3 text-2xl font-black text-brand-600">{outcome ? formatMetric(value, metric) : '—'}</p>
         <p className="mt-1 text-xs font-medium text-slate-500">{metric?.label || 'Chưa có chỉ số'}</p>
         {/* A single number hides which groups drive it, so each widget also lists its leading rows. */}
-        {outcome && outcome.groups.length > 0 && <ul className="mt-3 space-y-1 border-t border-slate-100 pt-2">{outcome.groups.slice(0, 4).map(row => <li key={row.key} className="flex items-center justify-between gap-2 text-[0.75rem]">
+        {outcome && outcome.groups.length > 0 && <ul className="mt-3 space-y-1 border-t border-slate-100 pt-2">{outcome.groups.slice(0, 4).map(row => <li key={row.key} className="flex items-center justify-between gap-2 text-xs">
           <span className="min-w-0 truncate font-semibold text-slate-600">{row.label}</span>
           <span className="shrink-0 font-bold text-slate-800">{formatMetric(metricKey ? row.metricValues[metricKey] || 0 : 0, metric)}</span>
         </li>)}</ul>}
@@ -784,9 +784,9 @@ const FilterRuleEditor: React.FC<{ index: number; rule: ReportFilterRule; field?
   const changeField = (key: ReportFieldKey) => { const nextField = catalog?.fields.find(item => item.key === key); onChange({ key, operator: nextField?.operators[0] || 'op.eq' }); };
   const changeOperator = (operator: ReportFilterRule['operator']) => onChange({ key: rule.key, operator });
   return <div data-testid="report-filter-rule" className="rounded-xl border border-rule bg-slate-50 p-3"><div className="grid gap-3 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,.8fr)_minmax(0,1.2fr)_44px] lg:items-end">
-    <label className="space-y-1 text-[0.75rem] font-bold text-slate-600"><span>Nội dung cần lọc</span><select aria-label={`Nội dung lọc ${index + 1}`} value={rule.key} onChange={event => changeField(event.target.value as ReportFieldKey)} className={CONTROL_CLASS}>{catalog?.fields.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
-    <label className="space-y-1 text-[0.75rem] font-bold text-slate-600"><span>Điều kiện</span><select aria-label={`Điều kiện lọc ${index + 1}`} value={rule.operator} onChange={event => changeOperator(event.target.value as ReportFilterRule['operator'])} className={CONTROL_CLASS}>{field?.operators.map(key => <option key={key} value={key}>{catalog?.operators.find(item => item.key === key)?.label || key}</option>)}</select></label>
-    <div className="space-y-1 text-[0.75rem] font-bold text-slate-600"><span>Giá trị</span><RuleValueEditor rule={rule} field={field} onChange={onChange} /></div>
+    <label className="space-y-1 text-xs font-bold text-slate-600"><span>Nội dung cần lọc</span><select aria-label={`Nội dung lọc ${index + 1}`} value={rule.key} onChange={event => changeField(event.target.value as ReportFieldKey)} className={CONTROL_CLASS}>{catalog?.fields.map(item => <option key={item.key} value={item.key}>{item.label}</option>)}</select></label>
+    <label className="space-y-1 text-xs font-bold text-slate-600"><span>Điều kiện</span><select aria-label={`Điều kiện lọc ${index + 1}`} value={rule.operator} onChange={event => changeOperator(event.target.value as ReportFilterRule['operator'])} className={CONTROL_CLASS}>{field?.operators.map(key => <option key={key} value={key}>{catalog?.operators.find(item => item.key === key)?.label || key}</option>)}</select></label>
+    <div className="space-y-1 text-xs font-bold text-slate-600"><span>Giá trị</span><RuleValueEditor rule={rule} field={field} onChange={onChange} /></div>
     <button type="button" onClick={onRemove} className="flex h-11 w-full items-center justify-center rounded-xl border border-red-200 bg-white text-red-600 hover:bg-red-50" aria-label={`Xóa điều kiện ${index + 1}`}><Trash2 className="h-4 w-4" /></button>
   </div></div>;
 };
@@ -805,7 +805,7 @@ const MetricCard: React.FC<{ metric?: ReportMetricDefinition; value: number; onD
   <div className="mb-3 flex h-9 w-9 items-center justify-center rounded-xl bg-brand-50 text-brand-600"><BarChart3 className="h-4 w-4" /></div>
   <div className="text-xs font-bold text-slate-500">{metric?.label || 'Chỉ số'}</div>
   <div className="mt-1 text-2xl font-black text-slate-900">{formatMetric(value, metric)}</div>
-  <div className="mt-1 text-[0.75rem] font-semibold text-brand-600">Bấm để xem hồ sơ</div>
+  <div className="mt-1 text-xs font-semibold text-brand-600">Bấm để xem hồ sơ</div>
 </button>;
 
 const ReportBreakdown: React.FC<{
@@ -818,12 +818,12 @@ const ReportBreakdown: React.FC<{
   onSort: (key: ReportMetricKey) => void;
   onDrill: (rowKey: string) => void;
 }> = ({ result, metrics, metricsByKey, groupLabel, presentation, sort, onSort, onDrill }) => <div className="min-w-0 overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
-  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-3"><h3 className="text-sm font-bold text-slate-900">Kết quả theo {groupLabel}</h3><span className="text-[0.75rem] font-bold text-slate-500">{result.matchedFindingCount} mã lỗi phù hợp</span></div>
-  <div className="divide-y divide-slate-100 md:hidden">{result.groups.map(row => <button key={row.key} type="button" onClick={() => onDrill(row.key)} className="w-full p-4 text-left"><div className="mb-3 text-xs font-bold text-slate-900">{row.label}</div><div className="grid grid-cols-2 gap-2">{metrics.map(key => <div key={key} className="rounded-lg bg-slate-50 p-2"><div className="text-[0.75rem] font-bold text-slate-500">{columnLabel(key, presentation, metricsByKey)}</div><div className={`mt-1 inline-block rounded px-1 text-xs font-black ${reportHighlightTone(row.metricValues[key] || 0, presentation.metrics?.[key]) ? HIGHLIGHT_CELL_CLASS[reportHighlightTone(row.metricValues[key] || 0, presentation.metrics?.[key])!] : 'text-brand-600'}`}>{metricText(row.metricValues[key] || 0, key, presentation, metricsByKey)}</div></div>)}</div></button>)}</div>
+  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-rule px-4 py-3"><h3 className="text-sm font-bold text-slate-900">Kết quả theo {groupLabel}</h3><span className="text-xs font-bold text-slate-500">{result.matchedFindingCount} mã lỗi phù hợp</span></div>
+  <div className="divide-y divide-slate-100 md:hidden">{result.groups.map(row => <button key={row.key} type="button" onClick={() => onDrill(row.key)} className="w-full p-4 text-left"><div className="mb-3 text-xs font-bold text-slate-900">{row.label}</div><div className="grid grid-cols-2 gap-2">{metrics.map(key => <div key={key} className="rounded-lg bg-slate-50 p-2"><div className="text-xs font-bold text-slate-500">{columnLabel(key, presentation, metricsByKey)}</div><div className={`mt-1 inline-block rounded px-1 text-xs font-black ${reportHighlightTone(row.metricValues[key] || 0, presentation.metrics?.[key]) ? HIGHLIGHT_CELL_CLASS[reportHighlightTone(row.metricValues[key] || 0, presentation.metrics?.[key])!] : 'text-brand-600'}`}>{metricText(row.metricValues[key] || 0, key, presentation, metricsByKey)}</div></div>)}</div></button>)}</div>
   <div className="hidden overflow-x-auto md:block"><table className="w-full min-w-[680px] text-left text-xs">
-    <thead className="bg-slate-50 text-[0.75rem] font-bold text-slate-500"><tr>
+    <thead className="bg-slate-50 text-xs font-bold text-slate-500"><tr>
       <th className="px-4 py-3">{presentation.rowLabel || groupLabel}</th>
-      {metrics.map(key => <th key={key} className="px-4 py-3 text-right"><button type="button" onClick={() => onSort(key)} className="inline-flex items-center gap-1 font-bold hover:text-brand-600" aria-label={`Sắp xếp theo ${columnLabel(key, presentation, metricsByKey)}`}>{columnLabel(key, presentation, metricsByKey)}<span aria-hidden className="text-[0.75rem] text-brand-600">{sort?.key === key ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>)}
+      {metrics.map(key => <th key={key} className="px-4 py-3 text-right"><button type="button" onClick={() => onSort(key)} className="inline-flex items-center gap-1 font-bold hover:text-brand-600" aria-label={`Sắp xếp theo ${columnLabel(key, presentation, metricsByKey)}`}>{columnLabel(key, presentation, metricsByKey)}<span aria-hidden className="text-xs text-brand-600">{sort?.key === key ? (sort.direction === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>)}
     </tr></thead>
     <tbody className="divide-y divide-slate-100">{result.groups.map(row => <tr key={row.key} className="hover:bg-slate-50">
       <td className="px-4 py-3 font-semibold text-slate-800">{row.label}</td>

@@ -60,7 +60,7 @@ export const SavedReportsManager: React.FC = () => {
           <tbody className="divide-y divide-rule">
             {definitions.map(definition => (
               <tr key={definition.id}>
-                <td className="px-4 py-3 font-bold text-slate-900">{definition.name}{definition.isStandard && <span className="ml-2 rounded-full bg-brand-50 px-2 py-0.5 text-[0.75rem] font-bold text-brand-700">Chuẩn</span>}</td>
+                <td className="px-4 py-3 font-bold text-slate-900">{definition.name}{definition.isStandard && <span className="ml-2 rounded-full bg-brand-50 px-2 py-0.5 text-xs font-bold text-brand-700">Chuẩn</span>}</td>
                 <td className="px-4 py-3 text-slate-700">{definition.createdByName}</td>
                 <td className="px-4 py-3 text-slate-700">{definition.visibility === 'ROLE_SHARED'
                   ? definition.sharedWithRoles.map(role => userRoleLabels[role]).join(', ')

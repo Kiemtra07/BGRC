@@ -121,6 +121,12 @@ export interface Finding {
   approvalRoute?: FindingApprovalRoute;
 
   /**
+   * Loại luồng chặt hơn loại báo cáo, do người nộp thêm bước kiểm soát khi nộp. Chỉ có khi người nộp
+   * thêm bước; không bao giờ nhẹ hơn luồng đã cấu hình.
+   */
+  routeWorkflowType?: 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER';
+
+  /**
    * Dấu sao — hồ sơ thuộc trường hợp đặc biệt (lỗi hoặc khách hàng đặc biệt). Khi bật, tuyến duyệt
    * tự động chèn bước Lãnh đạo chi nhánh "đẩy lệnh" = một bước phê duyệt bắt buộc trước khi hồ sơ
    * lên Hội sở. Khác với `isPriority` trên WorkspaceTarget (ghim cá nhân của người dùng): cờ này

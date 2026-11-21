@@ -37,6 +37,11 @@ export default {
         canvas: '#f1f5f5',
         rule: '#e3ebeb',
       },
+      // Chữ nhỏ nhất của giao diện là 13px (trước đây 12px) và chữ nội dung 15px, để đọc rõ ở khoảng cách làm việc thường ngày.
+      fontSize: {
+        xs: ['0.8125rem', { lineHeight: '1.25rem' }],
+        sm: ['0.9375rem', { lineHeight: '1.4rem' }],
+      },
       fontFamily: {
         roboto: ['Roboto', 'sans-serif'],
       },

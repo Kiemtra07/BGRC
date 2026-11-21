@@ -170,14 +170,14 @@ export const SearchableSelect: React.FC<SearchableSelectProps> = ({
                   >
                     <span className="min-w-0 flex-1">
                       <span className={`block truncate ${isSelected ? 'font-bold text-brand-700' : option.value ? 'font-semibold text-slate-700' : 'font-semibold text-slate-500'}`}>{option.label}</span>
-                      {option.detail && <span className="block truncate text-[0.75rem] text-slate-400">{option.detail}</span>}
+                      {option.detail && <span className="block truncate text-xs text-slate-400">{option.detail}</span>}
                     </span>
                     {isSelected && <Check className="h-3.5 w-3.5 shrink-0 text-brand-600" aria-hidden />}
                   </button>
                 </li>
               );
             })}
-            {!visible.length && <li className="px-2.5 py-3 text-center text-[0.75rem] text-slate-500">Không có mục nào khớp</li>}
+            {!visible.length && <li className="px-2.5 py-3 text-center text-xs text-slate-500">Không có mục nào khớp</li>}
           </ul>
         </div>
       )}

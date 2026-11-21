@@ -37,6 +37,16 @@ describe('automatic approval routing + special-case flag', () => {
     await app.close();
   });
 
+  it('does not list the next approvers to someone who cannot forward the finding', async () => {
+    for (const userId of ['user-internal-officer', 'user-admin', 'user-branch-controller-635']) {
+      const response = await app.inject({
+        method: 'GET', url: '/api/v1/findings/find-001/next-approvers', headers: { 'x-user-id': userId },
+      });
+      expect(response.statusCode, userId).toBe(200);
+      expect(response.json(), userId).toEqual({ options: [], allowSharedQueue: false });
+    }
+  });
+
   it('lists only active approvers of the finding branch as recipients of the next step', async () => {
     const response = await app.inject({
       method: 'GET',

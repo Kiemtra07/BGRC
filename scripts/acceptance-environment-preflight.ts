@@ -89,10 +89,11 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
       const roleResult = await client.query<{ rolsuper: boolean; rolbypassrls: boolean }>(`
           SELECT rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user
         `);
-      const authSecurityStateResult = await client.query<{ login_attempts: boolean; used_totp_counters: boolean }>(`
+      const authSecurityStateResult = await client.query<{ login_attempts: boolean; used_totp_counters: boolean; sessions: boolean }>(`
           SELECT
             to_regclass('public.auth_login_attempts') IS NOT NULL AS login_attempts,
-            to_regclass('public.auth_used_totp_counters') IS NOT NULL AS used_totp_counters
+            to_regclass('public.auth_used_totp_counters') IS NOT NULL AS used_totp_counters,
+            to_regclass('public.auth_sessions') IS NOT NULL AS sessions
         `);
 
       result.database.connected = true;
@@ -104,7 +105,8 @@ export async function runAcceptanceEnvironmentPreflight(): Promise<PreflightResu
       };
       const authSecurityState = authSecurityStateResult.rows[0];
       result.database.authSecurityStateReady = authSecurityState?.login_attempts === true
-        && authSecurityState?.used_totp_counters === true;
+        && authSecurityState?.used_totp_counters === true
+        && authSecurityState?.sessions === true;
 
       result.checks.push({
         name: 'postgres-read-only-connection',

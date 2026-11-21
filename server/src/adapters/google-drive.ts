@@ -70,6 +70,9 @@ function sanitizeDriveFolderSegment(value: string): string {
   return value.normalize('NFC').replace(/[^a-zA-Z0-9_\u00C0-\u1EF9-]/g, '_').replace(/_+/g, '_').replace(/^_|_$/g, '');
 }
 
+/** Thư mục chứa tệp minh chứng đã thu hồi, nằm ngay dưới gốc lưu trữ và không chia sẻ cho ai. */
+const QUARANTINE_FOLDER_NAME = '_quarantine';
+
 export class GoogleDriveAdapter {
   private readonly localFallbackDir: string;
   private readonly storageMode: string;
@@ -296,14 +299,78 @@ export class GoogleDriveAdapter {
       return true;
     }
     if (this.storageMode !== 'local') throw this.invalidModeProblem();
-    const matchingFile = (fs.readdirSync(this.localFallbackDir, { recursive: true }) as string[])
-      .find(file => path.basename(file).startsWith(`${driveFileId}_`));
+    const matchingFile = this.findLocalFile(driveFileId);
     if (!matchingFile) return false;
     const target = path.resolve(this.localFallbackDir, matchingFile);
     if (target !== this.localFallbackDir && !target.startsWith(`${this.localFallbackDir}${path.sep}`)) {
       throw new HttpProblem(400, 'UNSAFE_STORAGE_PATH', 'Đường dẫn lưu trữ không hợp lệ', 'Đường dẫn tệp minh chứng vượt ngoài thư mục local cho phép.');
     }
     fs.unlinkSync(target);
+    return true;
+  }
+
+  /**
+   * Đưa tệp của minh chứng đã thu hồi ra khỏi thư mục làm việc: không xóa, vì hồ sơ kiểm toán có thể
+   * cần đối chiếu lại, nhưng không còn nằm ở nơi người khác được chia sẻ hay đọc. Chạy lại an toàn.
+   * Trả `false` khi không tìm thấy tệp.
+   */
+  public async quarantineEvidenceFile(driveFileId: string): Promise<boolean> {
+    if (!/^[A-Za-z0-9_-]{1,255}$/.test(driveFileId)) {
+      throw new HttpProblem(422, 'EVIDENCE_FILE_ID_INVALID', 'Mã tệp minh chứng không hợp lệ', 'Mã tệp không được chứa đường dẫn hoặc ký tự không hợp lệ.');
+    }
+    if (this.storageMode === 'google-drive') return this.quarantineGoogleFile(driveFileId);
+    if (this.storageMode !== 'local') throw this.invalidModeProblem();
+    const matchingFile = this.findLocalFile(driveFileId);
+    if (!matchingFile) return false;
+    const source = path.resolve(this.localFallbackDir, matchingFile);
+    const target = path.resolve(this.localFallbackDir, QUARANTINE_FOLDER_NAME, matchingFile);
+    for (const candidate of [source, target]) {
+      if (!candidate.startsWith(`${this.localFallbackDir}${path.sep}`)) {
+        throw new HttpProblem(400, 'UNSAFE_STORAGE_PATH', 'Đường dẫn lưu trữ không hợp lệ', 'Đường dẫn tệp minh chứng vượt ngoài thư mục local cho phép.');
+      }
+    }
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.renameSync(source, target);
+    return true;
+  }
+
+  private findLocalFile(driveFileId: string): string | undefined {
+    return (fs.readdirSync(this.localFallbackDir, { recursive: true }) as string[]).find(file => (
+      path.basename(file).startsWith(`${driveFileId}_`) && file.split(path.sep)[0] !== QUARANTINE_FOLDER_NAME
+    ));
+  }
+
+  private async quarantineGoogleFile(driveFileId: string): Promise<boolean> {
+    this.requireGoogleMode();
+    const fileUrl = `${DRIVE_API}/files/${encodeURIComponent(driveFileId)}`;
+    let lookup: Response;
+    try {
+      lookup = await this.fetchImpl(`${fileUrl}?fields=id,parents&supportsAllDrives=true`, { headers: { Authorization: `Bearer ${await this.getAccessToken()}` } });
+    } catch {
+      throw new HttpProblem(503, 'GOOGLE_API_UNAVAILABLE', 'Google Drive không khả dụng', 'Không kết nối được Google Drive để cách ly tệp.');
+    }
+    if (lookup.status === 404) return false;
+    if (!lookup.ok) throw new HttpProblem(503, 'GOOGLE_API_UNAVAILABLE', 'Google Drive không khả dụng', `Google Drive trả HTTP ${lookup.status} khi cách ly tệp.`);
+    const metadata = await lookup.json() as { parents?: string[] };
+
+    const quarantineFolderId = await this.ensureGoogleFolderPath(QUARANTINE_FOLDER_NAME);
+    const currentParents = metadata.parents ?? [];
+    if (!currentParents.includes(quarantineFolderId)) {
+      const move = new URLSearchParams({ addParents: quarantineFolderId, supportsAllDrives: 'true' });
+      if (currentParents.length) move.set('removeParents', currentParents.join(','));
+      await this.driveFetch(`${fileUrl}?${move}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: '{}' });
+    }
+
+    // Quyền cấp thẳng cho từng người trên tệp không đi theo thư mục nên phải gỡ riêng; quyền thừa kế
+    // thì đã mất cùng thư mục cũ. Chủ sở hữu giữ nguyên.
+    const listed = await this.driveFetchJson<{ permissions?: Array<{ id: string; role?: string; permissionDetails?: Array<{ inherited?: boolean }> }> }>(
+      `${fileUrl}/permissions?${new URLSearchParams({ fields: 'permissions(id,role,permissionDetails(inherited))', supportsAllDrives: 'true' })}`,
+    );
+    for (const permission of listed.permissions ?? []) {
+      const inheritedOnly = Boolean(permission.permissionDetails?.length) && permission.permissionDetails!.every(detail => detail.inherited);
+      if (permission.role === 'owner' || inheritedOnly) continue;
+      await this.driveFetch(`${fileUrl}/permissions/${encodeURIComponent(permission.id)}?supportsAllDrives=true`, { method: 'DELETE' });
+    }
     return true;
   }
 
@@ -315,7 +382,7 @@ export class GoogleDriveAdapter {
     }
     if (this.storageMode !== 'local') throw this.invalidModeProblem();
     if (driveFileId === 'drive_mock_001' || driveFileId === 'drive_mock_002') return { stream: Readable.from(createLocalPreviewPdf()), fileName: `${driveFileId}_local-preview.pdf`, mimeType: 'application/pdf' };
-    const matchingFile = (fs.readdirSync(this.localFallbackDir, { recursive: true }) as string[]).find(file => path.basename(file).startsWith(`${driveFileId}_`));
+    const matchingFile = this.findLocalFile(driveFileId);
     if (!matchingFile) return null;
     const mimeTypes: Record<string, string> = { '.pdf': 'application/pdf', '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png' };
     return { stream: fs.createReadStream(path.join(this.localFallbackDir, matchingFile)), fileName: path.basename(matchingFile).replace(`${driveFileId}_`, ''), mimeType: mimeTypes[path.extname(matchingFile).toLowerCase()] ?? 'application/octet-stream' };

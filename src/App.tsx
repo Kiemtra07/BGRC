@@ -507,7 +507,7 @@ export const App: React.FC = () => {
         <div className="mx-auto flex min-w-0 max-w-[1480px] flex-wrap items-center gap-2 px-3 py-3 sm:px-6 lg:flex-nowrap lg:gap-4">
           <div className="flex min-w-0 shrink-0 items-center gap-3">
             <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-white text-sm font-black text-brand-600">AM</div>
-            <div className="min-w-0"><h1 className="truncate text-sm font-black tracking-wide">AUDIT MONITORING</h1><p className="hidden text-[0.75rem] text-teal-100 sm:block">Quản lý sai sót và hồ sơ khắc phục</p></div>
+            <div className="min-w-0"><h1 className="truncate text-sm font-black tracking-wide">AUDIT MONITORING</h1><p className="hidden text-xs text-teal-100 sm:block">Quản lý sai sót và hồ sơ khắc phục</p></div>
           </div>
           <nav className="order-3 flex min-w-0 w-full max-w-full gap-1 overflow-x-auto border-t border-white/10 pt-2 lg:order-none lg:w-auto lg:flex-1 lg:border-t-0 lg:pt-0" aria-label="Điều hướng chính">
             <NavButton active={surface === 'CASES'} onClick={() => navigateTo('CASES')} icon={<LayoutDashboard />} label="Hồ sơ khách hàng" />
@@ -516,8 +516,8 @@ export const App: React.FC = () => {
             {canConfigureCatalog && <NavButton active={surface === 'ADMIN'} onClick={() => navigateTo('ADMIN')} icon={<Settings />} label="Cấu hình" />}
           </nav>
           <div className="ml-auto flex shrink-0 items-center gap-2">
-            <div className="hidden text-right md:block"><div className="text-xs font-bold">{currentUser?.fullName}</div><div className="text-[0.75rem] text-teal-100">{currentUser?.department || currentUser?.branchName || currentUser?.clusterName || 'Chưa phân công'}</div></div>
-            <div title={`${currentUser.coplusRole ?? ''} · ${userRoleLabels[currentUser.primaryRole]}`} className="hidden max-w-[220px] truncate rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-[0.75rem] font-bold text-white sm:block">{currentUser.coplusRole ? `${currentUser.coplusRole} · ${coplusRoleLabel(currentUser.coplusRole)}` : userRoleLabels[currentUser.primaryRole]}</div>
+            <div className="hidden text-right md:block"><div className="text-xs font-bold">{currentUser?.fullName}</div><div className="text-xs text-teal-100">{currentUser?.department || currentUser?.branchName || currentUser?.clusterName || 'Chưa phân công'}</div></div>
+            <div title={currentUser.coplusRole ? `${currentUser.coplusRole} · ${coplusRoleLabel(currentUser.coplusRole)}` : userRoleLabels[currentUser.primaryRole]} className="hidden max-w-[280px] truncate rounded-lg border border-white/15 bg-white/10 px-3 py-2 text-xs font-bold text-white sm:block">{currentUser.coplusRole ? `${currentUser.coplusRole} · ${coplusRoleLabel(currentUser.coplusRole)}` : userRoleLabels[currentUser.primaryRole]}</div>
             <button type="button" onClick={() => setPasswordModalOpen(true)} aria-label="Đổi mật khẩu" title="Đổi mật khẩu" className="grid h-11 w-11 place-items-center rounded-xl border border-white/20 bg-white/10 text-white hover:bg-white/20"><KeyIcon /></button>
             <button type="button" onClick={logout} aria-label="Đăng xuất" title="Đăng xuất" className="grid h-11 w-11 place-items-center rounded-xl border border-white/20 bg-white/10 text-white hover:bg-white/20"><LogOut className="h-4 w-4" /></button>
           </div>
@@ -551,7 +551,7 @@ export const App: React.FC = () => {
         {surface === 'CASES' && !selectedCase && <>
           <div className={`grid min-h-[calc(100dvh-116px)] items-start transition-[grid-template-columns] duration-200 lg:min-h-[calc(100dvh-64px)] ${sidebarCollapsed ? 'lg:grid-cols-[76px_minmax(0,1fr)]' : 'lg:grid-cols-[300px_minmax(0,1fr)]'}`}>
             {sidebarOpen && <button type="button" aria-label="Đóng thanh bên" onClick={() => setSidebarOpen(false)} className="fixed inset-x-0 bottom-0 top-[116px] z-20 bg-slate-950/35 lg:hidden" />}
-            <div className={`fixed bottom-0 left-0 top-[116px] z-30 w-[min(300px,calc(100vw-32px))] overflow-y-auto transition-transform duration-200 lg:sticky lg:top-[64px] lg:z-10 lg:w-auto lg:translate-x-0 lg:overflow-visible ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}`}>
+            <div className={`fixed bottom-0 left-0 top-[116px] z-30 w-[min(300px,calc(100vw-32px))] overflow-y-auto transition-[transform,visibility] duration-200 lg:sticky lg:top-[64px] lg:z-10 lg:w-auto lg:translate-x-0 lg:overflow-visible ${sidebarOpen ? 'translate-x-0' : '-translate-x-full max-lg:invisible'}`}>
               <WorkspaceSidebar channels={channels.filter(channel => channel.isActive)} selectedChannelId={criteria.channelId} workQueue={workQueue} collapsed={sidebarCollapsed} onToggle={() => { if (window.innerWidth < 1024) setSidebarOpen(false); else setSidebarCollapsed(value => !value); }} onSelectChannel={selectChannel} onOpenTarget={openWorkspaceTarget} onTogglePriority={async target => { await api.setWatchPriority(target.id, !target.isPriority); setWorkQueue(await api.getMyWork()); }} />
             </div>
             <div className="min-w-0 space-y-5 px-3 py-4 sm:px-6 sm:py-6">
@@ -564,7 +564,7 @@ export const App: React.FC = () => {
                   <button type="button" onClick={() => { setSidebarCollapsed(false); setSidebarOpen(true); }} aria-label="Mở thanh bên" title="Mở thanh bên" className="grid h-10 w-10 shrink-0 place-items-center rounded-xl border border-rule bg-white text-brand-600 shadow-panel lg:hidden"><Menu className="h-4 w-4" /></button>
                   <div className="min-w-0">
                     <h1 className="truncate text-base font-black tracking-tight text-slate-900">{activeChannel?.name || 'Hồ sơ khách hàng'}</h1>
-                    <p data-numeric className="mt-0.5 truncate text-[0.75rem] text-slate-500">
+                    <p data-numeric className="mt-0.5 truncate text-xs text-slate-500">
                       {hasSearched
                         ? `${customerCases.length} khách hàng · ${visibleFindings.length} mã lỗi đang hiển thị${hasMoreFindings ? ` · đã tải ${findings.length}/${findingsTotal}` : ''}`
                         : 'Chọn chuyên đề và điều kiện để bắt đầu'}
@@ -611,9 +611,9 @@ export const App: React.FC = () => {
               {([['ALL', 'Tất cả'], ['OVERDUE', 'Quá hạn'], ['PENDING', 'Chờ chi nhánh'], ['SUBMITTED_BRANCH', 'Chờ kiểm soát'], ['SUBMITTED_BRANCH_LEADER', 'Chờ lãnh đạo CN'], ['SUBMITTED_INTERNAL', 'Chờ phê duyệt HT'], ['REJECTED', 'Cần bổ sung'], ['WAIVED_RESOLVED', 'Đã đóng']] as const).map(([key, label]) => {
                 const active = filter === key;
                 const risky = key === 'OVERDUE' && filterCounts.OVERDUE > 0;
-                return <button key={key} type="button" onClick={() => setFilter(key)} aria-pressed={active} className={`inline-flex min-h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-[0.75rem] font-bold transition-colors ${active ? 'bg-brand-500 text-white' : risky ? 'bg-risk-surface text-risk hover:bg-risk-surface/70' : 'text-slate-600 hover:bg-slate-100'}`}>
+                return <button key={key} type="button" onClick={() => setFilter(key)} aria-pressed={active} className={`inline-flex min-h-7 shrink-0 items-center gap-1 whitespace-nowrap rounded-md px-2 text-xs font-bold transition-colors ${active ? 'bg-brand-500 text-white' : risky ? 'bg-risk-surface text-risk hover:bg-risk-surface/70' : 'text-slate-600 hover:bg-slate-100'}`}>
                   {label}
-                  <span data-numeric className={`text-[0.75rem] font-black tabular-nums ${active ? 'text-white/80' : risky ? 'text-risk' : 'text-slate-400'}`}>{filterCounts[key]}</span>
+                  <span data-numeric className={`text-xs font-black tabular-nums ${active ? 'text-white/80' : risky ? 'text-risk' : 'text-slate-400'}`}>{filterCounts[key]}</span>
                 </button>;
               })}
             </div>
@@ -628,9 +628,9 @@ export const App: React.FC = () => {
                 onChanged={refreshScopedData}
               />
             </div> : <>
-            <div className="hidden overflow-x-auto md:block">
+            <div className="hidden overflow-x-auto xl:block">
               <table className="w-full min-w-[820px] text-left text-xs">
-                <thead className="border-b border-rule bg-slate-50/80 text-[0.75rem] font-semibold text-slate-500">
+                <thead className="border-b border-rule bg-slate-50/80 text-xs font-semibold text-slate-500">
                   <tr>
                     <th scope="col" className="px-4 py-2.5 font-semibold">Khách hàng / CIF</th>
                     <th scope="col" className="px-4 py-2.5 font-semibold">Chi nhánh / phòng</th>
@@ -643,7 +643,7 @@ export const App: React.FC = () => {
               </table>
             </div>
 
-            <div className="divide-y divide-rule md:hidden">
+            <div className="divide-y divide-rule xl:hidden">
               {customerCases.map(items => {
                 const customer = items[0];
                 const late = items.some(isOverdue);
@@ -651,15 +651,15 @@ export const App: React.FC = () => {
                   {late && <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-risk-solid" />}
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="font-mono text-[0.75rem] font-bold text-brand-600">CIF {customer.cif}</div>
+                      <div className="font-mono text-xs font-bold text-brand-600">CIF {customer.cif}</div>
                       <h3 className="mt-0.5 truncate text-sm font-bold text-slate-900">{customer.customerName}</h3>
                     </div>
                     <ChevronRight className="mt-1 h-4 w-4 shrink-0 text-slate-300" aria-hidden />
                   </div>
-                  <p className="mt-1 truncate text-[0.75rem] text-slate-500">CN {customer.branchCode} · {customer.department || 'Chưa phân phòng'}</p>
+                  <p className="mt-1 truncate text-xs text-slate-500">CN {customer.branchCode} · {customer.department || 'Chưa phân phòng'}</p>
                   <ErrorCodeBadges findings={items} className="mt-2.5" />
                   <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2 border-t border-rule pt-2.5">
-                    <span data-numeric className="text-[0.75rem] font-semibold text-slate-500">{items.length} mã lỗi</span>
+                    <span data-numeric className="text-xs font-semibold text-slate-500">{items.length} mã lỗi</span>
                     <CaseStatusBadge findings={items} compact />
                   </div>
                 </button>;
@@ -680,7 +680,7 @@ export const App: React.FC = () => {
             {hasMoreFindings && <div className="flex flex-wrap items-center justify-between gap-3 border-t border-rule bg-slate-50/60 px-4 py-3">
               {/* Chip trạng thái chỉ chạy trên phần đã tải, nên khi mới tải một phần thì con số trên
                   chip là câu trả lời một phần. Nói thẳng ra thay vì để nó trông như kết quả đầy đủ. */}
-              <span data-numeric className="text-[0.75rem] font-semibold text-slate-600">
+              <span data-numeric className="text-xs font-semibold text-slate-600">
                 Đã tải {findings.length} / {findingsTotal} mã lỗi
                 {filter !== 'ALL' && <span className="text-warn"> · chip trạng thái chỉ áp dụng trên phần đã tải</span>}
               </span>
@@ -713,7 +713,7 @@ const ErrorCodeBadges: React.FC<{ findings: Finding[]; className?: string }> = (
   const shown = findings.slice(0, 3);
   return <div className={`flex max-w-[220px] flex-wrap gap-1 ${className}`} title={errorCodeTitle(findings)}>
     {shown.map(item => <CodeChip key={item.id}>{item.errorCode}</CodeChip>)}
-    {findings.length > shown.length && <span className="inline-flex items-center rounded border border-rule bg-slate-50 px-1.5 py-[2px] text-[0.75rem] font-bold leading-4 text-slate-600">+{findings.length - shown.length}</span>}
+    {findings.length > shown.length && <span className="inline-flex items-center rounded border border-rule bg-slate-50 px-1.5 py-[2px] text-xs font-bold leading-4 text-slate-600">+{findings.length - shown.length}</span>}
   </div>;
 };
 
@@ -739,11 +739,11 @@ const CustomerRow: React.FC<{ findings: Finding[]; onOpen: () => void }> = ({ fi
     <td className="relative px-4 py-3">
       {late && <span aria-hidden className="absolute inset-y-0 left-0 w-[3px] bg-risk-solid" />}
       <div className="font-bold text-slate-900">{customer.customerName}</div>
-      <div className="mt-0.5 font-mono text-[0.75rem] font-bold text-brand-600">CIF {customer.cif}</div>
+      <div className="mt-0.5 font-mono text-xs font-bold text-brand-600">CIF {customer.cif}</div>
     </td>
     <td className="px-4 py-3">
       <div className="font-semibold text-slate-700">{customer.branchCode} · {customer.branchName}</div>
-      <div className="mt-0.5 truncate text-[0.75rem] text-slate-500">{customer.department || 'Chưa phân phòng'} · {customer.officerName || 'Chưa phân công'}</div>
+      <div className="mt-0.5 truncate text-xs text-slate-500">{customer.department || 'Chưa phân phòng'} · {customer.officerName || 'Chưa phân công'}</div>
     </td>
     <td className="px-4 py-3"><ErrorCodeBadges findings={findings} /></td>
     <td className="px-4 py-3"><CaseStatusBadge findings={findings} /></td>

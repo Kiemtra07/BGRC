@@ -40,10 +40,19 @@ export interface WorkflowEvent {
  */
 const nextApproverUserId = z.string().trim().min(1).max(120).optional();
 
+/** Người nhận do người nộp chọn cho từng bước của tuyến; bước bỏ trống thì lấy mặc định (Hội sở: hàng chờ chung). */
+export const ApproverSelectionsSchema = z.object({
+  BRANCH_CONTROLLER: nextApproverUserId,
+  BRANCH_LEADER: nextApproverUserId,
+  INTERNAL_APPROVER: nextApproverUserId,
+});
+export type ApproverSelectionsDTO = z.infer<typeof ApproverSelectionsSchema>;
+
 export const SubmitBranchCommandSchema = z.object({
   expectedVersion: z.number().int().min(1),
   resolutionNotes: z.string().min(5, 'Giải trình khắc phục bắt buộc tối thiểu 5 ký tự'),
   nextApproverUserId,
+  approverSelections: ApproverSelectionsSchema.optional(),
 });
 export type SubmitBranchCommandDTO = z.infer<typeof SubmitBranchCommandSchema>;
 
@@ -107,6 +116,24 @@ export interface ApprovalRecipientOption {
   id: string;
   fullName: string;
   department?: string;
+}
+
+/** Một bước của tuyến duyệt kèm những người có thể nhận ở bước đó, để người nộp chọn trước khi gửi. */
+export interface SubmitRouteStep {
+  stage: ApprovalAssignmentStage;
+  stageName: string;
+  options: ApprovalRecipientOption[];
+  suggestedUserId?: string;
+  allowSharedQueue: boolean;
+}
+
+export interface SubmitRouteOptions {
+  /** Các bước loại báo cáo bắt buộc; người nộp chỉ đổi được người nhận. */
+  steps: SubmitRouteStep[];
+  /** Các bước kiểm soát có thể thêm vào, theo thứ tự thêm; thêm bước chỉ làm tuyến chặt hơn, không bỏ được bước bắt buộc. */
+  addableSteps: SubmitRouteStep[];
+  /** Bước đã được thêm ở lần nộp trước của hồ sơ này, để nộp lại không mất. */
+  addedStages: ApprovalAssignmentStage[];
 }
 
 /** Ai có thể nhận hồ sơ ở bước kế tiếp khi người dùng hiện tại chuyển nó đi. */

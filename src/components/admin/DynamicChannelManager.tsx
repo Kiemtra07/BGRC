@@ -49,21 +49,21 @@ export const DynamicChannelManager: React.FC<Props> = ({ channels, onChannelCrea
       {actionError && <div role="alert" className="rounded-xl border border-red-200 bg-red-50 px-4 py-3 text-xs font-semibold text-red-700">{actionError}</div>}
 
       <div className="overflow-hidden rounded-2xl border border-rule bg-white shadow-panel">
-        <div className="hidden grid-cols-[minmax(260px,1.4fr)_minmax(180px,1fr)_110px_110px_150px] gap-3 border-b border-rule bg-slate-50 px-4 py-3 text-[0.75rem] font-bold text-slate-500 md:grid">
+        <div className="hidden grid-cols-[minmax(260px,1.4fr)_minmax(180px,1fr)_110px_110px_150px] gap-3 border-b border-rule bg-slate-50 px-4 py-3 text-xs font-bold text-slate-500 md:grid">
           <span>Loại báo cáo</span><span>Đơn vị</span><span>Luồng</span><span>Phiên bản</span><span className="text-right">Thao tác</span>
         </div>
         <div className="divide-y divide-slate-100">
           {filtered.map(channel => (
             <div key={channel.id} className="grid grid-cols-1 gap-3 px-4 py-4 md:grid-cols-[minmax(260px,1.4fr)_minmax(180px,1fr)_110px_110px_150px] md:items-center">
-              <div className="min-w-0"><div className="flex items-center gap-2"><span className="rounded-lg bg-brand-50 p-2 text-brand-600"><FileSpreadsheet className="h-4 w-4" /></span><div className="min-w-0"><p className="truncate text-sm font-bold text-slate-900">{channel.name}</p><p className="mt-0.5 font-mono text-[0.75rem] font-bold text-brand-600">{channel.code}</p></div></div></div>
-              <p className="truncate text-xs text-slate-600">{channel.issuingDepartment}</p>
-              <span className="inline-flex w-fit items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-[0.75rem] font-bold text-slate-600"><GitBranch className="h-3 w-3" />{channel.workflowConfig?.workflowType === 'ONE_TIER' ? '1 cấp' : '2 cấp'}</span>
-              <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">v{channel.configVersion}</span><span className={`rounded-full px-2 py-1 text-[0.75rem] font-bold ${channel.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{channel.isActive ? 'Đang dùng' : 'Tạm ngừng'}</span></div>
+              <div className="min-w-0"><div className="flex items-center gap-2"><span className="rounded-lg bg-brand-50 p-2 text-brand-600"><FileSpreadsheet className="h-4 w-4" /></span><div className="min-w-0"><p title={channel.name} className="line-clamp-2 break-words text-sm font-bold text-slate-900">{channel.name}</p><p className="mt-0.5 font-mono text-xs font-bold text-brand-600">{channel.code}</p></div></div></div>
+              <p title={channel.issuingDepartment} className="truncate text-xs text-slate-600">{channel.issuingDepartment}</p>
+              <span className="inline-flex w-fit items-center gap-1 rounded-full bg-slate-100 px-2 py-1 text-xs font-bold text-slate-600"><GitBranch className="h-3 w-3" />{channel.workflowConfig?.workflowType === 'ONE_TIER' ? '1 cấp' : '2 cấp'}</span>
+              <div className="flex items-center gap-2"><span className="text-xs font-bold text-slate-700">v{channel.configVersion}</span><span className={`rounded-full px-2 py-1 text-xs font-bold ${channel.isActive ? 'bg-emerald-50 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{channel.isActive ? 'Đang dùng' : 'Tạm ngừng'}</span></div>
               <div className="flex items-center justify-start gap-1 md:justify-end">
                 <button type="button" onClick={() => setEditor(channel)} className="inline-flex items-center gap-1 rounded-lg px-2 py-2 text-xs font-bold text-brand-600 hover:bg-brand-50"><Pencil className="h-4 w-4" /> Sửa</button>
                 {pendingDeleteId === channel.id ? <div role="group" aria-label={`Xác nhận xóa ${channel.name}`} className="flex items-center gap-1 rounded-lg bg-red-50 p-1">
-                  <button type="button" onClick={() => remove(channel)} disabled={deletingId === channel.id} className="min-h-8 rounded-md bg-red-600 px-2 text-[0.75rem] font-bold text-white disabled:opacity-50">{deletingId === channel.id ? 'Đang xóa...' : 'Xóa'}</button>
-                  <button type="button" onClick={() => setPendingDeleteId(undefined)} disabled={deletingId === channel.id} className="min-h-8 rounded-md px-2 text-[0.75rem] font-bold text-slate-600 hover:bg-white disabled:opacity-50">Hủy</button>
+                  <button type="button" onClick={() => remove(channel)} disabled={deletingId === channel.id} className="min-h-8 rounded-md bg-red-600 px-2 text-xs font-bold text-white disabled:opacity-50">{deletingId === channel.id ? 'Đang xóa...' : 'Xóa'}</button>
+                  <button type="button" onClick={() => setPendingDeleteId(undefined)} disabled={deletingId === channel.id} className="min-h-8 rounded-md px-2 text-xs font-bold text-slate-600 hover:bg-white disabled:opacity-50">Hủy</button>
                 </div> : <button type="button" aria-label={`Xóa ${channel.name}`} onClick={() => { setActionError(undefined); setPendingDeleteId(channel.id); }} className="rounded-lg p-2 text-slate-400 hover:bg-red-50 hover:text-red-600"><Trash2 className="h-4 w-4" /></button>}
               </div>
             </div>

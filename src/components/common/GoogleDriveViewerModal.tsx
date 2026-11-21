@@ -60,7 +60,7 @@ export const GoogleDriveViewerModal: React.FC<GoogleDriveViewerModalProps> = ({
                 {file.fileName}
               </h3>
               <p className="text-xs text-slate-500 flex items-center gap-2">
-                <span>Mã tệp Google Drive: <code className="text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded text-[0.75rem]">{file.driveFileId}</code></span>
+                <span>Mã tệp Google Drive: <code className="text-brand-600 bg-brand-50 px-1.5 py-0.5 rounded text-xs">{file.driveFileId}</code></span>
                 <span>•</span>
                 <span>Kích thước: {file.fileSize}</span>
               </p>

@@ -5,7 +5,7 @@ import {
   InternalWaiveCommandDTO, InternalRejectCommandDTO, WebFormFindingDTO, BulkFindingImportDTO, StageFindingImportDTO, CommitStagedFindingImportDTO, ScheduleStagedFindingImportDTO, ImportBatch, StagingRow,
   EvidenceObject, CreateReportDefinitionDTO, ReportDefinition, CreateDashboardDefinitionDTO, DashboardDefinition, ReportFilterQuery,
   AuditLogPage, MyWorkQueue, FindingFollowResult, CreateFindingSubItemDTO, ReviewFindingSubItemsDTO,
-  FindingApprovalRouteView, NextApprovalRecipients, UpdateReportDefinitionDTO, ExecuteHandoverDTO, HandoverResult, UserOpenItems,
+  FindingApprovalRouteView, NextApprovalRecipients, SubmitRouteOptions, UpdateReportDefinitionDTO, ExecuteHandoverDTO, HandoverResult, UserOpenItems,
   WorkspaceTarget, WorkspaceTargetCommandDTO, CreateUserDTO,
   ReportCatalog, ReportRunRequest, ReportRunResult, ReportExportRequest, ReportDrillRequest, ReportDrillResult,
   CreateReportChannelDTO, UpdateReportChannelDTO, ReportChannelVersion, ReportChannelIntegrationReadiness, CreateReportSpreadsheetDTO, ReportSpreadsheetResult,
@@ -362,6 +362,7 @@ export class ApiService {
   }
   public getFindingById(id: string): Promise<Finding> { return this.request(`/findings/${id}`); }
   public getNextApprovers(id: string): Promise<NextApprovalRecipients> { return this.request(`/findings/${id}/next-approvers`); }
+  public getSubmitRouteOptions(id: string): Promise<SubmitRouteOptions> { return this.request(`/findings/${id}/submit-route-options`); }
   /** Bật/tắt dấu sao "trường hợp đặc biệt"; dấu sao quyết định hồ sơ có qua bước Lãnh đạo chi nhánh hay không. */
   public setSpecialCase(id: string, dto: SetFindingSpecialCaseDTO): Promise<Finding> {
     return this.request(`/findings/${id}/special-case`, { method: 'PUT', body: JSON.stringify(dto) });

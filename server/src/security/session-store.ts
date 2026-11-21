@@ -8,11 +8,19 @@ export interface AuthSessionStoreOptions {
   onChange?: (records: AuthSessionRecord[]) => void;
 }
 
+const PURGE_INTERVAL_MS = 60_000;
+
+/** SHA-256 của token phiên; token thô không bao giờ được lưu. */
+export function sessionTokenDigest(token: string): string {
+  return createHash('sha256').update(token).digest('hex');
+}
+
 export class AuthSessionStore {
   private readonly now: () => Date;
   private readonly ttlMs: number;
   private readonly onChange?: (records: AuthSessionRecord[]) => void;
   private sessionRecords: AuthSessionRecord[];
+  private lastPurgeAtMs = 0;
 
   public constructor(options: AuthSessionStoreOptions = {}) {
     this.now = options.now ?? (() => new Date());
@@ -22,7 +30,7 @@ export class AuthSessionStore {
   }
 
   private digest(token: string): string {
-    return createHash('sha256').update(token).digest('hex');
+    return sessionTokenDigest(token);
   }
 
   private publish(): void {
@@ -47,11 +55,14 @@ export class AuthSessionStore {
   }
 
   public resolve(token: string): AuthSessionRecord | undefined {
-    this.purgeExpired();
     if (!token) return undefined;
-    const record = this.sessionRecords.find(item => item.tokenDigest === this.digest(token) && !item.revokedAt);
-    if (!record) return undefined;
-    record.lastSeenAt = this.now().toISOString();
+    const nowMs = this.now().getTime();
+    // Dọn phiên hết hạn theo nhịp thay vì quét cả danh sách ở mỗi yêu cầu; hạn của chính phiên tìm được vẫn được kiểm ngay bên dưới.
+    if (nowMs - this.lastPurgeAtMs >= PURGE_INTERVAL_MS) this.purgeExpired();
+    const digest = this.digest(token);
+    const record = this.sessionRecords.find(item => item.tokenDigest === digest && !item.revokedAt);
+    if (!record || Date.parse(record.expiresAt) <= nowMs) return undefined;
+    record.lastSeenAt = new Date(nowMs).toISOString();
     return structuredClone(record);
   }
 
@@ -92,6 +103,7 @@ export class AuthSessionStore {
 
   public purgeExpired(): number {
     const nowMs = this.now().getTime();
+    this.lastPurgeAtMs = nowMs;
     const before = this.sessionRecords.length;
     this.sessionRecords = this.sessionRecords.filter(item => !item.revokedAt && Date.parse(item.expiresAt) > nowMs);
     if (this.sessionRecords.length !== before) this.publish();

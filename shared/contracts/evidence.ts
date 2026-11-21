@@ -28,6 +28,8 @@ export interface EvidenceObject {
   revokedAt?: string;
   revokedReason?: string;
   revokedByUserId?: string;
+  /** Thời điểm tệp của minh chứng đã thu hồi được chuyển vào vùng cách ly; vắng mặt nghĩa là còn phải chuyển. */
+  storageQuarantinedAt?: string;
   createdAt: string;
   updatedAt: string;
 }

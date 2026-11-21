@@ -73,6 +73,9 @@ import {
   ReportMetricKey,
   FindingApprovalRouteView,
   NextApprovalRecipients,
+  ApproverSelectionsDTO,
+  SubmitRouteOptions,
+  SubmitRouteStep,
   ExecuteHandoverSchema,
   HANDOVER_MAX_ITEMS,
   HandoverRecipientOption,
@@ -131,7 +134,11 @@ import {
   pinnedApproverForStage,
   pinStageApprover,
   reassignApprovalStage,
+  addableStagesFor,
   resolveApprovalRoute,
+  routeStagesFor,
+  strictestWorkflowType,
+  submitWorkflowType,
 } from './modules/workflow/approval-assignment';
 import { insertApprovalAssignmentHistory, type ApprovalAssignmentHistoryWrite } from './repositories/approval-assignment-history';
 import { EvidenceStorageStatus, googleDriveService } from './adapters/google-drive';
@@ -180,6 +187,8 @@ import {
 } from './security/access-control';
 import { hashPassword, verifyPassword } from './security/password';
 import { AuthSessionStore } from './security/session-store';
+import { PostgresAuthSessions } from './repositories/auth-sessions';
+import { SnapshotSessionBackend, TableSessionBackend, type SessionBackend } from './security/session-backend';
 import {
   buildOtpAuthUri,
   decryptTotpSecret,
@@ -293,8 +302,20 @@ const publicPaths = new Set([
   internalOutboxPath,
 ]);
 const requestUsers = new WeakMap<FastifyRequest, UserProfile>();
+const requestSessions = new WeakMap<FastifyRequest, Promise<AuthSessionRecord | undefined>>();
+
+/** Phiên của yêu cầu, tra một lần: các bước sau (xác thực lại, chẩn đoán) dùng lại kết quả thay vì hỏi nơi lưu thêm. */
+function resolveRequestSession(request: FastifyRequest): Promise<AuthSessionRecord | undefined> {
+  let pending = requestSessions.get(request);
+  if (!pending) {
+    pending = sessionBackend.resolve(cookieValue(request, 'audit_bgs_session') ?? '');
+    requestSessions.set(request, pending);
+  }
+  return pending;
+}
 const idempotencyRequests = new WeakMap<FastifyRequest, { cacheKey: string; requestHash: string; claimToken?: string; claimed: boolean }>();
 let authSessionStore: AuthSessionStore;
+let sessionBackend: SessionBackend;
 const supabaseAuthAdapter: SupabaseAuthAdapter | undefined = process.env.AUTH_MODE === 'supabase'
   && process.env.SUPABASE_URL
   && (process.env.SUPABASE_PUBLISHABLE_KEY || process.env.SUPABASE_ANON_KEY)
@@ -406,9 +427,8 @@ function assertOidcStateBound(request: FastifyRequest, state: string): void {
 }
 
 async function createAuthenticatedSession(user: UserProfile, reply: CookieReply): Promise<string> {
-  const session = authSessionStore.create(user.id);
-  authSessions = authSessionStore.records();
-  await persistLocalState();
+  const session = await sessionBackend.create(user.id);
+  await persistSessionChange();
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   const csrfToken = csrfCookieValue();
   reply.header('set-cookie', [
@@ -459,16 +479,17 @@ app.addHook('preHandler', async (request) => {
     return;
   }
   const allowTestUserHeader = process.env.NODE_ENV === 'test' && process.env.ALLOW_TEST_USER_HEADER !== 'false';
-  const user = allowTestUserHeader && request.headers['x-user-id']
-    ? resolveLocalUser(request.headers['x-user-id'], appUsers)
-    : (() => {
-      const session = authSessionStore.resolve(cookieValue(request, 'audit_bgs_session') ?? '');
-      const sessionUser = session ? appUsers.find(item => item.id === session.userId && item.isActive) : undefined;
-      if (!sessionUser) {
-        throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Vui lòng đăng nhập để tiếp tục.');
-      }
-      return sessionUser;
-    })();
+  let user: UserProfile;
+  if (allowTestUserHeader && request.headers['x-user-id']) {
+    user = resolveLocalUser(request.headers['x-user-id'], appUsers);
+  } else {
+    const session = await resolveRequestSession(request);
+    const sessionUser = session ? appUsers.find(item => item.id === session.userId && item.isActive) : undefined;
+    if (!sessionUser) {
+      throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Vui lòng đăng nhập để tiếp tục.');
+    }
+    user = sessionUser;
+  }
   requestUsers.set(request, user);
 });
 
@@ -1446,6 +1467,47 @@ const postgresAuthSecurityState = stateRepository instanceof PostgresStateReposi
   ? new PostgresAuthSecurityState(pool as unknown as PostgresPoolLike)
   : undefined;
 
+// Phiên đăng nhập ở PostgreSQL nằm trong bảng riêng: đăng nhập, đăng xuất, xác thực lại và thu hồi
+// không còn đọc rồi ghi lại cả snapshot. Local JSON và bộ nhớ vẫn giữ phiên trong snapshot.
+// Triển khai mã trước khi chạy migration 0132 thì chưa có bảng; khi đó giữ phiên trong snapshot thay vì
+// làm hỏng mọi lượt đăng nhập, và lần khởi động sau migration sẽ tự chuyển sang bảng riêng.
+async function authSessionsTableExists(poolLike: PostgresPoolLike): Promise<boolean> {
+  const client = await poolLike.connect();
+  try {
+    const result = await client.query("SELECT to_regclass('public.auth_sessions') IS NOT NULL AS present");
+    return result.rows[0]?.present === true;
+  } catch {
+    return false;
+  } finally {
+    client.release();
+  }
+}
+
+const postgresAuthSessions = stateRepository instanceof PostgresStateRepository
+  && await authSessionsTableExists(pool as unknown as PostgresPoolLike)
+  ? new PostgresAuthSessions(pool as unknown as PostgresPoolLike)
+  : undefined;
+const usesSessionTable = Boolean(postgresAuthSessions);
+if (stateRepository instanceof PostgresStateRepository && !usesSessionTable) {
+  app.log.warn('Chưa có bảng auth_sessions (migration 0132): phiên đăng nhập tạm thời nằm trong snapshot.');
+}
+
+/** Quá ngần này phút không thao tác thì phiên bị đóng; SESSION_IDLE_MINUTES=0 tắt hạn nhàn rỗi. */
+function sessionIdleMs(): number {
+  const minutes = Number(process.env.SESSION_IDLE_MINUTES ?? '30');
+  return Number.isFinite(minutes) && minutes > 0 ? Math.floor(minutes) * 60_000 : 0;
+}
+
+sessionBackend = postgresAuthSessions
+  ? new TableSessionBackend(postgresAuthSessions, { idleMs: sessionIdleMs() })
+  : new SnapshotSessionBackend(() => authSessionStore, records => { authSessions = records; });
+
+/** Đổi phiên chỉ cần ghi dấu vết an ninh đang chờ khi phiên nằm trong bảng riêng, không ghi lại cả snapshot. */
+async function persistSessionChange(): Promise<void> {
+  if (usesSessionTable) await flushSecurityEvents();
+  else await persistLocalState();
+}
+
 const postgresOutbox = stateRepository instanceof PostgresStateRepository
   ? new PostgresOutbox(pool as unknown as PostgresPoolLike)
   : undefined;
@@ -1604,7 +1666,7 @@ idempotencyRecords = hydratedState.idempotencyRecords ?? {};
 findingFollows = hydratedState.findingFollows ?? [];
 workspaceAccepted = hydratedState.workspaceAccepted ?? [];
 workspaceWatchTargets = hydratedState.workspaceWatchTargets ?? [];
-authSessions = hydratedState.authSessions ?? [];
+authSessions = usesSessionTable ? [] : hydratedState.authSessions ?? [];
 authenticatorCredentials = hydratedState.authenticatorCredentials ?? [];
 securityEvents = hydratedState.securityEvents ?? [];
 loginAttempts = hydratedState.loginAttempts ?? [];
@@ -1913,7 +1975,7 @@ function restoreDurableLocalState(restored: LocalAppState, workflowEventsOverrid
   findingFollows = restored.findingFollows ?? [];
   workspaceAccepted = restored.workspaceAccepted ?? [];
   workspaceWatchTargets = restored.workspaceWatchTargets ?? [];
-  authSessions = restored.authSessions ?? [];
+  authSessions = usesSessionTable ? [] : restored.authSessions ?? [];
   authenticatorCredentials = restored.authenticatorCredentials ?? [];
   // Khi sổ an ninh đang hoạt động, snapshot không mang mảng này nữa — lấy theo `restored` sẽ xoá
   // sạch bản chiếu trong bộ nhớ và làm màn hình Nhật ký trống sau mỗi lần ghi.
@@ -2362,10 +2424,9 @@ function getCurrentUser(req: FastifyRequest): UserProfile {
 }
 
 /** Sensitive admin mutations require a recent password/MFA confirmation for this exact session. */
-function requireRecentStepUp(req: FastifyRequest): void {
+async function requireRecentStepUp(req: FastifyRequest): Promise<void> {
   if (process.env.NODE_ENV === 'test' && process.env.ALLOW_TEST_USER_HEADER !== 'false' && typeof req.headers['x-user-id'] === 'string') return;
-  const token = cookieValue(req, 'audit_bgs_session');
-  const session = authSessionStore.resolve(token ?? '');
+  const session = await resolveRequestSession(req);
   const steppedUpAt = session?.stepUpAt ? Date.parse(session.stepUpAt) : Number.NaN;
   if (!session || !Number.isFinite(steppedUpAt) || Date.now() - steppedUpAt > STEP_UP_TTL_MS) {
     throw new HttpProblem(403, 'STEP_UP_REQUIRED', 'Cần xác thực lại', 'Nhập lại mật khẩu hiện tại trước khi thay đổi cấu hình bảo mật.');
@@ -3420,8 +3481,8 @@ export function buildReadinessPayload(
 }
 
 /** Xác định người gọi có phải quản trị viên đã đăng nhập không, mà không ném lỗi khi chưa đăng nhập. */
-function optionalAdminViewer(request: FastifyRequest): UserProfile | undefined {
-  const session = authSessionStore.resolve(cookieValue(request, 'audit_bgs_session') ?? '');
+async function optionalAdminViewer(request: FastifyRequest): Promise<UserProfile | undefined> {
+  const session = await resolveRequestSession(request);
   if (!session) return undefined;
   const user = appUsers.find(item => item.id === session.userId && item.isActive);
   return user?.roles.includes('ADMIN') ? user : undefined;
@@ -3431,7 +3492,7 @@ app.get('/api/v1/ready', async (req) => buildReadinessPayload(
   await stateRepository.getStatus(),
   await googleDriveService.getStorageStatus(),
   {
-    includeDiagnostics: Boolean(optionalAdminViewer(req)),
+    includeDiagnostics: Boolean(await optionalAdminViewer(req)),
     authMode: process.env.AUTH_MODE,
     runtimeEnvironment: process.env.NODE_ENV,
     scannerConfigured: evidenceScannerConfigurationStatus(process.env) === 'configured',
@@ -3465,12 +3526,14 @@ app.route({
       throw new HttpProblem(503, 'CRON_DATABASE_UNAVAILABLE', 'Database chưa sẵn sàng', dataStore.warning ?? 'Cron không thể kết nối PostgreSQL.');
     }
     const orphanEvidenceUploads = await cleanupExpiredEvidenceUploads();
+    const revokedEvidenceQuarantine = await sweepRevokedEvidenceQuarantine();
     return {
       success: true,
       maintenance: {
         databaseActivity: true,
         dataStore: { mode: dataStore.mode, durable: dataStore.durable },
         orphanEvidenceUploads,
+        revokedEvidenceQuarantine,
       },
       ...(await evaluateCurrentSlaState()),
     };
@@ -3783,8 +3846,8 @@ app.post('/api/v1/auth/logout', async (req, reply) => {
     return reply.code(204).send();
   }
   const token = cookieValue(req, 'audit_bgs_session');
-  const endingSession = token ? authSessionStore.resolve(token) : undefined;
-  if (token) authSessionStore.revoke(token);
+  const endingSession = token ? await sessionBackend.resolve(token) : undefined;
+  if (token) await sessionBackend.revoke(token);
   if (endingSession) {
     const owner = appUsers.find(item => item.id === endingSession.userId);
     recordSecurityEvent({
@@ -3797,7 +3860,6 @@ app.post('/api/v1/auth/logout', async (req, reply) => {
       ipAddress: req.ip,
     });
   }
-  authSessions = authSessionStore.records();
   await persistLocalState();
   const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
   reply.header('set-cookie', [
@@ -3812,7 +3874,7 @@ app.post('/api/v1/auth/step-up', async (req: FastifyRequest<{ Body: unknown }>, 
   const user = getCurrentUser(req);
   const body = StepUpSchema.parse(req.body);
   const token = cookieValue(req, 'audit_bgs_session');
-  const session = authSessionStore.resolve(token ?? '');
+  const session = await resolveRequestSession(req);
   if (!session || session.userId !== user.id) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Vui lòng đăng nhập lại để xác thực lại.');
   if (process.env.AUTH_MODE === 'supabase') throw new HttpProblem(501, 'STEP_UP_NOT_SUPPORTED', 'Chưa hỗ trợ xác thực lại', 'Cấu hình Supabase cần luồng xác thực lại riêng trước khi cho phép thay đổi bảo mật.');
 
@@ -3835,8 +3897,7 @@ app.post('/api/v1/auth/step-up', async (req: FastifyRequest<{ Body: unknown }>, 
     }
   }
   await clearLoginFailures(attemptKey);
-  if (!authSessionStore.markStepUp(token ?? '')) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Phiên đăng nhập đã hết hạn.');
-  authSessions = authSessionStore.records();
+  if (!await sessionBackend.markStepUp(token ?? '')) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Phiên đăng nhập đã hết hạn.');
   recordUserSecurityEvent(req, user, { type: 'AUTH_STEP_UP_SUCCEEDED', outcome: 'SUCCESS', detail: 'Xác thực lại phiên trước thao tác nhạy cảm.' });
   await persistLocalState();
   return reply.code(204).send();
@@ -3890,7 +3951,18 @@ app.post('/api/v1/auth/forgot-password', async (req: FastifyRequest<{ Body: unkn
       throw new HttpProblem(422, 'PASSWORD_RESET_REDIRECT_INVALID', 'Địa chỉ khôi phục không hợp lệ', 'Liên kết khôi phục phải trỏ về trang reset của ứng dụng.');
     }
   }
-  await supabaseAuthAdapter.sendPasswordReset(body.email.toLocaleLowerCase('en-US'), redirectTo);
+  // Giới hạn thư theo địa chỉ: nếu không thì ai cũng dội được hộp thư của người khác bằng chính chức năng này.
+  // Vượt ngưỡng vẫn trả 204 và không gửi, để phản hồi không cho biết địa chỉ nào tồn tại hay đang bị chặn.
+  const recipient = body.email.toLocaleLowerCase('en-US');
+  const resetKey = `reset:${recipient}`;
+  const nowMs = Date.now();
+  try {
+    await assertLoginNotLocked(resetKey, nowMs);
+  } catch {
+    return reply.code(204).send();
+  }
+  await recordLoginFailure(resetKey, nowMs);
+  await supabaseAuthAdapter.sendPasswordReset(recipient, redirectTo);
   return reply.code(204).send();
 });
 
@@ -3913,8 +3985,7 @@ app.post('/api/v1/auth/password', async (req: FastifyRequest<{ Body: unknown }>)
   }
   await clearLoginFailures(attemptKey);
   credential.passwordHash = await hashPassword(body.password);
-  const revokedSessions = authSessionStore.revokeAllForUser(user.id);
-  authSessions = authSessionStore.records();
+  const revokedSessions = await sessionBackend.revokeAllForUser(user.id);
   recordUserSecurityEvent(req, user, { type: 'AUTH_PASSWORD_CHANGED', outcome: 'SUCCESS', detail: `Người dùng tự đổi mật khẩu; thu hồi ${revokedSessions} phiên.` });
   await persistLocalState();
   return { user };
@@ -4604,7 +4675,7 @@ async function createUserAccount(req: FastifyRequest, body: CreateUserDTO): Prom
 
 app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: unknown }>) => {
   requireAdmin(getCurrentUser(req));
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const response = await createUserAccount(req, CreateUserSchema.parse(req.body));
   await persistLocalState();
   return response;
@@ -4613,7 +4684,7 @@ app.post('/api/v1/admin/users', async (req: FastifyRequest<{ Body: unknown }>) =
 app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body: unknown }>, reply) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const body = BulkUserImportSchema.parse(req.body);
   const idempotency = await idempotencyContext<BulkUserImportResult>(req, actor, body);
   if (idempotency.replay) return reply.code(201).send(idempotency.replay);
@@ -4646,7 +4717,7 @@ app.post('/api/v1/admin/users/imports/commit', async (req: FastifyRequest<{ Body
 app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const body: UpdateUserDTO = UpdateUserSchema.parse(req.body);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
@@ -4707,8 +4778,7 @@ app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: 
     }
   }
   if (body.isActive === false) {
-    const revokedSessions = authSessionStore.revokeAllForUser(user.id);
-    authSessions = authSessionStore.records();
+    const revokedSessions = await sessionBackend.revokeAllForUser(user.id);
     recordUserSecurityEvent(req, actor, { type: 'ADMIN_USER_DISABLED', outcome: 'SUCCESS', subject: user.username, detail: `Khóa tài khoản ${user.fullName}; thu hồi ${revokedSessions} phiên.` });
   } else {
     recordUserSecurityEvent(req, actor, { type: 'ADMIN_USER_UPDATED', outcome: 'SUCCESS', subject: user.username, detail: `Cập nhật hồ sơ tài khoản ${user.fullName}.` });
@@ -4720,7 +4790,7 @@ app.patch('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: 
 app.delete('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const index = appUsers.findIndex(item => item.id === req.params.id);
   if (index < 0) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
   const user = appUsers[index];
@@ -4730,8 +4800,7 @@ app.delete('/api/v1/admin/users/:id', async (req: FastifyRequest<{ Params: { id:
   appUsers.splice(index, 1);
   credentialDirectory = credentialDirectory.filter(entry => entry.userId !== user.id);
   authenticatorCredentials = authenticatorCredentials.filter(entry => entry.userId !== user.id);
-  authSessionStore.revokeAllForUser(user.id);
-  authSessions = authSessionStore.records();
+  await sessionBackend.revokeAllForUser(user.id);
   recordUserSecurityEvent(req, actor, { type: 'ADMIN_USER_DELETED', outcome: 'SUCCESS', subject: user.username, detail: `Xóa tài khoản ${user.fullName}.` });
   await persistLocalState();
   return reply.code(204).send();
@@ -4829,7 +4898,7 @@ app.get('/api/v1/admin/users/:id/open-items', async (req: FastifyRequest<{ Param
 app.post('/api/v1/admin/handovers', async (req: FastifyRequest<{ Body: unknown }>): Promise<HandoverResult> => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const dto = ExecuteHandoverSchema.parse(req.body);
   const from = requireHandoverUser(dto.fromUserId, 'Người bàn giao');
   const to = requireHandoverUser(dto.toUserId, 'Người nhận');
@@ -4932,7 +5001,7 @@ app.get('/api/v1/admin/security-settings', async (req) => {
 app.put('/api/v1/admin/security-settings', async (req: FastifyRequest<{ Body: unknown }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const body = SecuritySettingsSchema.parse(req.body);
   const previous = securitySettings.mfaPolicy;
   const configured = new Set(authenticatorCredentials.filter(isAuthenticatorConfirmed).map(item => item.userId));
@@ -4966,7 +5035,7 @@ app.put('/api/v1/admin/security-settings', async (req: FastifyRequest<{ Body: un
 app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const body = UpdateAuthenticatorSchema.parse(req.body);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
@@ -4994,8 +5063,7 @@ app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Pa
     usedTotpCounters = usedTotpCounters.filter(record => record.userId !== user.id);
     recoveryCodeSets = recoveryCodeSets.filter(record => record.userId !== user.id);
     user.authenticatorConfigured = false;
-    const revokedSessions = authSessionStore.revokeAllForUser(user.id);
-    authSessions = authSessionStore.records();
+    const revokedSessions = await sessionBackend.revokeAllForUser(user.id);
     recordUserSecurityEvent(req, actor, {
       type: 'ADMIN_AUTHENTICATOR_TOGGLED',
       outcome: 'SUCCESS',
@@ -5023,7 +5091,7 @@ app.put('/api/v1/admin/users/:id/authenticator', async (req: FastifyRequest<{ Pa
 app.post('/api/v1/admin/users/:id/authenticator/confirm', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const body = ConfirmAuthenticatorEnrollmentSchema.parse(req.body);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
@@ -5056,7 +5124,7 @@ app.post('/api/v1/admin/users/:id/authenticator/confirm', async (req: FastifyReq
 app.post('/api/v1/admin/users/:id/authenticator/recovery-codes', async (req: FastifyRequest<{ Params: { id: string } }>) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
   if (!authenticatorCredentials.some(item => item.userId === user.id && isAuthenticatorConfirmed(item))) {
@@ -5080,7 +5148,7 @@ app.post('/api/v1/admin/users/:id/authenticator/recovery-codes', async (req: Fas
 /** Đặt lại mật khẩu cho một tài khoản. Trả mật khẩu tạm khi quản trị viên không tự đặt. */
 app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params: { id: string }; Body: unknown }>) => {
   requireAdmin(getCurrentUser(req));
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const body = ResetUserPasswordSchema.parse(req.body ?? {});
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) {
@@ -5099,7 +5167,7 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
   }
 
   // Đổi mật khẩu phải đá mọi phiên đang mở, nếu không người bị thu hồi vẫn dùng tiếp được.
-  const revokedSessions = authSessionStore.revokeAllForUser(user.id);
+  const revokedSessions = await sessionBackend.revokeAllForUser(user.id);
   await clearLoginFailures(user.username.toLocaleLowerCase('vi-VN'));
   recordUserSecurityEvent(req, getCurrentUser(req), {
     type: 'ADMIN_USER_PASSWORD_RESET',
@@ -5107,7 +5175,6 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
     subject: user.username,
     detail: `Đặt lại mật khẩu cho ${user.fullName}; thu hồi ${revokedSessions} phiên đang mở.`,
   });
-  authSessions = authSessionStore.records();
   await persistLocalState();
   return { user, temporaryPassword } satisfies CreatedUserResponse;
 });
@@ -5116,7 +5183,7 @@ app.post('/api/v1/admin/users/:id/password', async (req: FastifyRequest<{ Params
 app.post('/api/v1/admin/users/:id/password-reset-email', async (req: FastifyRequest<{ Params: { id: string } }>, reply) => {
   const actor = getCurrentUser(req);
   requireAdmin(actor);
-  requireRecentStepUp(req);
+  await requireRecentStepUp(req);
   const user = appUsers.find(item => item.id === req.params.id);
   if (!user) throw new HttpProblem(404, 'USER_NOT_FOUND', 'Không tìm thấy tài khoản', 'Tài khoản không tồn tại.');
   if (process.env.AUTH_MODE !== 'supabase' || !supabaseAuthAdapter) {
@@ -6210,11 +6277,18 @@ app.post('/api/v1/imports/findings/document-preview', async (req, reply) => {
 // WORKFLOW COMMAND ACTIONS (P0-01 to P0-09)
 // ----------------------------------------------------
 
-function workflowTypeOf(finding: Finding): 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER' {
+/** Loại luồng theo phiên bản loại báo cáo đã ghim, chưa tính bước người nộp thêm. */
+function configuredWorkflowTypeOf(finding: Finding): 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER' {
   const pinnedVersion = reportChannelVersions.find(version => version.id === finding.channelVersionId);
   return pinnedVersion?.snapshot.workflowConfig?.workflowType
     ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.workflowType
     ?? 'TWO_TIER';
+}
+
+/** Loại luồng đang áp dụng cho hồ sơ: mức đã cấu hình, hoặc chặt hơn nếu người nộp đã thêm bước kiểm soát. */
+function workflowTypeOf(finding: Finding): 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER' {
+  const configured = configuredWorkflowTypeOf(finding);
+  return finding.routeWorkflowType ? strictestWorkflowType(configured, finding.routeWorkflowType) : configured;
 }
 
 /** Người được chọn làm người nhận phải nằm trong danh sách hợp lệ của bước; bỏ trống thì dùng mặc định. */
@@ -6249,9 +6323,80 @@ function recipientNote(next: Finding): string {
   return name ? ` Người nhận: ${name}.` : '';
 }
 
+/**
+ * Kiểm lựa chọn của người nộp cho từng bước. Bước nào không thuộc tuyến của hồ sơ thì từ chối, và mỗi
+ * người chọn phải đủ điều kiện theo đúng luật của chuyển bước: đúng vai trò, đúng phạm vi, không phải
+ * người nộp và chưa giữ bước nào đứng trước trong cùng tuyến.
+ */
+function validateApproverSelections(
+  finding: Finding,
+  workflowType: 'ONE_TIER' | 'TWO_TIER' | 'THREE_TIER',
+  actor: UserProfile,
+  selections: ApproverSelectionsDTO,
+): void {
+  const stages = routeStagesFor(workflowType, Boolean(finding.isSpecialCase));
+  let chosen: FindingApprovalRoute | undefined;
+  const assignedAt = new Date().toISOString();
+  for (const stage of stages) {
+    const selected = selections[stage];
+    if (!selected) continue;
+    requireEligibleRecipient(selected, eligibleRecipientsForStage(finding, stage, actor.id, chosen, appUsers));
+    chosen = pinStageApprover(chosen, stage, selected, assignedAt);
+  }
+}
+
+app.get('/api/v1/findings/:id/submit-route-options', async (req: FastifyRequest<{ Params: { id: string } }>): Promise<SubmitRouteOptions> => {
+  const user = getCurrentUser(req);
+  const finding = getScopedFindingOrThrow(req.params.id, user);
+  if (!user.roles.includes('BRANCH_INPUT') || (finding.workflowStatus !== 'PENDING' && finding.workflowStatus !== 'REJECTED')) {
+    return { steps: [], addableSteps: [], addedStages: [] };
+  }
+  const configuredType = configuredWorkflowTypeOf(finding);
+  const isSpecialCase = Boolean(finding.isSpecialCase);
+  const defaultNames = new Map(defaultWorkflowConfig(finding.channelId, 'THREE_TIER').stages.flatMap(step => {
+    const stage = approvalStageForStatus(step.statusCode);
+    return stage ? [[stage, step.stageName] as const] : [];
+  }));
+  const stageNames = new Map(buildFindingApprovalRoute(finding).steps.flatMap(step => {
+    const stage = approvalStageForStatus(step.statusCode);
+    return stage ? [[stage, step.stageName] as const] : [];
+  }));
+  const previous = finding.approvalRoute;
+  const suggestedSoFar = new Set<string>();
+  const describeStage = (stage: ApprovalAssignmentStage): SubmitRouteStep => {
+    const eligible = eligibleRecipientsForStage(finding, stage, user.id, undefined, appUsers);
+    const isHeadOffice = stage === 'INTERNAL_APPROVER';
+    const pinned = pinnedApproverForStage(previous, stage);
+    const suggested = eligible.find(candidate => candidate.id === pinned && !suggestedSoFar.has(candidate.id))
+      ?? (isHeadOffice ? undefined : eligible.find(candidate => !suggestedSoFar.has(candidate.id)));
+    if (suggested) suggestedSoFar.add(suggested.id);
+    return {
+      stage,
+      stageName: stageNames.get(stage) ?? defaultNames.get(stage) ?? handoverStageLabels[stage],
+      options: eligible.map(candidate => ({ id: candidate.id, fullName: candidate.fullName, department: candidate.department })),
+      suggestedUserId: suggested?.id,
+      allowSharedQueue: isHeadOffice,
+    };
+  };
+  const baseStages = routeStagesFor(configuredType, isSpecialCase);
+  const steps = baseStages.map(describeStage);
+  const addableSteps = addableStagesFor(configuredType, isSpecialCase).map(describeStage);
+  const addedStages = routeStagesFor(workflowTypeOf(finding), isSpecialCase).filter(stage => !baseStages.includes(stage));
+  return { steps, addableSteps, addedStages };
+});
+
 app.get('/api/v1/findings/:id/next-approvers', async (req: FastifyRequest<{ Params: { id: string } }>): Promise<NextApprovalRecipients> => {
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
+  // Danh sách người nhận chỉ dành cho người đang được chuyển bước này; người khác chỉ xem được hồ sơ thì không cần biết ai là người duyệt kế tiếp.
+  const forwardingRoles: Partial<Record<WorkflowStatus, UserRole>> = {
+    PENDING: 'BRANCH_INPUT',
+    REJECTED: 'BRANCH_INPUT',
+    SUBMITTED_BRANCH: 'BRANCH_CONTROLLER',
+    SUBMITTED_BRANCH_LEADER: 'BRANCH_LEADER',
+  };
+  const forwardingRole = forwardingRoles[finding.workflowStatus];
+  if (!forwardingRole || !user.roles.includes(forwardingRole)) return { options: [], allowSharedQueue: false };
   const nextStatus = workflowService.nextStatusAfterForward(finding, workflowTypeOf(finding));
   const stage = nextStatus && approvalStageForStatus(nextStatus);
   if (!stage) return { options: [], allowSharedQueue: false };
@@ -6333,12 +6478,14 @@ app.put('/api/v1/findings/:id/special-case', async (req: FastifyRequest<{ Params
  */
 function buildFindingApprovalRoute(finding: Finding): FindingApprovalRouteView {
   const pinnedVersion = reportChannelVersions.find(version => version.id === finding.channelVersionId);
-  const workflowType = pinnedVersion?.snapshot.workflowConfig?.workflowType
-    ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.workflowType
-    ?? 'TWO_TIER';
-  const configured = pinnedVersion?.snapshot.workflowConfig?.stages
-    ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.stages
-    ?? defaultWorkflowConfig(finding.channelId, workflowType).stages;
+  const configuredType = configuredWorkflowTypeOf(finding);
+  const workflowType = workflowTypeOf(finding);
+  // Bước người nộp thêm vào không có trong cấu hình loại báo cáo nên lấy tên bước mặc định của loại luồng chặt hơn.
+  const configured = workflowType === configuredType
+    ? pinnedVersion?.snapshot.workflowConfig?.stages
+      ?? reportChannels.find(channel => channel.id === finding.channelId)?.workflowConfig?.stages
+      ?? defaultWorkflowConfig(finding.channelId, workflowType).stages
+    : defaultWorkflowConfig(finding.channelId, workflowType).stages;
 
   const leaderApplies = workflowType === 'THREE_TIER'
     || (workflowType === 'TWO_TIER' && Boolean(finding.approvalRoute?.requiresBranchLeaderApproval || finding.isSpecialCase));
@@ -6499,17 +6646,23 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
     if (dto.expectedVersion !== finding.version) {
       throw new HttpProblem(409, 'VERSION_CONFLICT', 'Xung đột phiên bản', `Hồ sơ đã được cập nhật bởi người khác (version hiện tại: ${finding.version}, expected: ${dto.expectedVersion}).`);
     }
-    const workflowType = workflowTypeOf(finding);
+    const configuredType = configuredWorkflowTypeOf(finding);
+    const selections = dto.approverSelections ?? {};
+    // Người nộp chỉ thêm được bước kiểm soát, không bỏ được bước loại báo cáo đã bắt buộc.
+    const workflowType = submitWorkflowType(configuredType, selections);
     // Kiểm tra bằng chứng trước để chi nhánh gặp lỗi này đầu tiên.
     requireAvailableEvidence(finding);
+    validateApproverSelections(finding, workflowType, user, selections);
     // Không chọn người nhận thì lấy người mặc định. Dấu sao quyết định có bước Lãnh đạo chi nhánh hay không.
     if (workflowType !== 'ONE_TIER') {
-      const controllerUserId = requireEligibleRecipient(
+      const controllerUserId = selections.BRANCH_CONTROLLER ?? requireEligibleRecipient(
         dto.nextApproverUserId,
         eligibleRecipientsForStage(finding, 'BRANCH_CONTROLLER', user.id, undefined, appUsers),
       );
       const approvalRoute = resolveApprovalRoute(finding, workflowType, user, appUsers, new Date().toISOString(), {
         controllerUserId,
+        leaderUserId: selections.BRANCH_LEADER,
+        internalApproverUserId: selections.INTERNAL_APPROVER,
         previous: finding.approvalRoute,
       });
       if (!approvalRoute) {
@@ -6519,7 +6672,7 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
     }
     const updated = workflowService.executeSubmitBranch(finding, dto, user, workflowType);
     if (workflowType === 'ONE_TIER') {
-      const headOfficeUserId = requireEligibleRecipient(
+      const headOfficeUserId = selections.INTERNAL_APPROVER ?? requireEligibleRecipient(
         dto.nextApproverUserId,
         eligibleRecipientsForStage(finding, 'INTERNAL_APPROVER', user.id, undefined, appUsers),
       );
@@ -6530,6 +6683,7 @@ app.post('/api/v1/findings/:id/actions/submit-branch', async (req: FastifyReques
         };
       }
     }
+    updated.routeWorkflowType = workflowType !== configuredType ? workflowType : undefined;
     Object.assign(finding, updated);
 
     recordWorkflowEvent({
@@ -6853,6 +7007,31 @@ function evidenceOrphanRetentionMs(): number {
   return hours * 60 * 60 * 1_000;
 }
 
+/**
+ * Đưa tệp của minh chứng đã thu hồi vào vùng cách ly. Không ném lỗi: bản ghi đã thu hồi là sự thật
+ * nghiệp vụ, còn việc dời tệp có thể thử lại bằng `sweepRevokedEvidenceQuarantine`.
+ */
+async function quarantineRevokedEvidenceFile(evidence: EvidenceObject): Promise<boolean> {
+  try {
+    await googleDriveService.quarantineEvidenceFile(evidence.driveFileId);
+    evidence.storageQuarantinedAt = new Date().toISOString();
+    return true;
+  } catch (error) {
+    app.log.warn({ err: error, evidenceId: evidence.id }, 'Chưa cách ly được tệp của minh chứng đã thu hồi; sẽ thử lại ở lượt bảo trì sau.');
+    return false;
+  }
+}
+
+async function sweepRevokedEvidenceQuarantine(): Promise<{ pendingCount: number; quarantinedCount: number; failedCount: number }> {
+  const pending = evidences.filter(evidence => evidence.status === 'REVOKED' && !evidence.storageQuarantinedAt);
+  let quarantinedCount = 0;
+  for (const evidence of pending) {
+    if (await quarantineRevokedEvidenceFile(evidence)) quarantinedCount += 1;
+  }
+  if (quarantinedCount > 0) await persistLocalState();
+  return { pendingCount: pending.length, quarantinedCount, failedCount: pending.length - quarantinedCount };
+}
+
 async function cleanupExpiredEvidenceUploads(asOf = new Date()): Promise<{ expiredCount: number; deletedCount: number; alreadyRegisteredCount: number; failedCount: number }> {
   const expired = pendingEvidenceUploads.filter(upload => {
     const expiresAt = Date.parse(upload.expiresAt);
@@ -7036,6 +7215,8 @@ app.delete('/api/v1/findings/:findingId/evidence/:evidenceId', async (req: Fasti
   evidence.updatedAt = revokedAt;
   finding.evidenceCount = availableEvidencesForFinding(finding.id).length;
   finding.updatedAt = revokedAt;
+  // Thu hồi có hiệu lực ngay trong hồ sơ; chuyển tệp thất bại thì ghi nhận chưa cách ly và cron thử lại.
+  await quarantineRevokedEvidenceFile(evidence);
   await persistLocalState();
 
   return reply.code(204).send();
@@ -7376,7 +7557,8 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
     outcome: 'SUCCESS',
     detail: `Xuất báo cáo ${request.format.toUpperCase()} gồm ${rows.length} dòng trong phạm vi dữ liệu được cấp.`,
   });
-  await persistLocalState();
+  // Chỉ để lại dấu vết, không đổi dữ liệu nghiệp vụ nên không ghi lại cả snapshot.
+  await flushSecurityEvents();
 
   const configuration = normalizedReportCatalogConfiguration();
   const configuredFields = configuration.fields;

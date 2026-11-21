@@ -92,7 +92,7 @@ export const SlaIntegrationEditor: React.FC<Props> = ({ sla, integration, readin
               {creatingSheet ? <Loader2 className="h-4 w-4 animate-spin" /> : <FileSpreadsheet className="h-4 w-4" />}Tạo Google Sheet
             </button>
           </div>
-          <p className="mt-1 text-[0.75rem] text-slate-500">Hệ thống tạo cột theo mẫu nhập và tự lưu mã Google Sheet.</p>
+          <p className="mt-1 text-xs text-slate-500">Hệ thống tạo cột theo mẫu nhập và tự lưu mã Google Sheet.</p>
         </div>
         <label className="text-xs font-bold text-slate-700">Tên sheet
           <input value={integration.googleSheets.sheetName} onChange={event => onIntegrationChange({ ...integration, googleSheets: { ...integration.googleSheets, sheetName: event.target.value } })} className="mt-1 w-full rounded-lg border border-rule px-3 py-2 text-xs" />

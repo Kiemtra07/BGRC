@@ -33,9 +33,9 @@ export const SlaEscalationConfig: React.FC = () => (
         <div className="mt-4 grid grid-cols-1 gap-3 sm:grid-cols-3 lg:grid-cols-1 xl:grid-cols-3">
           {slaPreview.map(item => (
             <article key={item.label} className={`rounded-xl border p-4 ${item.tone}`}>
-              <p className="text-[0.75rem] font-bold">{item.label}</p>
+              <p className="text-xs font-bold">{item.label}</p>
               <p className="mt-2 text-2xl font-extrabold">{item.days}</p>
-              <p className="text-[0.75rem]">ngày làm việc</p>
+              <p className="text-xs">ngày làm việc</p>
             </article>
           ))}
         </div>
@@ -57,7 +57,7 @@ export const SlaEscalationConfig: React.FC = () => (
           </div>
           <div>
             <dt className="font-bold text-slate-500">Tiêu đề mẫu</dt>
-            <dd className="mt-1 rounded-lg bg-slate-50 p-3 font-mono text-[0.75rem] leading-5 text-slate-700">
+            <dd className="mt-1 rounded-lg bg-slate-50 p-3 font-mono text-xs leading-5 text-slate-700">
               [CẢNH BÁO TIẾN ĐỘ] Sai sót CIF {'{{cif}}'} - {'{{customerName}}'}
             </dd>
           </div>

@@ -36,7 +36,7 @@ const Cell: React.FC<{ icon: LucideIcon; label: string; value: number; tone?: ke
 }) => (
   <div className={`flex items-center gap-2 bg-white px-3 py-2 ${className}`}>
     <Icon className={`h-3.5 w-3.5 shrink-0 ${toneClass[tone].icon}`} aria-hidden />
-    <span className="min-w-0 flex-1 truncate text-[0.75rem] font-semibold text-slate-600">{label}</span>
+    <span className="min-w-0 flex-1 truncate text-xs font-semibold text-slate-600">{label}</span>
     <span data-numeric className={`shrink-0 text-base font-black leading-none tabular-nums ${toneClass[tone].value}`}>{value}</span>
   </div>
 );
@@ -48,7 +48,7 @@ const Tab: React.FC<{ active: boolean; disabled?: boolean; label: string; onSele
     aria-selected={active}
     disabled={disabled}
     onClick={onSelect}
-    className={`min-h-8 rounded-lg px-3 text-[0.75rem] font-bold transition-colors disabled:cursor-not-allowed disabled:text-slate-300 ${active ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}
+    className={`min-h-8 rounded-lg px-3 text-xs font-bold transition-colors disabled:cursor-not-allowed disabled:text-slate-300 ${active ? 'bg-white text-brand-700 shadow-panel' : 'text-slate-500 hover:text-slate-800'}`}
   >
     {label}
   </button>
