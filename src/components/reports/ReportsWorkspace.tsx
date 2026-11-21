@@ -364,7 +364,10 @@ export const ReportsWorkspace: React.FC = () => {
       setExporting(format); setError(null);
       // `section` đi cùng yêu cầu: máy chủ dựng tệp theo đúng thiết kế đang hiển thị, hoặc theo dòng
       // chi tiết khi người dùng chọn vậy. Thiếu nó thì mọi thiết kế đều cho ra cùng một tệp.
-      const request = { query: queryRef.current, columns, section: exportSection, presentation };
+      // Tên mẫu đang xem đi cùng yêu cầu để tệp mang đúng tên báo cáo; tiêu đề người dùng tự đặt vẫn được ưu tiên.
+      const openedName = REPORT_PRESETS.find(item => item.id === selectedTemplateId)?.name
+        ?? definitions.find(item => item.id === selectedTemplateId)?.name;
+      const request = { query: queryRef.current, columns, section: exportSection, presentation, ...(openedName ? { reportName: openedName } : {}) };
       setNotice(`Đang gửi yêu cầu xuất ${format.toUpperCase()}...`);
       if (format === 'html') await api.downloadReportHtml(request);
       else if (format === 'xlsx') await api.downloadReportXlsx(request);

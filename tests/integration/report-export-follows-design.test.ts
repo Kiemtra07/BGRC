@@ -95,7 +95,7 @@ describe('Xuất báo cáo bám theo thiết kế kéo thả', () => {
     };
 
     const flat = await readWorkbook({ groupBy: 'dimension.branch', metrics: ['metric.finding_count'] });
-    expect(flat.sheetNames).toEqual(['Tổng quan', 'Phân tích', 'Dữ liệu chi tiết']);
+    expect(flat.sheetNames).toEqual(['Báo cáo', 'Thông tin']);
 
     const crosstab = await readWorkbook({
       groupBy: 'dimension.branch', pivotBy: 'dimension.workflow_status', metrics: ['metric.finding_count'],

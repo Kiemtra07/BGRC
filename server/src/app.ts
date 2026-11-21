@@ -65,6 +65,7 @@ import {
   isHiddenForRoles,
   UserRole,
   formatReportMetricValue,
+  reportHighlightTone,
   REPORT_OPERATOR_CATALOG,
   ReportCatalog,
   ReportCatalogConfiguration,
@@ -177,7 +178,8 @@ import {
   buildInlineContentDisposition,
   isInlineSafeMimeType,
 } from './http/content-disposition';
-import { FullReportExport, renderReportHtml, renderReportXlsx } from './report-export';
+import { FullReportExport, ReportExportTone, renderReportHtml, renderReportXlsx } from './report-export';
+import { metricNumberFormat } from './report-xlsx';
 import {
   branchScopeTypeForRole,
   hasFindingAccess,
@@ -7573,7 +7575,6 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
   };
 
   const run = executeReportRun(scoped, request.query);
-  const catalogForLabels = buildReportCatalog(scoped);
   /**
    * Thuộc tính trình bày người dùng đặt trên màn hình đi thẳng vào tệp: đổi tên một cột rồi tải về
    * mà tệp vẫn mang tên cũ thì đúng lại cái lỗi "tệp không giống màn hình" vừa sửa ở phần thiết kế.
@@ -7594,11 +7595,32 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
     if (rule.operator === 'op.is_true' || rule.operator === 'op.is_false') return '';
     if (rule.operator === 'op.between') return `${String(rule.from ?? '')} đến ${String(rule.to ?? '')}`;
     if (rule.operator === 'op.in') return (rule.values || []).join(', ');
-    const field = catalogForLabels.fields.find(item => item.key === rule.key);
-    return field?.options?.find(option => option.value === String(rule.value))?.label || String(rule.value ?? '');
+    // Nhãn của giá trị lọc: lấy từ đúng một hồ sơ có giá trị đó, không quét danh mục của mọi trường.
+    const sample = scoped.find(finding => String(reportFieldAccessors[rule.key](finding)) === String(rule.value));
+    return sample ? reportValueLabel(rule.key, reportFieldAccessors[rule.key](sample), sample) : String(rule.value ?? '');
   };
+  const additiveMetrics = new Set<ReportMetricKey>([
+    'metric.finding_count', 'metric.exposure_sum', 'metric.credit_balance_sum', 'metric.collateral_value_sum',
+    'metric.quantity_sum', 'metric.overdue_count', 'metric.resolved_count',
+  ]);
+  const metricUnit = (key: ReportMetricKey) => configuredMetrics.find(item => item.key === key)!.unit;
+  const metricCode = (key: ReportMetricKey) => metricNumberFormat(metricUnit(key), metricFormat(key)?.decimals, metricFormat(key)?.suffix);
+  const title = presentation?.title?.trim()
+    || request.reportName?.trim()
+    || (request.section === 'detail' ? 'Danh sách hồ sơ chi tiết' : `Báo cáo theo ${groupFieldLabel}`);
+
+  const pivotAccessor = request.query.pivotBy ? reportFieldAccessors[request.query.pivotBy] : undefined;
+  const pivotMetric = run.pivot?.metric;
+  const pivotColumnTotals = run.pivot && pivotMetric && pivotAccessor && additiveMetrics.has(pivotMetric)
+    ? run.pivot.columns.map(column => calculateReportMetric(rows.filter(finding => String(pivotAccessor(finding) || 'UNASSIGNED') === column.key), pivotMetric))
+    : undefined;
+
   const report: FullReportExport = {
     generatedAt: run.generatedAt,
+    generatedBy: exportingUser.fullName,
+    scope: describeUserScope(exportingUser),
+    matchedCount: run.matchedFindingCount,
+    section: request.section,
     filters: request.query.rules.map(rule => {
       const field = configuredFields.find(item => item.key === rule.key)!;
       const operator = REPORT_OPERATOR_CATALOG.find(item => item.key === rule.operator)!;
@@ -7606,14 +7628,14 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
       return `${field.label}: ${operator.label}${value ? ` ${value}` : ''}`;
     }),
     summary: [
-      { label: 'Dòng dữ liệu phù hợp', value: run.matchedFindingCount },
-      ...request.query.metrics.map(key => ({ label: metricLabel(key), value: run.metricValues[key] || 0 })),
+      { label: 'Dòng dữ liệu phù hợp', value: run.matchedFindingCount, numFmt: '#,##0' },
+      ...request.query.metrics.map(key => ({ label: metricLabel(key), value: run.metricValues[key] || 0, numFmt: metricCode(key) })),
     ],
-    title: presentation?.title,
+    title,
     groupLabel: groupFieldLabel,
     groupColumns: [
       { label: groupFieldLabel, kind: 'text' },
-      ...request.query.metrics.map(key => ({ label: metricLabel(key), kind: 'number' as const })),
+      ...request.query.metrics.map(key => ({ label: metricLabel(key), kind: 'number' as const, numFmt: metricCode(key) })),
     ],
     // Số đi ra dưới dạng chuỗi đã định dạng khi người dùng có đặt số lẻ hoặc hậu tố; nếu không thì
     // giữ nguyên kiểu số để Excel còn tính toán được trên đó.
@@ -7624,6 +7646,13 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
         ? formatReportMetricValue(value, format)
         : value;
     })]),
+    // Excel luôn nhận số thật; số lẻ và hậu tố đi vào mã định dạng ô chứ không vào chuỗi.
+    groupValues: run.groups.map(row => [row.label, ...request.query.metrics.map(key => row.metricValues[key] || 0)]),
+    groupTones: run.groups.map(row => [
+      undefined,
+      ...request.query.metrics.map(key => reportHighlightTone(row.metricValues[key] || 0, metricFormat(key)) as ReportExportTone | undefined),
+    ]),
+    groupTotals: ['Tổng cộng', ...request.query.metrics.map(key => run.metricValues[key] || 0)],
     // Trường ở vùng "Cột" đi vào tệp thay vì bị bỏ rơi. Không có phần này thì mọi thiết kế bảng chéo
     // đều xuất ra đúng một bảng một chiều, và người dùng không có dấu hiệu nào để nhận ra.
     pivot: run.pivot && {
@@ -7631,18 +7660,25 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
       columnLabel: configuredFields.find(item => item.key === run.pivot!.columnField)!.label,
       metricLabel: metricLabel(run.pivot.metric),
       columns: run.pivot.columns.map(column => column.label),
+      numFmt: metricCode(run.pivot.metric),
       rows: run.pivot.rows.map(row => ({
         label: row.label,
         values: run.pivot!.columns.map(column => row.values[column.key] || 0),
         total: row.total,
       })),
+      ...(pivotColumnTotals && pivotMetric ? { totals: pivotColumnTotals, grandTotal: calculateReportMetric(rows, pivotMetric) } : {}),
     },
     detailColumns: columns.map(column => ({
       label: column.label,
       kind: column.valueType === 'NUMBER' ? 'number' : column.valueType === 'DATE' ? 'date' : column.valueType === 'BOOLEAN' ? 'boolean' : 'text',
+      ...(column.valueType === 'NUMBER' ? { numFmt: column.key === 'measure.quantity' ? '#,##0' : '#,##0.0' } : {}),
     })),
     detailRows: rows.map(finding => request.columns.map(key => exportValue(key, finding))),
   };
+
+  const sendFile = (extension: 'csv' | 'html' | 'xlsx', contentType: string) => reply
+    .header('content-type', contentType)
+    .header('content-disposition', buildAttachmentContentDisposition(reportFileName(title, dateStamp, extension)));
 
   if (request.format === 'csv') {
     /**
@@ -7668,24 +7704,30 @@ app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, r
     const header = grid.columns.map(column => csvCell(column.label)).join(',');
     const csvRows = grid.rows.map(row => row.map(csvCell).join(','));
     const csv = `\uFEFF${[header, ...csvRows].join('\r\n')}`;
-    return reply
-      .header('content-type', 'text/csv; charset=utf-8')
-      .header('content-disposition', `attachment; filename="audit-bgs-report-${dateStamp}.csv"`)
-      .send(csv);
+    return sendFile('csv', 'text/csv; charset=utf-8').send(csv);
   }
 
   if (request.format === 'html') {
-    return reply
-      .header('content-type', 'text/html; charset=utf-8')
-      .header('content-disposition', `attachment; filename="audit-bgs-report-${dateStamp}.html"`)
-      .send(renderReportHtml(report));
+    return sendFile('html', 'text/html; charset=utf-8').send(renderReportHtml(report));
   }
 
-  return reply
-    .header('content-type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-    .header('content-disposition', `attachment; filename="audit-bgs-report-${dateStamp}.xlsx"`)
-    .send(await renderReportXlsx(report));
+  return sendFile('xlsx', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').send(await renderReportXlsx(report));
 });
+
+/** Phạm vi dữ liệu của người dùng, viết cho người đọc tệp báo cáo. */
+function describeUserScope(user: UserProfile): string {
+  const parts = user.scopes.map(scope => scope.scopeType === 'ALL'
+    ? 'Toàn bộ dữ liệu'
+    : [scope.clusterName, scope.branchName ? `Chi nhánh ${scope.orgUnitCode ?? ''} ${scope.branchName}`.replace(/\s+/g, ' ').trim() : undefined, scope.departmentName]
+      .filter(Boolean).join(' / ') || scope.scopeType);
+  return [...new Set(parts)].join('; ') || 'Chưa xác định';
+}
+
+/** Tên tệp theo tên báo cáo: bỏ ký tự Windows không cho phép trong tên tệp, giữ nguyên tiếng Việt có dấu. */
+function reportFileName(title: string, dateStamp: string, extension: string): string {
+  const cleaned = title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80) || 'Báo cáo';
+  return `${cleaned} - ${dateStamp}.${extension}`;
+}
 
 app.get('/api/v1/reports/summary', async (req: FastifyRequest<{ Querystring: any }>) => {
   const filters = ReportFilterSchema.parse(req.query);

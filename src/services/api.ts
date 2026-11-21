@@ -546,7 +546,8 @@ export class ApiService {
       const problem = await res.json().catch(() => ({ detail: 'Không thể xuất báo cáo.' }));
       throw new Error(problem.detail || problem.title || 'Không thể xuất báo cáo.');
     }
-    saveBlob(await res.blob(), `audit-bgs-report-${new Date().toISOString().slice(0, 10)}.${format}`);
+    // Tên tệp do máy chủ đặt theo tên báo cáo; thiếu thì dùng tên chung để vẫn tải được.
+    saveBlob(await res.blob(), filenameFromDisposition(res.headers.get('content-disposition')) ?? `audit-bgs-report-${new Date().toISOString().slice(0, 10)}.${format}`);
   }
   public async downloadReportCsv(request: Omit<ReportExportRequest, 'format'>): Promise<void> {
     return this.downloadReport(request, 'csv');
@@ -557,6 +558,16 @@ export class ApiService {
   public async downloadReportXlsx(request: Omit<ReportExportRequest, 'format'>): Promise<void> {
     return this.downloadReport(request, 'xlsx');
   }
+}
+
+/** Tên tệp trong Content-Disposition, ưu tiên dạng filename* (UTF-8) để giữ tiếng Việt có dấu. */
+export function filenameFromDisposition(header: string | null): string | undefined {
+  if (!header) return undefined;
+  const encoded = /filename\*=UTF-8''([^;]+)/i.exec(header)?.[1];
+  if (encoded) {
+    try { return decodeURIComponent(encoded.trim()); } catch { /* rơi xuống tên thường */ }
+  }
+  return /filename="([^"]+)"/i.exec(header)?.[1];
 }
 
 export const api = new ApiService();

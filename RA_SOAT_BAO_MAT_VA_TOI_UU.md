@@ -64,7 +64,7 @@ Hạng mục còn mở từ `planupp.md` (G1 đến G8): kiểm thử PostgreSQL
 
 Số đo sẵn có: một bước workflow tốn khoảng 5 ms ở 9 hồ sơ, 450 ms ở 5.000, 1,9 giây ở 20.000, gần như toàn bộ nằm ở `structuredClone` và gộp ba chiều cả snapshot. Mọi thao tác ghi đều đi qua đường này.
 
-1. **Đưa các ghi nhỏ ra khỏi snapshot (làm nhanh, hiệu quả ngay).** Hiện 81 chỗ gọi `persistLocalState()`. Nhiều thao tác không đụng hồ sơ nhưng vẫn ghi cả snapshot: tạo và thu hồi phiên (mỗi lượt đăng nhập, đăng xuất), đánh dấu step-up, theo dõi và tiếp nhận công việc, ưu tiên theo dõi, và xuất báo cáo (`app.ts:7299`, trong khi `findings.csv` ở `:7482` đã dùng đường nhẹ `flushSecurityEvents`). Chuyển phiên sang bảng riêng như `auth_security_state`, chuyển ưu tiên cá nhân sang bảng nhỏ, đổi xuất báo cáo sang `flushSecurityEvents`.
+1. **Đưa các ghi nhỏ ra khỏi snapshot (làm nhanh, hiệu quả ngay).** Hiện 81 chỗ gọi `persistLocalState()`. Nhiều thao tác không đụng hồ sơ nhưng vẫn ghi cả snapshot. Đó là tạo và thu hồi phiên (mỗi lượt đăng nhập, đăng xuất), đánh dấu step-up, theo dõi và tiếp nhận công việc, ưu tiên theo dõi, và xuất báo cáo. Riêng `findings.csv` đã dùng đường nhẹ `flushSecurityEvents`. Hướng xử lý: chuyển phiên sang bảng riêng như `auth_security_state`, chuyển ưu tiên cá nhân sang bảng nhỏ, đổi xuất báo cáo sang `flushSecurityEvents`.
 2. **Ghi theo từng hồ sơ (việc lớn, đúng hướng đã chốt ở G6).** Dùng `finding_records` làm nơi ghi cho lệnh workflow, giữ snapshot cho cấu hình. Làm theo expand, backfill, đối chiếu, cutover như kế hoạch. Đặt đo thời gian từng bước ở 0, 5.000, 20.000 hồ sơ làm điều kiện nghiệm thu.
 3. **Tổng hợp bằng SQL.** `readScopedFindingsForAnalytics` nạp toàn bộ hồ sơ trong phạm vi vào bộ nhớ cho mỗi lần chạy báo cáo, kéo thả, xuất và thẻ tổng quan (`app.ts:2581`). Đẩy `COUNT`, `SUM`, `GROUP BY` xuống SQL bằng đúng mệnh đề phạm vi của `scope-predicate.ts`; chỉ nạp dòng khi xem chi tiết hoặc xuất.
 4. **Tra phiên một lần.** `AuthSessionStore.resolve` băm SHA-256 lại token cho từng bản ghi phiên trong vòng lặp và lọc cả danh sách mỗi yêu cầu (`session-store.ts:52`). Băm một lần, giữ `Map` theo digest, dọn hết hạn theo lịch. Cùng lúc, tra người dùng theo `Map<id>` thay vì `appUsers.find` (30 chỗ tra tuyến tính trên hồ sơ và người dùng).
@@ -157,3 +157,18 @@ Kiểm ở các bề rộng 320, 375, 768, 1024, 1440 trên đăng nhập, danh 
 - Menu xuất báo cáo không còn tràn ra ngoài màn hình ở bề rộng hẹp.
 - Ngăn kéo bên trái khi đóng không còn nhận phím Tab.
 - Test `ui-legibility.test.ts` giữ các quy tắc trên.
+
+## 11. Báo cáo và mẫu Excel (2026-11-21)
+
+Chưa commit. `npm run ci` đạt: 423 unit, 196 integration, 3 contract.
+
+Vấn đề trước đây: tên tệp luôn là `audit-bgs-report-<ngày>` cho mọi báo cáo; mẫu dựng sẵn không có tiêu đề nên ra "Báo cáo Audit BGS"; XLSX và HTML luôn đổ cả bảng phân tích lẫn toàn bộ dòng chi tiết bất kể chọn "Theo bảng đang xem"; số đếm hiện thành "3.00"; ngày là chuỗi; tô màu ngưỡng và số lẻ đã đặt không đi vào tệp.
+
+- Tên tệp và tiêu đề theo tên báo cáo đang mở (mẫu dựng sẵn hoặc mẫu đã lưu), tiêu đề người dùng tự đặt được ưu tiên. Dạng `Tên báo cáo - 2026-11-21.xlsx`, giữ tiếng Việt có dấu (giao diện đọc `filename*` thay vì tên cố định).
+- XLSX chỉ chứa đúng phần được chọn: bảng đang xem (`Báo cáo` hoặc `Bảng chéo`) hoặc `Dữ liệu chi tiết`, cộng trang `Thông tin` (tên báo cáo, nội dung, thời điểm và người xuất, phạm vi dữ liệu, số hồ sơ, điều kiện áp dụng, chỉ số tổng hợp, ghi chú). HTML theo cùng quy tắc.
+- Bố cục chuẩn: dải tiêu đề, dòng phụ đề, dòng điều kiện, hàng tiêu đề cột cố định khi cuộn và lặp ở mỗi trang in, ô xen kẽ màu, viền mảnh, khổ A4 ngang vừa chiều rộng, chân trang có số trang, thuộc tính tài liệu.
+- Số là số thật với định dạng riêng theo chỉ số (đếm nguyên, tiền và tỷ lệ một chữ số lẻ, số lẻ và hậu tố người dùng đặt đi vào mã định dạng). Ngày là ngày thật `dd/mm/yyyy`. Ô vượt ngưỡng được tô màu như trên màn hình.
+- Dòng "Tổng cộng" tính trên toàn bộ hồ sơ phù hợp (đếm khách hàng và tỷ lệ không bị cộng dồn sai). Bảng chéo chỉ có dòng tổng cho chỉ số cộng dồn được.
+- Tối ưu nhỏ: xuất báo cáo không còn quét mọi hồ sơ để dựng danh mục nhãn cho từng trường. Dựng 10.000 dòng chi tiết mất khoảng 0,2 giây.
+- Kiểm tra: đọc lại bằng trình đọc Excel (tiêu đề, hàng tiêu đề, dòng tổng, ngày và số đúng kiểu) và phân tích chặt từng phần XML với đầu vào có `&`, `<`, dấu nháy và ký tự điều khiển. Chưa mở bằng Excel trên máy (COM của Excel ở máy này không dùng được). Tệp mẫu để mở thử nằm ở `tmp/xlsx-check/` (không đưa vào git).
+- Chưa làm: biểu đồ nhúng trong Excel (mẫu dựng sẵn dạng biểu đồ vẫn xuất ra bảng số liệu).

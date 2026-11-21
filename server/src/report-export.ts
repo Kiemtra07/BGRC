@@ -1,11 +1,14 @@
-import JSZip from 'jszip';
-
 export type ReportExportValue = string | number | boolean | null | undefined;
 
 export interface ReportExportColumn {
   label: string;
   kind?: 'text' | 'number' | 'date' | 'boolean';
+  /** Mã định dạng số của Excel (ví dụ `#,##0.0`); chỉ dùng cho cột số. */
+  numFmt?: string;
 }
+
+/** Mức tô màu của một ô vượt ngưỡng, cùng tên với ngưỡng người dùng đặt trên màn hình. */
+export type ReportExportTone = 'risk' | 'warn' | 'ok';
 
 /**
  * Bảng chéo đúng như trên màn hình. Trước đây mô hình xuất không có phần này, nên trường kéo vào
@@ -18,17 +21,33 @@ export interface ReportExportPivot {
   metricLabel: string;
   columns: string[];
   rows: Array<{ label: string; values: number[]; total: number }>;
+  numFmt?: string;
+  /** Dòng tổng theo cột, chỉ có khi chỉ số cộng dồn được (đếm hồ sơ, tổng tiền). */
+  totals?: number[];
+  grandTotal?: number;
 }
 
 export interface FullReportExport {
-  /** Tiêu đề do người dùng đặt ở panel Thuộc tính; bỏ trống thì dùng tên mặc định. */
+  /** Tên báo cáo: tiêu đề người dùng đặt, hoặc tên mẫu đang xem, hoặc tên suy từ thiết kế. */
   title?: string;
+  /** Tệp chứa bảng đang xem (`design`) hay dòng chi tiết (`detail`). */
+  section: 'design' | 'detail';
   generatedAt: string;
+  generatedBy?: string;
+  /** Phạm vi dữ liệu của người xuất, viết cho người đọc. */
+  scope?: string;
+  matchedCount: number;
   filters: string[];
-  summary: Array<{ label: string; value: ReportExportValue }>;
+  summary: Array<{ label: string; value: ReportExportValue; numFmt?: string }>;
   groupLabel: string;
   groupColumns: ReportExportColumn[];
+  /** Giá trị đã định dạng chữ, dùng cho CSV và HTML. */
   groupRows: ReportExportValue[][];
+  /** Giá trị số thô cùng thứ tự với `groupRows`, để Excel ghi số thật. */
+  groupValues?: ReportExportValue[][];
+  groupTones?: Array<Array<ReportExportTone | undefined>>;
+  /** Dòng tổng cộng tính trên toàn bộ hồ sơ phù hợp, cùng thứ tự cột với `groupColumns`. */
+  groupTotals?: ReportExportValue[];
   /** Có mặt khi người dùng đã kéo một trường vào vùng Cột. */
   pivot?: ReportExportPivot;
   detailColumns: ReportExportColumn[];
@@ -64,7 +83,7 @@ export function renderReportHtml(report: FullReportExport): string {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${xmlEscape(report.title || "Báo cáo Audit BGS")}</title>
+  <title>${xmlEscape(report.title || 'Báo cáo Audit BGS')}</title>
   <style>
     :root{color-scheme:light;--brand:#006b68;--brand-dark:#00504e;--ink:#172033;--muted:#64748b;--line:#dbe3ea;--soft:#f3f8f7}
     *{box-sizing:border-box}body{margin:0;background:#eef3f3;color:var(--ink);font:14px/1.5 Arial,"Helvetica Neue",sans-serif}
@@ -82,163 +101,19 @@ export function renderReportHtml(report: FullReportExport): string {
   </style>
 </head>
 <body><main>
-  <header><h1>${xmlEscape(report.title || "Báo cáo Audit BGS")}</h1><p>Báo cáo tổng hợp và dữ liệu chi tiết theo phạm vi được cấp.</p><div class="meta"><span class="tag">Thời điểm xuất: ${xmlEscape(new Date(report.generatedAt).toLocaleString('vi-VN'))}</span><span class="tag">${report.detailRows.length} dòng chi tiết</span></div></header>
+  <header><h1>${xmlEscape(report.title || 'Báo cáo Audit BGS')}</h1><p>${report.section === 'detail' ? 'Dòng chi tiết từng hồ sơ' : 'Bảng đang xem'} theo phạm vi dữ liệu được cấp${report.scope ? `: ${xmlEscape(report.scope)}` : ''}.</p><div class="meta"><span class="tag">Thời điểm xuất: ${xmlEscape(new Date(report.generatedAt).toLocaleString('vi-VN'))}</span><span class="tag">${report.matchedCount} hồ sơ phù hợp</span>${report.generatedBy ? `<span class="tag">Người xuất: ${xmlEscape(report.generatedBy)}</span>` : ''}</div></header>
   <section><h2>Tổng quan</h2><div class="metrics">${report.summary.map(item => `<div class="metric"><span>${xmlEscape(item.label)}</span><strong>${xmlEscape(htmlValue(item.value))}</strong></div>`).join('')}</div>
     <h3>Điều kiện áp dụng</h3><ul class="filters">${(report.filters.length ? report.filters : ['Không có điều kiện lọc']).map(item => `<li>${xmlEscape(item)}</li>`).join('')}</ul></section>
-  <section><h2>Phân tích theo ${xmlEscape(report.groupLabel)}</h2>${renderTable(report.groupColumns, report.groupRows)}</section>
-  ${report.pivot ? `<section><h2>Bảng chéo: ${xmlEscape(report.pivot.rowLabel)} × ${xmlEscape(report.pivot.columnLabel)}</h2>
+  ${report.section === 'detail' ? '' : `<section><h2>Phân tích theo ${xmlEscape(report.groupLabel)}</h2>${renderTable(report.groupColumns, report.groupRows)}</section>`}
+  ${report.section !== 'detail' && report.pivot ? `<section><h2>Bảng chéo: ${xmlEscape(report.pivot.rowLabel)} × ${xmlEscape(report.pivot.columnLabel)}</h2>
     <p style="margin:0 0 12px;color:var(--muted);font-size:12px">Chỉ số: ${xmlEscape(report.pivot.metricLabel)}</p>
     ${renderTable(
     [{ label: report.pivot.rowLabel }, ...report.pivot.columns.map(label => ({ label, kind: 'number' as const })), { label: 'Tổng', kind: 'number' as const }],
     report.pivot.rows.map(row => [row.label, ...row.values, row.total]),
   )}</section>` : ''}
-  <section class="details"><h2>Dữ liệu chi tiết</h2>${renderTable(report.detailColumns, report.detailRows)}</section>
+  ${report.section === 'detail' ? `<section class="details"><h2>Dữ liệu chi tiết</h2>${renderTable(report.detailColumns, report.detailRows)}</section>` : ''}
   <footer>Audit BGS | Tệp độc lập, có thể lưu trữ hoặc in trực tiếp.</footer>
 </main></body></html>`;
 }
 
-const columnName = (index: number): string => {
-  let value = index + 1;
-  let name = '';
-  while (value > 0) {
-    const remainder = (value - 1) % 26;
-    name = String.fromCharCode(65 + remainder) + name;
-    value = Math.floor((value - 1) / 26);
-  }
-  return name;
-};
-
-const xlsxCell = (value: ReportExportValue, row: number, column: number, style: number): string => {
-  const ref = `${columnName(column)}${row}`;
-  if (typeof value === 'number' && Number.isFinite(value)) return `<c r="${ref}" s="${style}" t="n"><v>${value}</v></c>`;
-  const display = typeof value === 'boolean' ? (value ? 'Có' : 'Không') : value;
-  return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xmlEscape(display)}</t></is></c>`;
-};
-
-const columnWidths = (columns: ReportExportColumn[], rows: ReportExportValue[][]): string => columns.map((column, index) => {
-  const widest = Math.max(column.label.length, ...rows.slice(0, 250).map(row => String(row[index] ?? '').length));
-  return `<col min="${index + 1}" max="${index + 1}" width="${Math.min(42, Math.max(12, widest + 2))}" customWidth="1"/>`;
-}).join('');
-
-const tableSheet = (columns: ReportExportColumn[], sourceRows: ReportExportValue[][], tableRelId: string): string => {
-  const rows = sourceRows.length > 0 ? sourceRows : [['Không có dữ liệu', ...columns.slice(1).map(() => '')]];
-  // The header cells must repeat the table's column names verbatim or Excel flags a mismatch.
-  const headerNames = uniqueColumnNames(columns);
-  const header = `<row r="1" ht="26" customHeight="1">${headerNames.map((label, index) => xlsxCell(label, 1, index, 3)).join('')}</row>`;
-  const body = rows.map((row, rowIndex) => `<row r="${rowIndex + 2}">${columns.map((column, columnIndex) => xlsxCell(row[columnIndex], rowIndex + 2, columnIndex, column.kind === 'number' ? 5 : 4)).join('')}</row>`).join('');
-  const end = `${columnName(columns.length - 1)}${rows.length + 1}`;
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <dimension ref="A1:${end}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
-  <sheetFormatPr defaultRowHeight="20"/><cols>${columnWidths(columns, rows)}</cols><sheetData>${header}${body}</sheetData>
-  <pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>
-  <tableParts count="1"><tablePart r:id="${tableRelId}"/></tableParts>
-</worksheet>`;
-};
-
-const overviewSheet = (report: FullReportExport): string => {
-  const data: Array<{ values: ReportExportValue[]; style: number; height?: number }> = [
-    { values: [(report.title || 'BÁO CÁO AUDIT BGS').toLocaleUpperCase('vi-VN'), '', '', ''], style: 1, height: 30 },
-    { values: ['Thời điểm xuất', new Date(report.generatedAt).toLocaleString('vi-VN'), 'Số dòng chi tiết', report.detailRows.length], style: 4 },
-    { values: ['', '', '', ''], style: 0 },
-    { values: ['TỔNG QUAN', '', '', ''], style: 2, height: 24 },
-    ...report.summary.map(item => ({ values: [item.label, item.value, '', ''] as ReportExportValue[], style: 4 })),
-    { values: ['', '', '', ''], style: 0 },
-    { values: ['ĐIỀU KIỆN ÁP DỤNG', '', '', ''], style: 2, height: 24 },
-    ...(report.filters.length ? report.filters : ['Không có điều kiện lọc']).map((filter, index) => ({ values: [`${index + 1}`, filter, '', ''] as ReportExportValue[], style: 4 })),
-  ];
-  const rows = data.map((item, index) => `<row r="${index + 1}"${item.height ? ` ht="${item.height}" customHeight="1"` : ''}>${item.values.map((value, column) => xlsxCell(value, index + 1, column, item.style)).join('')}</row>`).join('');
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:D${data.length}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="1" width="24" customWidth="1"/><col min="2" max="2" width="42" customWidth="1"/><col min="3" max="3" width="22" customWidth="1"/><col min="4" max="4" width="20" customWidth="1"/></cols><sheetData>${rows}</sheetData><mergeCells count="3"><mergeCell ref="A1:D1"/><mergeCell ref="A4:D4"/><mergeCell ref="A${report.summary.length + 6}:D${report.summary.length + 6}"/></mergeCells><pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>`;
-};
-
-/**
- * Excel requires every tableColumn/@name in a table to be non-empty and unique (case-insensitively).
- * A duplicate makes the workbook unopenable — it reports corruption and drops the table — so
- * disambiguate here rather than trusting whatever labels the report catalog was configured with.
- */
-const uniqueColumnNames = (columns: ReportExportColumn[]): string[] => {
-  const used = new Set<string>();
-  return columns.map((column, index) => {
-    const base = column.label.trim() || `Cột ${index + 1}`;
-    let name = base;
-    let suffix = 2;
-    while (used.has(name.toLocaleLowerCase('vi-VN'))) name = `${base} (${suffix++})`;
-    used.add(name.toLocaleLowerCase('vi-VN'));
-    return name;
-  });
-};
-
-const tableXml = (id: number, name: string, columns: ReportExportColumn[], rowCount: number): string => {
-  const end = `${columnName(columns.length - 1)}${Math.max(2, rowCount + 1)}`;
-  const names = uniqueColumnNames(columns);
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="${name}" displayName="${name}" ref="A1:${end}" totalsRowShown="0"><autoFilter ref="A1:${end}"/><tableColumns count="${columns.length}">${names.map((columnLabel, index) => `<tableColumn id="${index + 1}" name="${xmlEscape(columnLabel)}"/>`).join('')}</tableColumns><tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>`;
-};
-
-/** Bảng chéo chuyển thành lưới phẳng: cột đầu là nhãn hàng, cột cuối là tổng dòng. */
-function pivotSheetData(pivot: ReportExportPivot): { columns: ReportExportColumn[]; rows: ReportExportValue[][] } {
-  return {
-    columns: [
-      { label: pivot.rowLabel },
-      ...pivot.columns.map(label => ({ label, kind: 'number' as const })),
-      { label: 'Tổng', kind: 'number' as const },
-    ],
-    rows: pivot.rows.map(row => [row.label, ...row.values, row.total]),
-  };
-}
-
-/**
- * Sổ tính được ghép từ một danh sách sheet chứ không cố định ba sheet như trước.
- *
- * Bản cũ cắm cứng `sheet1..3` vào `[Content_Types]`, `workbook.xml` và cả file quan hệ, nên không
- * thêm được sheet nào mà không sửa bốn chỗ khớp nhau — chính vì vậy bảng chéo bị bỏ ra ngoài. Một
- * sai lệch nhỏ giữa bốn chỗ đó là Excel báo tệp hỏng, nên chúng phải sinh ra từ cùng một nguồn.
- */
-export async function renderReportXlsx(report: FullReportExport): Promise<Buffer> {
-  interface SheetPlan { name: string; xml: string; table?: { name: string; columns: ReportExportColumn[]; rowCount: number } }
-
-  const plans: SheetPlan[] = [
-    { name: 'Tổng quan', xml: overviewSheet(report) },
-    {
-      name: 'Phân tích',
-      xml: tableSheet(report.groupColumns, report.groupRows, 'rId1'),
-      table: { name: 'PhanTich', columns: report.groupColumns, rowCount: report.groupRows.length },
-    },
-  ];
-  if (report.pivot) {
-    const grid = pivotSheetData(report.pivot);
-    plans.push({
-      name: 'Bảng chéo',
-      xml: tableSheet(grid.columns, grid.rows, 'rId1'),
-      table: { name: 'BangCheo', columns: grid.columns, rowCount: grid.rows.length },
-    });
-  }
-  plans.push({
-    name: 'Dữ liệu chi tiết',
-    xml: tableSheet(report.detailColumns, report.detailRows, 'rId1'),
-    table: { name: 'DuLieuChiTiet', columns: report.detailColumns, rowCount: report.detailRows.length },
-  });
-
-  const tablePlans = plans
-    .map((plan, index) => ({ plan, sheetIndex: index + 1 }))
-    .filter((entry): entry is { plan: SheetPlan & { table: NonNullable<SheetPlan['table']> }; sheetIndex: number } => Boolean(entry.plan.table));
-
-  const zip = new JSZip();
-  zip.file('[Content_Types].xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${plans.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join('')}${tablePlans.map((_, index) => `<Override PartName="/xl/tables/table${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`).join('')}</Types>`);
-  zip.folder('_rels')!.file('.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
-  zip.folder('xl')!.file('workbook.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>${plans.map((plan, index) => `<sheet name="${xmlEscape(plan.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join('')}</sheets><calcPr calcId="191029"/></workbook>`);
-  zip.folder('xl')!.folder('_rels')!.file('workbook.xml.rels', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${plans.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join('')}<Relationship Id="rId${plans.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
-  zip.folder('xl')!.file('styles.xml', `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="#\,##0.00"/></numFmts><fonts count="3"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="16"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF006B68"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE8F4F3"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFD9E2E8"/></left><right style="thin"><color rgb="FFD9E2E8"/></right><top style="thin"><color rgb="FFD9E2E8"/></top><bottom style="thin"><color rgb="FFD9E2E8"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="1" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/></styleSheet>`);
-
-  const sheets = zip.folder('xl')!.folder('worksheets')!;
-  for (const [index, plan] of plans.entries()) sheets.file(`sheet${index + 1}.xml`, plan.xml);
-  const sheetRels = sheets.folder('_rels')!;
-  const tables = zip.folder('xl')!.folder('tables')!;
-  tablePlans.forEach((entry, tableIndex) => {
-    const tableId = tableIndex + 1;
-    sheetRels.file(`sheet${entry.sheetIndex}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${tableId}.xml"/></Relationships>`);
-    tables.file(`table${tableId}.xml`, tableXml(tableId, entry.plan.table.name, entry.plan.table.columns, entry.plan.table.rowCount));
-  });
-  return zip.generateAsync({ type: 'nodebuffer', compression: 'DEFLATE', compressionOptions: { level: 6 } });
-}
+export { renderReportXlsx } from './report-xlsx';

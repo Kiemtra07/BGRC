@@ -643,11 +643,12 @@ describe('customer case, branch control, import and reporting', () => {
       },
       columns: ['dimension.cif', 'dimension.customer', 'dimension.error_code', 'measure.exposure'],
     };
+    // HTML và XLSX chỉ chứa phần được chọn: bảng đang xem mặc định, dòng chi tiết khi chọn `detail`.
     const [csv, html, xlsx] = await Promise.all(['csv', 'html', 'xlsx'].map(format => app.inject({
       method: 'POST',
       url: '/api/v1/reports/exports',
       headers: adminHeaders,
-      payload: { ...exportPayload, format },
+      payload: { ...exportPayload, format, ...(format === 'csv' ? {} : { section: 'detail' }) },
     })));
 
     expect(csv.statusCode).toBe(200);
@@ -671,9 +672,9 @@ describe('customer case, branch control, import and reporting', () => {
 
     expect(html.statusCode).toBe(200);
     expect(html.headers['content-type']).toContain('text/html');
-    expect(html.body).toContain('<title>Báo cáo Audit BGS</title>');
+    expect(html.body).toContain('<title>Danh sách hồ sơ chi tiết</title>');
     expect(html.body).toContain('Tổng quan');
-    expect(html.body).toContain('Phân tích theo');
+    expect(html.body).not.toContain('Phân tích theo');
     expect(html.body).toContain('Dữ liệu chi tiết');
     expect(html.body).toContain('10993821');
 
@@ -684,11 +685,9 @@ describe('customer case, branch control, import and reporting', () => {
     expect(Object.keys(workbook.files)).toEqual(expect.arrayContaining([
       'xl/worksheets/sheet1.xml',
       'xl/worksheets/sheet2.xml',
-      'xl/worksheets/sheet3.xml',
       'xl/tables/table1.xml',
-      'xl/tables/table2.xml',
     ]));
-    expect(await workbook.file('xl/worksheets/sheet3.xml')!.async('string')).toContain('10993821');
+    expect(await workbook.file('xl/worksheets/sheet1.xml')!.async('string')).toContain('10993821');
   });
 
   it('requires branchCode when the same CIF exists in multiple branches', async () => {

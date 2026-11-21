@@ -490,6 +490,8 @@ export const ReportExportRequestSchema = z.object({
   format: z.enum(['csv', 'html', 'xlsx']).default('csv'),
   section: ReportExportSectionSchema.default('design'),
   presentation: ReportPresentationOptionsSchema.optional(),
+  /** Tên báo cáo đang xem (mẫu dựng sẵn hoặc mẫu đã lưu); dùng làm tiêu đề và tên tệp khi người dùng chưa tự đặt tiêu đề. */
+  reportName: z.string().trim().max(150).optional(),
 }).superRefine((request, context) => {
   request.columns.forEach((key, index) => {
     if (!REPORT_FIELD_CATALOG.find(item => item.key === key)?.exportable) {

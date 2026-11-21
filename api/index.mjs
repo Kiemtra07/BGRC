@@ -811,6 +811,12 @@ function formatReportMetricValue(value, format) {
   const text = value.toLocaleString("vi-VN", { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
   return format?.suffix ? `${text} ${format.suffix}` : text;
 }
+function reportHighlightTone(value, format) {
+  const rule = format?.highlight;
+  if (!rule) return void 0;
+  const hit = rule.operator === "gt" ? value > rule.value : rule.operator === "gte" ? value >= rule.value : rule.operator === "lt" ? value < rule.value : value <= rule.value;
+  return hit ? rule.tone : void 0;
+}
 var ReportFilterSchema, ReportColumnSchema, REPORT_FIELD_KEYS, ReportFieldKeySchema, REPORT_OPERATOR_KEYS, ReportOperatorKeySchema, REPORT_METRIC_KEYS, ReportMetricKeySchema, TEXT_OPERATORS, ENUM_OPERATORS, RANGE_OPERATORS, REPORT_FIELD_CATALOG, REPORT_OPERATOR_CATALOG, isHiddenForRoles, REPORT_METRIC_CATALOG, firstDuplicateLabel, ReportHiddenRoleSchema, ReportCatalogFieldConfigurationInputSchema, ReportCatalogMetricConfigurationInputSchema, UpdateReportCatalogConfigurationSchema, ReportRuleValueSchema, ReportFilterRuleSchema, ReportRunRequestSchema, REPORT_HIGHLIGHT_TONES, ReportMetricFormatSchema, ReportPresentationOptionsSchema, ReportExportSectionSchema, ReportExportRequestSchema, REPORT_DEFINITION_VISIBILITIES, ReportDefinitionVisibilitySchema, ReportShareRoleSchema, CreateReportDefinitionSchema, UpdateReportDefinitionSchema, CreateDashboardDefinitionSchema, ReportDrillRequestSchema, preset, REPORT_PRESETS;
 var init_dashboards = __esm({
   "shared/contracts/dashboards.ts"() {
@@ -1128,7 +1134,9 @@ var init_dashboards = __esm({
       columns: z12.array(ReportFieldKeySchema).min(1).max(REPORT_FIELD_KEYS.length),
       format: z12.enum(["csv", "html", "xlsx"]).default("csv"),
       section: ReportExportSectionSchema.default("design"),
-      presentation: ReportPresentationOptionsSchema.optional()
+      presentation: ReportPresentationOptionsSchema.optional(),
+      /** Tên báo cáo đang xem (mẫu dựng sẵn hoặc mẫu đã lưu); dùng làm tiêu đề và tên tệp khi người dùng chưa tự đặt tiêu đề. */
+      reportName: z12.string().trim().max(150).optional()
     }).superRefine((request, context) => {
       request.columns.forEach((key, index) => {
         if (!REPORT_FIELD_CATALOG.find((item) => item.key === key)?.exportable) {
@@ -4753,14 +4761,319 @@ var init_content_disposition = __esm({
   }
 });
 
-// server/src/report-export.ts
+// server/src/report-xlsx.ts
 import JSZip from "jszip";
+function numberFormatCode(decimals, suffix) {
+  const base = decimals > 0 ? `#,##0.${"0".repeat(decimals)}` : "#,##0";
+  return suffix ? `${base}" ${suffix.replaceAll('"', "")}"` : base;
+}
+function metricNumberFormat(unit, decimals, suffix) {
+  const places = decimals ?? (unit === "COUNT" ? 0 : 1);
+  if (unit === "PERCENT") return `${places > 0 ? `0.${"0".repeat(places)}` : "0"}"%"${suffix ? ` "${suffix.replaceAll('"', "")}"` : ""}`;
+  return numberFormatCode(places, suffix);
+}
+function excelDateSerial(value) {
+  if (typeof value !== "string") return void 0;
+  const match = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  if (!match) return void 0;
+  const serial = Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])) / 864e5 + 25569;
+  return Number.isFinite(serial) ? serial : void 0;
+}
+function xlsxCell(ref, value, style) {
+  if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}" s="${style}" t="n"><v>${value}</v></c>`;
+  if (value === null || value === void 0 || value === "") return `<c r="${ref}" s="${style}"/>`;
+  const text = typeof value === "boolean" ? value ? "C\xF3" : "Kh\xF4ng" : value;
+  return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xmlEscape(text)}</t></is></c>`;
+}
+function columnWidths(columns, rows) {
+  return columns.map((column, index) => {
+    const sample = rows.slice(0, 300).map((row) => {
+      const value = row[index];
+      return typeof value === "number" ? value.toLocaleString("vi-VN").length + 2 : String(value ?? "").length;
+    });
+    const widest = Math.max(column.label.length * 0.95, ...sample);
+    return Math.min(46, Math.max(index === 0 ? 20 : 11, Math.ceil(widest * 1.1) + 3));
+  });
+}
+function buildReportSheet(report, table, styles, title) {
+  const { columns } = table;
+  const last = Math.max(0, columns.length - 1);
+  const hasData = table.rows.length > 0;
+  const rows = hasData ? table.rows : [["Kh\xF4ng c\xF3 d\u1EEF li\u1EC7u ph\xF9 h\u1EE3p", ...columns.slice(1).map(() => "")]];
+  const widths = columnWidths(columns, rows);
+  const totalWidth = widths.reduce((sum, width) => sum + width, 0);
+  const titleStyle = styles.register({ size: 18, bold: true, color: "FFFFFFFF", fill: BRAND, vertical: "center", horizontal: "left" });
+  const subtitleStyle = styles.register({ size: 10, italic: true, color: MUTED, vertical: "center" });
+  const filterStyle = styles.register({ size: 10, color: "FF334155", vertical: "top", wrap: true });
+  const headerStyle = styles.register({ bold: true, color: "FFFFFFFF", fill: BRAND, border: "thin", horizontal: "center", vertical: "center", wrap: true });
+  const emptyStyle = styles.register({ italic: true, color: MUTED, border: "thin", vertical: "center" });
+  const filterText = report.filters.length ? `\u0110i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng: ${report.filters.join("  |  ")}` : "\u0110i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng: kh\xF4ng c\xF3 \u0111i\u1EC1u ki\u1EC7n l\u1ECDc";
+  const filterLines = Math.max(1, Math.ceil(filterText.length / Math.max(30, totalWidth * 1.05)));
+  const subtitle = [
+    `Xu\u1EA5t l\xFAc ${vietnamTime(report.generatedAt)}`,
+    report.generatedBy ? `Ng\u01B0\u1EDDi xu\u1EA5t: ${report.generatedBy}` : "",
+    report.scope ? `Ph\u1EA1m vi: ${report.scope}` : ""
+  ].filter(Boolean).join("   |   ");
+  const rowXml = [];
+  rowXml.push(`<row r="1" ht="34" customHeight="1">${xlsxCell("A1", title, titleStyle)}${columns.slice(1).map((_, column) => `<c r="${cellRef(1, column + 1)}" s="${titleStyle}"/>`).join("")}</row>`);
+  rowXml.push(`<row r="2" ht="20" customHeight="1">${xlsxCell("A2", subtitle, subtitleStyle)}</row>`);
+  rowXml.push(`<row r="3" ht="${Math.max(20, filterLines * 15 + 6)}" customHeight="1">${xlsxCell("A3", filterText, filterStyle)}</row>`);
+  rowXml.push('<row r="4" ht="8" customHeight="1"/>');
+  rowXml.push(`<row r="${HEADER_ROW}" ht="34" customHeight="1">${uniqueColumnNames(columns).map((label, column) => xlsxCell(cellRef(HEADER_ROW, column), label, headerStyle)).join("")}</row>`);
+  rows.forEach((row, rowIndex) => {
+    const rowNumber = FIRST_DATA_ROW + rowIndex;
+    if (!hasData) {
+      rowXml.push(`<row r="${rowNumber}">${xlsxCell(cellRef(rowNumber, 0), row[0], emptyStyle)}${columns.slice(1).map((_, column) => `<c r="${cellRef(rowNumber, column + 1)}" s="${emptyStyle}"/>`).join("")}</row>`);
+      return;
+    }
+    const zebra = rowIndex % 2 === 1 ? ZEBRA : void 0;
+    const cells = columns.map((column, columnIndex) => {
+      const tone = table.tones?.[rowIndex]?.[columnIndex];
+      const fill = tone ? TONES[tone].fill : zebra;
+      const color = tone ? TONES[tone].font : void 0;
+      const raw = row[columnIndex];
+      const ref = cellRef(rowNumber, columnIndex);
+      if (column.kind === "number") {
+        return xlsxCell(ref, raw, styles.register({ border: "thin", fill, color, bold: Boolean(tone), numFmt: column.numFmt ?? "#,##0.00", horizontal: "right", vertical: "center" }));
+      }
+      if (column.kind === "date") {
+        const serial = excelDateSerial(raw);
+        return serial === void 0 ? xlsxCell(ref, raw, styles.register({ border: "thin", fill, horizontal: "center", vertical: "center" })) : xlsxCell(ref, serial, styles.register({ border: "thin", fill, numFmt: DATE_FORMAT, horizontal: "center", vertical: "center" }));
+      }
+      if (column.kind === "boolean") return xlsxCell(ref, raw, styles.register({ border: "thin", fill, horizontal: "center", vertical: "center" }));
+      return xlsxCell(ref, raw, styles.register({ border: "thin", fill, vertical: "center", wrap: true }));
+    });
+    rowXml.push(`<row r="${rowNumber}">${cells.join("")}</row>`);
+  });
+  const dataEnd = FIRST_DATA_ROW + rows.length - 1;
+  let lastRow = dataEnd;
+  if (hasData && table.totals) {
+    const totalRow = dataEnd + 1;
+    lastRow = totalRow;
+    const cells = columns.map((column, columnIndex) => {
+      const ref = cellRef(totalRow, columnIndex);
+      const value = columnIndex === 0 ? "T\u1ED5ng c\u1ED9ng" : table.totals?.[columnIndex];
+      const numeric = column.kind === "number";
+      return xlsxCell(ref, value, styles.register({
+        bold: true,
+        color: "FF00504E",
+        fill: BRAND_SOFT,
+        border: "total",
+        numFmt: numeric ? column.numFmt ?? "#,##0.00" : void 0,
+        horizontal: numeric ? "right" : "left",
+        vertical: "center"
+      }));
+    });
+    rowXml.push(`<row r="${totalRow}" ht="24" customHeight="1">${cells.join("")}</row>`);
+  }
+  const cols = widths.map((width, index) => `<col min="${index + 1}" max="${index + 1}" width="${width}" customWidth="1"/>`).join("");
+  const merges = last > 0 ? ["1", "2", "3"].map((row) => `<mergeCell ref="A${row}:${columnName(last)}${row}"/>`) : [];
+  const tableEnd = `${columnName(last)}${dataEnd}`;
+  const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:${columnName(last)}${lastRow}"/><sheetViews><sheetView showGridLines="0" workbookViewId="0"><pane ySplit="${HEADER_ROW}" topLeftCell="A${FIRST_DATA_ROW}" activePane="bottomLeft" state="frozen"/><selection pane="bottomLeft" activeCell="A${FIRST_DATA_ROW}" sqref="A${FIRST_DATA_ROW}"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols>${cols}</cols><sheetData>${rowXml.join("")}</sheetData>${merges.length ? `<mergeCells count="${merges.length}">${merges.join("")}</mergeCells>` : ""}<pageMargins left="0.4" right="0.4" top="0.6" bottom="0.7" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="landscape" fitToWidth="1" fitToHeight="0"/><headerFooter><oddFooter>&amp;L&amp;9Audit BGS&amp;C&amp;9Trang &amp;P / &amp;N&amp;R&amp;9&amp;D</oddFooter></headerFooter><tableParts count="1"><tablePart r:id="rId1"/></tableParts></worksheet>`;
+  return {
+    name: table.sheetName,
+    xml,
+    table: { name: table.tableName, ref: `A${HEADER_ROW}:${tableEnd}`, names: uniqueColumnNames(columns) },
+    printTitles: true
+  };
+}
+function buildInfoSheet(report, title, styles) {
+  const titleStyle = styles.register({ size: 16, bold: true, color: "FFFFFFFF", fill: BRAND, vertical: "center" });
+  const sectionStyle = styles.register({ bold: true, color: "FFFFFFFF", fill: BRAND, vertical: "center" });
+  const labelStyle = styles.register({ bold: true, color: "FF334155", fill: BRAND_SOFT, border: "thin", vertical: "top", wrap: true });
+  const valueStyle = styles.register({ border: "thin", vertical: "top", wrap: true });
+  const numberStyle = (code) => styles.register({ border: "thin", vertical: "top", horizontal: "left", numFmt: code ?? "#,##0.##" });
+  const noteStyle = styles.register({ size: 10, italic: true, color: MUTED, vertical: "top", wrap: true });
+  const rows = [];
+  const pair = (label, value, style = valueStyle) => ({ cells: [{ value: label, style: labelStyle }, { value, style }] });
+  const section = (text) => ({ cells: [{ value: text, style: sectionStyle }, { value: "", style: sectionStyle }], height: 24, merged: true });
+  rows.push({ cells: [{ value: "Th\xF4ng tin b\xE1o c\xE1o", style: titleStyle }, { value: "", style: titleStyle }], height: 32, merged: true });
+  rows.push(pair("T\xEAn b\xE1o c\xE1o", title));
+  rows.push(pair("N\u1ED9i dung t\u1EC7p", report.section === "detail" ? "D\xF2ng chi ti\u1EBFt t\u1EEBng h\u1ED3 s\u01A1" : report.pivot ? `B\u1EA3ng ch\xE9o ${report.pivot.rowLabel} theo ${report.pivot.columnLabel}` : `B\u1EA3ng ph\xE2n t\xEDch theo ${report.groupLabel}`));
+  rows.push(pair("Th\u1EDDi \u0111i\u1EC3m xu\u1EA5t", vietnamTime(report.generatedAt)));
+  if (report.generatedBy) rows.push(pair("Ng\u01B0\u1EDDi xu\u1EA5t", report.generatedBy));
+  if (report.scope) rows.push(pair("Ph\u1EA1m vi d\u1EEF li\u1EC7u", report.scope));
+  rows.push(pair("S\u1ED1 h\u1ED3 s\u01A1 ph\xF9 h\u1EE3p", report.matchedCount, numberStyle("#,##0")));
+  rows.push({ cells: [{ value: "", style: 0 }, { value: "", style: 0 }], height: 10 });
+  rows.push(section("\u0110i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng"));
+  (report.filters.length ? report.filters : ["Kh\xF4ng c\xF3 \u0111i\u1EC1u ki\u1EC7n l\u1ECDc"]).forEach((filter, index) => rows.push(pair(report.filters.length ? `${index + 1}` : "-", filter)));
+  if (report.summary.length) {
+    rows.push({ cells: [{ value: "", style: 0 }, { value: "", style: 0 }], height: 10 });
+    rows.push(section("Ch\u1EC9 s\u1ED1 t\u1ED5ng h\u1EE3p"));
+    for (const item of report.summary) rows.push(pair(item.label, item.value, typeof item.value === "number" ? numberStyle(item.numFmt) : valueStyle));
+  }
+  rows.push({ cells: [{ value: "", style: 0 }, { value: "", style: 0 }], height: 10 });
+  const notes = [
+    "S\u1ED1 li\u1EC7u t\xEDnh tr\xEAn d\u1EEF li\u1EC7u thu\u1ED9c ph\u1EA1m vi \u0111\u01B0\u1EE3c c\u1EA5p cho ng\u01B0\u1EDDi xu\u1EA5t, t\u1EA1i th\u1EDDi \u0111i\u1EC3m xu\u1EA5t.",
+    ...report.section === "design" ? ['D\xF2ng "T\u1ED5ng c\u1ED9ng" t\xEDnh tr\xEAn to\xE0n b\u1ED9 h\u1ED3 s\u01A1 ph\xF9 h\u1EE3p, kh\xF4ng ph\u1EA3i t\u1ED5ng c\u1ED9ng d\u1ED3n c\xE1c d\xF2ng \u0111ang hi\u1EC3n th\u1ECB.'] : [],
+    'Ch\u1EC9 s\u1ED1 c\xF3 ghi ch\xFA "(tri\u1EC7u \u0111\u1ED3ng)" t\xEDnh theo \u0111\u01A1n v\u1ECB tri\u1EC7u \u0111\u1ED3ng.'
+  ];
+  notes.forEach((note) => rows.push({ cells: [{ value: note, style: noteStyle }, { value: "", style: noteStyle }], merged: true, height: 18 }));
+  const merges = [];
+  const rowXml = rows.map((row, index) => {
+    const number = index + 1;
+    if (row.merged) merges.push(`A${number}:B${number}`);
+    return `<row r="${number}"${row.height ? ` ht="${row.height}" customHeight="1"` : ""}>${row.cells.map((cell, column) => xlsxCell(cellRef(number, column), cell.value, cell.style)).join("")}</row>`;
+  }).join("");
+  const xml = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><sheetPr><pageSetUpPr fitToPage="1"/></sheetPr><dimension ref="A1:B${rows.length}"/><sheetViews><sheetView showGridLines="0" workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="1" width="28" customWidth="1"/><col min="2" max="2" width="72" customWidth="1"/></cols><sheetData>${rowXml}</sheetData><mergeCells count="${merges.length}">${merges.map((ref) => `<mergeCell ref="${ref}"/>`).join("")}</mergeCells><pageMargins left="0.5" right="0.5" top="0.6" bottom="0.7" header="0.3" footer="0.3"/><pageSetup paperSize="9" orientation="portrait" fitToWidth="1" fitToHeight="0"/><headerFooter><oddFooter>&amp;L&amp;9Audit BGS&amp;C&amp;9Trang &amp;P / &amp;N&amp;R&amp;9&amp;D</oddFooter></headerFooter></worksheet>`;
+  return { name: "Th\xF4ng tin", xml, printTitles: false };
+}
+function pivotTable(report) {
+  const pivot = report.pivot;
+  const format = pivot.numFmt ?? "#,##0";
+  const columns = [
+    { label: pivot.rowLabel },
+    ...pivot.columns.map((label) => ({ label, kind: "number", numFmt: format })),
+    { label: "T\u1ED5ng", kind: "number", numFmt: format }
+  ];
+  return {
+    sheetName: "B\u1EA3ng ch\xE9o",
+    tableName: "BangCheo",
+    columns,
+    rows: pivot.rows.map((row) => [row.label, ...row.values, row.total]),
+    totals: pivot.totals ? ["T\u1ED5ng c\u1ED9ng", ...pivot.totals, pivot.grandTotal ?? pivot.totals.reduce((sum, value) => sum + value, 0)] : void 0
+  };
+}
+async function renderReportXlsx(report) {
+  const title = report.title?.trim() || (report.section === "detail" ? "Danh s\xE1ch h\u1ED3 s\u01A1 chi ti\u1EBFt" : `B\xE1o c\xE1o theo ${report.groupLabel}`);
+  const styles = new StyleBook();
+  const main = report.section === "detail" ? { sheetName: "D\u1EEF li\u1EC7u chi ti\u1EBFt", tableName: "DuLieuChiTiet", columns: report.detailColumns, rows: report.detailRows } : report.pivot ? pivotTable(report) : {
+    sheetName: "B\xE1o c\xE1o",
+    tableName: "BaoCao",
+    columns: report.groupColumns,
+    rows: report.groupValues ?? report.groupRows,
+    tones: report.groupTones,
+    totals: report.groupTotals
+  };
+  const sheets = [
+    buildReportSheet(report, { ...main, sheetName: sanitizeSheetName(main.sheetName) }, styles, title),
+    buildInfoSheet(report, title, styles)
+  ];
+  const tableSheets = sheets.map((sheet, index) => ({ sheet, sheetIndex: index + 1 })).filter((entry) => entry.sheet.table);
+  const createdAt = report.generatedAt;
+  const zip = new JSZip();
+  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/><Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>${sheets.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}${tableSheets.map((_, index) => `<Override PartName="/xl/tables/table${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`).join("")}</Types>`);
+  zip.folder("_rels").file(".rels", '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/><Relationship Id="rId2" Type="http://schemas.openxmlformats.org/package/2006/relationships/metadata/core-properties" Target="docProps/core.xml"/></Relationships>');
+  zip.folder("docProps").file("core.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><dc:title>${xmlEscape(title)}</dc:title><dc:creator>${xmlEscape(report.generatedBy || "Audit BGS")}</dc:creator><dcterms:created xsi:type="dcterms:W3CDTF">${xmlEscape(createdAt)}</dcterms:created></cp:coreProperties>`);
+  const printTitles = sheets.map((sheet, index) => sheet.printTitles ? `<definedName name="_xlnm.Print_Titles" localSheetId="${index}">'${sheet.name.replaceAll("'", "''")}'!$${HEADER_ROW}:$${HEADER_ROW}</definedName>` : "").join("");
+  const xl = zip.folder("xl");
+  xl.file("workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView activeTab="0"/></bookViews><sheets>${sheets.map((sheet, index) => `<sheet name="${xmlEscape(sheet.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("")}</sheets>${printTitles ? `<definedNames>${printTitles}</definedNames>` : ""}<calcPr calcId="191029"/></workbook>`);
+  xl.folder("_rels").file("workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${sheets.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("")}<Relationship Id="rId${sheets.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
+  xl.file("styles.xml", styles.xml());
+  const worksheets = xl.folder("worksheets");
+  sheets.forEach((sheet, index) => worksheets.file(`sheet${index + 1}.xml`, sheet.xml));
+  const sheetRels = worksheets.folder("_rels");
+  const tables = xl.folder("tables");
+  tableSheets.forEach((entry, tableIndex) => {
+    const id = tableIndex + 1;
+    sheetRels.file(`sheet${entry.sheetIndex}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${id}.xml"/></Relationships>`);
+    tables.file(`table${id}.xml`, tableXml(id, entry.sheet.table));
+  });
+  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
+}
+var BRAND, BRAND_SOFT, ZEBRA, GRID, MUTED, TONES, HEADER_ROW, FIRST_DATA_ROW, xmlEscape, columnName, DATE_FORMAT, StyleBook, cellRef, vietnamTime, uniqueColumnNames, sanitizeSheetName, tableXml;
+var init_report_xlsx = __esm({
+  "server/src/report-xlsx.ts"() {
+    "use strict";
+    BRAND = "FF006B68";
+    BRAND_SOFT = "FFE8F4F3";
+    ZEBRA = "FFF7FAFA";
+    GRID = "FFD9E2E8";
+    MUTED = "FF5B6B7A";
+    TONES = {
+      risk: { fill: "FFFEE4E2", font: "FFB42318" },
+      warn: { fill: "FFFEF0C7", font: "FFB54708" },
+      ok: { fill: "FFD1FADF", font: "FF067647" }
+    };
+    HEADER_ROW = 5;
+    FIRST_DATA_ROW = 6;
+    xmlEscape = (value) => String(value ?? "").replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+    columnName = (index) => {
+      let value = index + 1;
+      let name = "";
+      while (value > 0) {
+        const remainder = (value - 1) % 26;
+        name = String.fromCharCode(65 + remainder) + name;
+        value = Math.floor((value - 1) / 26);
+      }
+      return name;
+    };
+    DATE_FORMAT = "dd/mm/yyyy";
+    StyleBook = class {
+      fonts = ['<font><sz val="11"/><color rgb="FF1E293B"/><name val="Calibri"/><family val="2"/></font>'];
+      fills = ['<fill><patternFill patternType="none"/></fill>', '<fill><patternFill patternType="gray125"/></fill>'];
+      borders = ["<border><left/><right/><top/><bottom/><diagonal/></border>"];
+      numFmts = /* @__PURE__ */ new Map();
+      xfs = ['<xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>'];
+      xfIndex = /* @__PURE__ */ new Map();
+      index(list, xml) {
+        const found = list.indexOf(xml);
+        if (found >= 0) return found;
+        list.push(xml);
+        return list.length - 1;
+      }
+      numFmtId(code) {
+        if (!code) return 0;
+        const known = this.numFmts.get(code);
+        if (known) return known;
+        const id = 164 + this.numFmts.size;
+        this.numFmts.set(code, id);
+        return id;
+      }
+      register(spec) {
+        const key = JSON.stringify(spec);
+        const existing = this.xfIndex.get(key);
+        if (existing !== void 0) return existing;
+        const font = this.index(this.fonts, `<font>${spec.bold ? "<b/>" : ""}${spec.italic ? "<i/>" : ""}<sz val="${spec.size ?? 11}"/><color rgb="${spec.color ?? "FF1E293B"}"/><name val="Calibri"/><family val="2"/></font>`);
+        const fill = spec.fill ? this.index(this.fills, `<fill><patternFill patternType="solid"><fgColor rgb="${spec.fill}"/><bgColor indexed="64"/></patternFill></fill>`) : 0;
+        let border = 0;
+        if (spec.border === "thin") {
+          const side = (tag) => `<${tag} style="thin"><color rgb="${GRID}"/></${tag}>`;
+          border = this.index(this.borders, `<border>${side("left")}${side("right")}${side("top")}${side("bottom")}<diagonal/></border>`);
+        } else if (spec.border === "total") {
+          const thin = (tag) => `<${tag} style="thin"><color rgb="${GRID}"/></${tag}>`;
+          border = this.index(this.borders, `<border>${thin("left")}${thin("right")}<top style="medium"><color rgb="${BRAND}"/></top><bottom style="medium"><color rgb="${BRAND}"/></bottom><diagonal/></border>`);
+        }
+        const numFmtId = this.numFmtId(spec.numFmt);
+        const alignment = spec.horizontal || spec.vertical || spec.wrap ? `<alignment${spec.horizontal ? ` horizontal="${spec.horizontal}"` : ""} vertical="${spec.vertical ?? "center"}"${spec.wrap ? ' wrapText="1"' : ""}/>` : "";
+        const xf = `<xf numFmtId="${numFmtId}" fontId="${font}" fillId="${fill}" borderId="${border}" xfId="0" applyNumberFormat="${numFmtId ? 1 : 0}" applyFont="1" applyFill="${fill ? 1 : 0}" applyBorder="${border ? 1 : 0}" applyAlignment="${alignment ? 1 : 0}">${alignment}</xf>`;
+        this.xfs.push(xf);
+        this.xfIndex.set(key, this.xfs.length - 1);
+        return this.xfs.length - 1;
+      }
+      xml() {
+        const formats = [...this.numFmts.entries()].map(([code, id]) => `<numFmt numFmtId="${id}" formatCode="${xmlEscape(code)}"/>`).join("");
+        return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">${formats ? `<numFmts count="${this.numFmts.size}">${formats}</numFmts>` : ""}<fonts count="${this.fonts.length}">${this.fonts.join("")}</fonts><fills count="${this.fills.length}">${this.fills.join("")}</fills><borders count="${this.borders.length}">${this.borders.join("")}</borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="${this.xfs.length}">${this.xfs.join("")}</cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="0" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/></styleSheet>`;
+      }
+    };
+    cellRef = (row, column) => `${columnName(column)}${row}`;
+    vietnamTime = (iso) => new Date(iso).toLocaleString("vi-VN", { timeZone: "Asia/Ho_Chi_Minh", hour12: false });
+    uniqueColumnNames = (columns) => {
+      const used = /* @__PURE__ */ new Set();
+      return columns.map((column, index) => {
+        const base = column.label.trim() || `C\u1ED9t ${index + 1}`;
+        let name = base;
+        let suffix = 2;
+        while (used.has(name.toLocaleLowerCase("vi-VN"))) name = `${base} (${suffix++})`;
+        used.add(name.toLocaleLowerCase("vi-VN"));
+        return name;
+      });
+    };
+    sanitizeSheetName = (name) => name.replace(/[[\]:*?/\\]/g, " ").trim().slice(0, 31) || "B\xE1o c\xE1o";
+    tableXml = (id, table) => `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="${table.name}" displayName="${table.name}" ref="${table.ref}" totalsRowShown="0"><autoFilter ref="${table.ref}"/><tableColumns count="${table.names.length}">${table.names.map((label, index) => `<tableColumn id="${index + 1}" name="${xmlEscape(label)}"/>`).join("")}</tableColumns><tableStyleInfo name="TableStyleLight1" showFirstColumn="0" showLastColumn="0" showRowStripes="0" showColumnStripes="0"/></table>`;
+  }
+});
+
+// server/src/report-export.ts
 function renderReportHtml(report) {
   const renderTable = (columns, rows) => `
     <div class="table-wrap">
       <table>
-        <thead><tr>${columns.map((column) => `<th>${xmlEscape(column.label)}</th>`).join("")}</tr></thead>
-        <tbody>${rows.length > 0 ? rows.map((row) => `<tr>${row.map((value, index) => `<td class="${columns[index]?.kind === "number" ? "number" : ""}">${xmlEscape(htmlValue(value))}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${columns.length}">Kh\xF4ng c\xF3 d\u1EEF li\u1EC7u ph\xF9 h\u1EE3p.</td></tr>`}</tbody>
+        <thead><tr>${columns.map((column) => `<th>${xmlEscape2(column.label)}</th>`).join("")}</tr></thead>
+        <tbody>${rows.length > 0 ? rows.map((row) => `<tr>${row.map((value, index) => `<td class="${columns[index]?.kind === "number" ? "number" : ""}">${xmlEscape2(htmlValue(value))}</td>`).join("")}</tr>`).join("") : `<tr><td colspan="${columns.length}">Kh\xF4ng c\xF3 d\u1EEF li\u1EC7u ph\xF9 h\u1EE3p.</td></tr>`}</tbody>
       </table>
     </div>`;
   return `<!doctype html>
@@ -4768,7 +5081,7 @@ function renderReportHtml(report) {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>${xmlEscape(report.title || "B\xE1o c\xE1o Audit BGS")}</title>
+  <title>${xmlEscape2(report.title || "B\xE1o c\xE1o Audit BGS")}</title>
   <style>
     :root{color-scheme:light;--brand:#006b68;--brand-dark:#00504e;--ink:#172033;--muted:#64748b;--line:#dbe3ea;--soft:#f3f8f7}
     *{box-sizing:border-box}body{margin:0;background:#eef3f3;color:var(--ink);font:14px/1.5 Arial,"Helvetica Neue",sans-serif}
@@ -4786,145 +5099,30 @@ function renderReportHtml(report) {
   </style>
 </head>
 <body><main>
-  <header><h1>${xmlEscape(report.title || "B\xE1o c\xE1o Audit BGS")}</h1><p>B\xE1o c\xE1o t\u1ED5ng h\u1EE3p v\xE0 d\u1EEF li\u1EC7u chi ti\u1EBFt theo ph\u1EA1m vi \u0111\u01B0\u1EE3c c\u1EA5p.</p><div class="meta"><span class="tag">Th\u1EDDi \u0111i\u1EC3m xu\u1EA5t: ${xmlEscape(new Date(report.generatedAt).toLocaleString("vi-VN"))}</span><span class="tag">${report.detailRows.length} d\xF2ng chi ti\u1EBFt</span></div></header>
-  <section><h2>T\u1ED5ng quan</h2><div class="metrics">${report.summary.map((item) => `<div class="metric"><span>${xmlEscape(item.label)}</span><strong>${xmlEscape(htmlValue(item.value))}</strong></div>`).join("")}</div>
-    <h3>\u0110i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng</h3><ul class="filters">${(report.filters.length ? report.filters : ["Kh\xF4ng c\xF3 \u0111i\u1EC1u ki\u1EC7n l\u1ECDc"]).map((item) => `<li>${xmlEscape(item)}</li>`).join("")}</ul></section>
-  <section><h2>Ph\xE2n t\xEDch theo ${xmlEscape(report.groupLabel)}</h2>${renderTable(report.groupColumns, report.groupRows)}</section>
-  ${report.pivot ? `<section><h2>B\u1EA3ng ch\xE9o: ${xmlEscape(report.pivot.rowLabel)} \xD7 ${xmlEscape(report.pivot.columnLabel)}</h2>
-    <p style="margin:0 0 12px;color:var(--muted);font-size:12px">Ch\u1EC9 s\u1ED1: ${xmlEscape(report.pivot.metricLabel)}</p>
+  <header><h1>${xmlEscape2(report.title || "B\xE1o c\xE1o Audit BGS")}</h1><p>${report.section === "detail" ? "D\xF2ng chi ti\u1EBFt t\u1EEBng h\u1ED3 s\u01A1" : "B\u1EA3ng \u0111ang xem"} theo ph\u1EA1m vi d\u1EEF li\u1EC7u \u0111\u01B0\u1EE3c c\u1EA5p${report.scope ? `: ${xmlEscape2(report.scope)}` : ""}.</p><div class="meta"><span class="tag">Th\u1EDDi \u0111i\u1EC3m xu\u1EA5t: ${xmlEscape2(new Date(report.generatedAt).toLocaleString("vi-VN"))}</span><span class="tag">${report.matchedCount} h\u1ED3 s\u01A1 ph\xF9 h\u1EE3p</span>${report.generatedBy ? `<span class="tag">Ng\u01B0\u1EDDi xu\u1EA5t: ${xmlEscape2(report.generatedBy)}</span>` : ""}</div></header>
+  <section><h2>T\u1ED5ng quan</h2><div class="metrics">${report.summary.map((item) => `<div class="metric"><span>${xmlEscape2(item.label)}</span><strong>${xmlEscape2(htmlValue(item.value))}</strong></div>`).join("")}</div>
+    <h3>\u0110i\u1EC1u ki\u1EC7n \xE1p d\u1EE5ng</h3><ul class="filters">${(report.filters.length ? report.filters : ["Kh\xF4ng c\xF3 \u0111i\u1EC1u ki\u1EC7n l\u1ECDc"]).map((item) => `<li>${xmlEscape2(item)}</li>`).join("")}</ul></section>
+  ${report.section === "detail" ? "" : `<section><h2>Ph\xE2n t\xEDch theo ${xmlEscape2(report.groupLabel)}</h2>${renderTable(report.groupColumns, report.groupRows)}</section>`}
+  ${report.section !== "detail" && report.pivot ? `<section><h2>B\u1EA3ng ch\xE9o: ${xmlEscape2(report.pivot.rowLabel)} \xD7 ${xmlEscape2(report.pivot.columnLabel)}</h2>
+    <p style="margin:0 0 12px;color:var(--muted);font-size:12px">Ch\u1EC9 s\u1ED1: ${xmlEscape2(report.pivot.metricLabel)}</p>
     ${renderTable(
     [{ label: report.pivot.rowLabel }, ...report.pivot.columns.map((label) => ({ label, kind: "number" })), { label: "T\u1ED5ng", kind: "number" }],
     report.pivot.rows.map((row) => [row.label, ...row.values, row.total])
   )}</section>` : ""}
-  <section class="details"><h2>D\u1EEF li\u1EC7u chi ti\u1EBFt</h2>${renderTable(report.detailColumns, report.detailRows)}</section>
+  ${report.section === "detail" ? `<section class="details"><h2>D\u1EEF li\u1EC7u chi ti\u1EBFt</h2>${renderTable(report.detailColumns, report.detailRows)}</section>` : ""}
   <footer>Audit BGS | T\u1EC7p \u0111\u1ED9c l\u1EADp, c\xF3 th\u1EC3 l\u01B0u tr\u1EEF ho\u1EB7c in tr\u1EF1c ti\u1EBFp.</footer>
 </main></body></html>`;
 }
-function pivotSheetData(pivot) {
-  return {
-    columns: [
-      { label: pivot.rowLabel },
-      ...pivot.columns.map((label) => ({ label, kind: "number" })),
-      { label: "T\u1ED5ng", kind: "number" }
-    ],
-    rows: pivot.rows.map((row) => [row.label, ...row.values, row.total])
-  };
-}
-async function renderReportXlsx(report) {
-  const plans = [
-    { name: "T\u1ED5ng quan", xml: overviewSheet(report) },
-    {
-      name: "Ph\xE2n t\xEDch",
-      xml: tableSheet(report.groupColumns, report.groupRows, "rId1"),
-      table: { name: "PhanTich", columns: report.groupColumns, rowCount: report.groupRows.length }
-    }
-  ];
-  if (report.pivot) {
-    const grid = pivotSheetData(report.pivot);
-    plans.push({
-      name: "B\u1EA3ng ch\xE9o",
-      xml: tableSheet(grid.columns, grid.rows, "rId1"),
-      table: { name: "BangCheo", columns: grid.columns, rowCount: grid.rows.length }
-    });
-  }
-  plans.push({
-    name: "D\u1EEF li\u1EC7u chi ti\u1EBFt",
-    xml: tableSheet(report.detailColumns, report.detailRows, "rId1"),
-    table: { name: "DuLieuChiTiet", columns: report.detailColumns, rowCount: report.detailRows.length }
-  });
-  const tablePlans = plans.map((plan, index) => ({ plan, sheetIndex: index + 1 })).filter((entry) => Boolean(entry.plan.table));
-  const zip = new JSZip();
-  zip.file("[Content_Types].xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/><Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>${plans.map((_, index) => `<Override PartName="/xl/worksheets/sheet${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>`).join("")}${tablePlans.map((_, index) => `<Override PartName="/xl/tables/table${index + 1}.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>`).join("")}</Types>`);
-  zip.folder("_rels").file(".rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/></Relationships>`);
-  zip.folder("xl").file("workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><bookViews><workbookView/></bookViews><sheets>${plans.map((plan, index) => `<sheet name="${xmlEscape(plan.name)}" sheetId="${index + 1}" r:id="rId${index + 1}"/>`).join("")}</sheets><calcPr calcId="191029"/></workbook>`);
-  zip.folder("xl").folder("_rels").file("workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">${plans.map((_, index) => `<Relationship Id="rId${index + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet${index + 1}.xml"/>`).join("")}<Relationship Id="rId${plans.length + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>`);
-  zip.folder("xl").file("styles.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><numFmts count="1"><numFmt numFmtId="164" formatCode="#,##0.00"/></numFmts><fonts count="3"><font><sz val="11"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="16"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="11"/><name val="Arial"/></font></fonts><fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF006B68"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFE8F4F3"/><bgColor indexed="64"/></patternFill></fill></fills><borders count="2"><border><left/><right/><top/><bottom/><diagonal/></border><border><left style="thin"><color rgb="FFD9E2E8"/></left><right style="thin"><color rgb="FFD9E2E8"/></right><top style="thin"><color rgb="FFD9E2E8"/></top><bottom style="thin"><color rgb="FFD9E2E8"/></bottom><diagonal/></border></borders><cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs><cellXfs count="6"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="2" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"/><xf numFmtId="0" fontId="0" fillId="0" borderId="1" xfId="0" applyBorder="1" applyAlignment="1"><alignment vertical="top" wrapText="1"/></xf><xf numFmtId="164" fontId="0" fillId="0" borderId="1" xfId="0" applyNumberFormat="1" applyBorder="1" applyAlignment="1"><alignment horizontal="right" vertical="top"/></xf></cellXfs><cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles><dxfs count="0"/><tableStyles count="1" defaultTableStyle="TableStyleMedium2" defaultPivotStyle="PivotStyleLight16"/></styleSheet>`);
-  const sheets = zip.folder("xl").folder("worksheets");
-  for (const [index, plan] of plans.entries()) sheets.file(`sheet${index + 1}.xml`, plan.xml);
-  const sheetRels = sheets.folder("_rels");
-  const tables = zip.folder("xl").folder("tables");
-  tablePlans.forEach((entry, tableIndex) => {
-    const tableId = tableIndex + 1;
-    sheetRels.file(`sheet${entry.sheetIndex}.xml.rels`, `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table${tableId}.xml"/></Relationships>`);
-    tables.file(`table${tableId}.xml`, tableXml(tableId, entry.plan.table.name, entry.plan.table.columns, entry.plan.table.rowCount));
-  });
-  return zip.generateAsync({ type: "nodebuffer", compression: "DEFLATE", compressionOptions: { level: 6 } });
-}
-var xmlEscape, htmlValue, columnName, xlsxCell, columnWidths, tableSheet, overviewSheet, uniqueColumnNames, tableXml;
+var xmlEscape2, htmlValue;
 var init_report_export = __esm({
   "server/src/report-export.ts"() {
     "use strict";
-    xmlEscape = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
+    init_report_xlsx();
+    xmlEscape2 = (value) => String(value ?? "").replaceAll("&", "&amp;").replaceAll("<", "&lt;").replaceAll(">", "&gt;").replaceAll('"', "&quot;").replaceAll("'", "&apos;");
     htmlValue = (value) => {
       if (typeof value === "number") return value.toLocaleString("vi-VN");
       if (typeof value === "boolean") return value ? "C\xF3" : "Kh\xF4ng";
       return String(value ?? "");
-    };
-    columnName = (index) => {
-      let value = index + 1;
-      let name = "";
-      while (value > 0) {
-        const remainder = (value - 1) % 26;
-        name = String.fromCharCode(65 + remainder) + name;
-        value = Math.floor((value - 1) / 26);
-      }
-      return name;
-    };
-    xlsxCell = (value, row, column, style) => {
-      const ref = `${columnName(column)}${row}`;
-      if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}" s="${style}" t="n"><v>${value}</v></c>`;
-      const display = typeof value === "boolean" ? value ? "C\xF3" : "Kh\xF4ng" : value;
-      return `<c r="${ref}" s="${style}" t="inlineStr"><is><t xml:space="preserve">${xmlEscape(display)}</t></is></c>`;
-    };
-    columnWidths = (columns, rows) => columns.map((column, index) => {
-      const widest = Math.max(column.label.length, ...rows.slice(0, 250).map((row) => String(row[index] ?? "").length));
-      return `<col min="${index + 1}" max="${index + 1}" width="${Math.min(42, Math.max(12, widest + 2))}" customWidth="1"/>`;
-    }).join("");
-    tableSheet = (columns, sourceRows, tableRelId) => {
-      const rows = sourceRows.length > 0 ? sourceRows : [["Kh\xF4ng c\xF3 d\u1EEF li\u1EC7u", ...columns.slice(1).map(() => "")]];
-      const headerNames = uniqueColumnNames(columns);
-      const header = `<row r="1" ht="26" customHeight="1">${headerNames.map((label, index) => xlsxCell(label, 1, index, 3)).join("")}</row>`;
-      const body = rows.map((row, rowIndex) => `<row r="${rowIndex + 2}">${columns.map((column, columnIndex) => xlsxCell(row[columnIndex], rowIndex + 2, columnIndex, column.kind === "number" ? 5 : 4)).join("")}</row>`).join("");
-      const end = `${columnName(columns.length - 1)}${rows.length + 1}`;
-      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
-  <dimension ref="A1:${end}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>
-  <sheetFormatPr defaultRowHeight="20"/><cols>${columnWidths(columns, rows)}</cols><sheetData>${header}${body}</sheetData>
-  <pageMargins left="0.25" right="0.25" top="0.5" bottom="0.5" header="0.2" footer="0.2"/><pageSetup orientation="landscape" fitToWidth="1" fitToHeight="0"/>
-  <tableParts count="1"><tablePart r:id="${tableRelId}"/></tableParts>
-</worksheet>`;
-    };
-    overviewSheet = (report) => {
-      const data = [
-        { values: [(report.title || "B\xC1O C\xC1O AUDIT BGS").toLocaleUpperCase("vi-VN"), "", "", ""], style: 1, height: 30 },
-        { values: ["Th\u1EDDi \u0111i\u1EC3m xu\u1EA5t", new Date(report.generatedAt).toLocaleString("vi-VN"), "S\u1ED1 d\xF2ng chi ti\u1EBFt", report.detailRows.length], style: 4 },
-        { values: ["", "", "", ""], style: 0 },
-        { values: ["T\u1ED4NG QUAN", "", "", ""], style: 2, height: 24 },
-        ...report.summary.map((item) => ({ values: [item.label, item.value, "", ""], style: 4 })),
-        { values: ["", "", "", ""], style: 0 },
-        { values: ["\u0110I\u1EC0U KI\u1EC6N \xC1P D\u1EE4NG", "", "", ""], style: 2, height: 24 },
-        ...(report.filters.length ? report.filters : ["Kh\xF4ng c\xF3 \u0111i\u1EC1u ki\u1EC7n l\u1ECDc"]).map((filter, index) => ({ values: [`${index + 1}`, filter, "", ""], style: 4 }))
-      ];
-      const rows = data.map((item, index) => `<row r="${index + 1}"${item.height ? ` ht="${item.height}" customHeight="1"` : ""}>${item.values.map((value, column) => xlsxCell(value, index + 1, column, item.style)).join("")}</row>`).join("");
-      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:D${data.length}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="20"/><cols><col min="1" max="1" width="24" customWidth="1"/><col min="2" max="2" width="42" customWidth="1"/><col min="3" max="3" width="22" customWidth="1"/><col min="4" max="4" width="20" customWidth="1"/></cols><sheetData>${rows}</sheetData><mergeCells count="3"><mergeCell ref="A1:D1"/><mergeCell ref="A4:D4"/><mergeCell ref="A${report.summary.length + 6}:D${report.summary.length + 6}"/></mergeCells><pageMargins left="0.4" right="0.4" top="0.5" bottom="0.5" header="0.2" footer="0.2"/></worksheet>`;
-    };
-    uniqueColumnNames = (columns) => {
-      const used = /* @__PURE__ */ new Set();
-      return columns.map((column, index) => {
-        const base = column.label.trim() || `C\u1ED9t ${index + 1}`;
-        let name = base;
-        let suffix = 2;
-        while (used.has(name.toLocaleLowerCase("vi-VN"))) name = `${base} (${suffix++})`;
-        used.add(name.toLocaleLowerCase("vi-VN"));
-        return name;
-      });
-    };
-    tableXml = (id, name, columns, rowCount) => {
-      const end = `${columnName(columns.length - 1)}${Math.max(2, rowCount + 1)}`;
-      const names = uniqueColumnNames(columns);
-      return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<table xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" id="${id}" name="${name}" displayName="${name}" ref="A1:${end}" totalsRowShown="0"><autoFilter ref="A1:${end}"/><tableColumns count="${columns.length}">${names.map((columnLabel, index) => `<tableColumn id="${index + 1}" name="${xmlEscape(columnLabel)}"/>`).join("")}</tableColumns><tableStyleInfo name="TableStyleMedium2" showFirstColumn="0" showLastColumn="0" showRowStripes="1" showColumnStripes="0"/></table>`;
     };
   }
 });
@@ -8740,6 +8938,14 @@ function requireManagedReportDefinition(id, user) {
   }
   return definition;
 }
+function describeUserScope(user) {
+  const parts = user.scopes.map((scope) => scope.scopeType === "ALL" ? "To\xE0n b\u1ED9 d\u1EEF li\u1EC7u" : [scope.clusterName, scope.branchName ? `Chi nh\xE1nh ${scope.orgUnitCode ?? ""} ${scope.branchName}`.replace(/\s+/g, " ").trim() : void 0, scope.departmentName].filter(Boolean).join(" / ") || scope.scopeType);
+  return [...new Set(parts)].join("; ") || "Ch\u01B0a x\xE1c \u0111\u1ECBnh";
+}
+function reportFileName(title, dateStamp, extension) {
+  const cleaned = title.replace(/[\\/:*?"<>|\u0000-\u001f]/g, " ").replace(/\s+/g, " ").trim().slice(0, 80) || "B\xE1o c\xE1o";
+  return `${cleaned} - ${dateStamp}.${extension}`;
+}
 function isProductionScannerEndpoint(value) {
   if (!value) return false;
   try {
@@ -8847,6 +9053,7 @@ var init_app = __esm({
     init_problem();
     init_content_disposition();
     init_report_export();
+    init_report_xlsx();
     init_access_control();
     init_password();
     init_session_store();
@@ -12355,7 +12562,6 @@ var init_app = __esm({
         return field.valueType === "ENUM" || field.valueType === "BOOLEAN" ? reportValueLabel(key, value, finding) : value;
       };
       const run = executeReportRun(scoped, request.query);
-      const catalogForLabels = buildReportCatalog(scoped);
       const presentation = request.presentation;
       const metricFormat = (key) => presentation?.metrics?.[key];
       const metricLabel = (key) => {
@@ -12371,11 +12577,30 @@ var init_app = __esm({
         if (rule.operator === "op.is_true" || rule.operator === "op.is_false") return "";
         if (rule.operator === "op.between") return `${String(rule.from ?? "")} \u0111\u1EBFn ${String(rule.to ?? "")}`;
         if (rule.operator === "op.in") return (rule.values || []).join(", ");
-        const field = catalogForLabels.fields.find((item) => item.key === rule.key);
-        return field?.options?.find((option) => option.value === String(rule.value))?.label || String(rule.value ?? "");
+        const sample = scoped.find((finding) => String(reportFieldAccessors[rule.key](finding)) === String(rule.value));
+        return sample ? reportValueLabel(rule.key, reportFieldAccessors[rule.key](sample), sample) : String(rule.value ?? "");
       };
+      const additiveMetrics = /* @__PURE__ */ new Set([
+        "metric.finding_count",
+        "metric.exposure_sum",
+        "metric.credit_balance_sum",
+        "metric.collateral_value_sum",
+        "metric.quantity_sum",
+        "metric.overdue_count",
+        "metric.resolved_count"
+      ]);
+      const metricUnit = (key) => configuredMetrics.find((item) => item.key === key).unit;
+      const metricCode = (key) => metricNumberFormat(metricUnit(key), metricFormat(key)?.decimals, metricFormat(key)?.suffix);
+      const title = presentation?.title?.trim() || request.reportName?.trim() || (request.section === "detail" ? "Danh s\xE1ch h\u1ED3 s\u01A1 chi ti\u1EBFt" : `B\xE1o c\xE1o theo ${groupFieldLabel}`);
+      const pivotAccessor = request.query.pivotBy ? reportFieldAccessors[request.query.pivotBy] : void 0;
+      const pivotMetric = run.pivot?.metric;
+      const pivotColumnTotals = run.pivot && pivotMetric && pivotAccessor && additiveMetrics.has(pivotMetric) ? run.pivot.columns.map((column) => calculateReportMetric(rows.filter((finding) => String(pivotAccessor(finding) || "UNASSIGNED") === column.key), pivotMetric)) : void 0;
       const report = {
         generatedAt: run.generatedAt,
+        generatedBy: exportingUser.fullName,
+        scope: describeUserScope(exportingUser),
+        matchedCount: run.matchedFindingCount,
+        section: request.section,
         filters: request.query.rules.map((rule) => {
           const field = configuredFields.find((item) => item.key === rule.key);
           const operator = REPORT_OPERATOR_CATALOG.find((item) => item.key === rule.operator);
@@ -12383,14 +12608,14 @@ var init_app = __esm({
           return `${field.label}: ${operator.label}${value ? ` ${value}` : ""}`;
         }),
         summary: [
-          { label: "D\xF2ng d\u1EEF li\u1EC7u ph\xF9 h\u1EE3p", value: run.matchedFindingCount },
-          ...request.query.metrics.map((key) => ({ label: metricLabel(key), value: run.metricValues[key] || 0 }))
+          { label: "D\xF2ng d\u1EEF li\u1EC7u ph\xF9 h\u1EE3p", value: run.matchedFindingCount, numFmt: "#,##0" },
+          ...request.query.metrics.map((key) => ({ label: metricLabel(key), value: run.metricValues[key] || 0, numFmt: metricCode(key) }))
         ],
-        title: presentation?.title,
+        title,
         groupLabel: groupFieldLabel,
         groupColumns: [
           { label: groupFieldLabel, kind: "text" },
-          ...request.query.metrics.map((key) => ({ label: metricLabel(key), kind: "number" }))
+          ...request.query.metrics.map((key) => ({ label: metricLabel(key), kind: "number", numFmt: metricCode(key) }))
         ],
         // Số đi ra dưới dạng chuỗi đã định dạng khi người dùng có đặt số lẻ hoặc hậu tố; nếu không thì
         // giữ nguyên kiểu số để Excel còn tính toán được trên đó.
@@ -12399,6 +12624,13 @@ var init_app = __esm({
           const format = metricFormat(key);
           return format?.decimals !== void 0 || format?.suffix ? formatReportMetricValue(value, format) : value;
         })]),
+        // Excel luôn nhận số thật; số lẻ và hậu tố đi vào mã định dạng ô chứ không vào chuỗi.
+        groupValues: run.groups.map((row) => [row.label, ...request.query.metrics.map((key) => row.metricValues[key] || 0)]),
+        groupTones: run.groups.map((row) => [
+          void 0,
+          ...request.query.metrics.map((key) => reportHighlightTone(row.metricValues[key] || 0, metricFormat(key)))
+        ]),
+        groupTotals: ["T\u1ED5ng c\u1ED9ng", ...request.query.metrics.map((key) => run.metricValues[key] || 0)],
         // Trường ở vùng "Cột" đi vào tệp thay vì bị bỏ rơi. Không có phần này thì mọi thiết kế bảng chéo
         // đều xuất ra đúng một bảng một chiều, và người dùng không có dấu hiệu nào để nhận ra.
         pivot: run.pivot && {
@@ -12406,18 +12638,22 @@ var init_app = __esm({
           columnLabel: configuredFields.find((item) => item.key === run.pivot.columnField).label,
           metricLabel: metricLabel(run.pivot.metric),
           columns: run.pivot.columns.map((column) => column.label),
+          numFmt: metricCode(run.pivot.metric),
           rows: run.pivot.rows.map((row) => ({
             label: row.label,
             values: run.pivot.columns.map((column) => row.values[column.key] || 0),
             total: row.total
-          }))
+          })),
+          ...pivotColumnTotals && pivotMetric ? { totals: pivotColumnTotals, grandTotal: calculateReportMetric(rows, pivotMetric) } : {}
         },
         detailColumns: columns.map((column) => ({
           label: column.label,
-          kind: column.valueType === "NUMBER" ? "number" : column.valueType === "DATE" ? "date" : column.valueType === "BOOLEAN" ? "boolean" : "text"
+          kind: column.valueType === "NUMBER" ? "number" : column.valueType === "DATE" ? "date" : column.valueType === "BOOLEAN" ? "boolean" : "text",
+          ...column.valueType === "NUMBER" ? { numFmt: column.key === "measure.quantity" ? "#,##0" : "#,##0.0" } : {}
         })),
         detailRows: rows.map((finding) => request.columns.map((key) => exportValue(key, finding)))
       };
+      const sendFile = (extension, contentType) => reply.header("content-type", contentType).header("content-disposition", buildAttachmentContentDisposition(reportFileName(title, dateStamp, extension)));
       if (request.format === "csv") {
         const grid = request.section === "detail" ? { columns: report.detailColumns, rows: report.detailRows } : report.pivot ? {
           columns: [
@@ -12430,12 +12666,12 @@ var init_app = __esm({
         const header = grid.columns.map((column) => csvCell(column.label)).join(",");
         const csvRows = grid.rows.map((row) => row.map(csvCell).join(","));
         const csv = `\uFEFF${[header, ...csvRows].join("\r\n")}`;
-        return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="audit-bgs-report-${dateStamp}.csv"`).send(csv);
+        return sendFile("csv", "text/csv; charset=utf-8").send(csv);
       }
       if (request.format === "html") {
-        return reply.header("content-type", "text/html; charset=utf-8").header("content-disposition", `attachment; filename="audit-bgs-report-${dateStamp}.html"`).send(renderReportHtml(report));
+        return sendFile("html", "text/html; charset=utf-8").send(renderReportHtml(report));
       }
-      return reply.header("content-type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").header("content-disposition", `attachment; filename="audit-bgs-report-${dateStamp}.xlsx"`).send(await renderReportXlsx(report));
+      return sendFile("xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet").send(await renderReportXlsx(report));
     });
     app.get("/api/v1/reports/summary", async (req) => {
       const filters = ReportFilterSchema.parse(req.query);
