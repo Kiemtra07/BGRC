@@ -114,7 +114,7 @@ describe('finding approval route view', () => {
       method: 'PUT',
       url: `/api/v1/findings/${editable!.id}/special-case`,
       headers: adminHeaders,
-      payload: { isSpecialCase: true },
+      payload: { isSpecialCase: true, expectedVersion: (await app.inject({ method: 'GET', url: '/api/v1/findings/' + editable!.id, headers: adminHeaders })).json().version },
     });
     expect(flagged.statusCode, flagged.body).toBe(200);
 
@@ -132,7 +132,7 @@ describe('finding approval route view', () => {
       method: 'PUT',
       url: `/api/v1/findings/${editable!.id}/special-case`,
       headers: adminHeaders,
-      payload: { isSpecialCase: false },
+      payload: { isSpecialCase: false, expectedVersion: flagged.json().version },
     });
     expect(cleared.statusCode).toBe(200);
     expect((await routeOf(editable!.id)).steps.some(step => step.statusCode === 'SUBMITTED_BRANCH_LEADER')).toBe(false);

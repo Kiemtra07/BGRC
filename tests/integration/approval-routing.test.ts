@@ -55,11 +55,12 @@ describe('automatic approval routing + special-case flag', () => {
   });
 
   it('locks the special-case flag once the finding has left the branch', async () => {
+    const current = await app.inject({ method: 'GET', url: '/api/v1/findings/find-002', headers: adminHeaders });
     const response = await app.inject({
       method: 'PUT',
       url: '/api/v1/findings/find-002/special-case',
       headers: adminHeaders,
-      payload: { isSpecialCase: true },
+      payload: { isSpecialCase: true, expectedVersion: current.json().version },
     });
 
     expect(response.statusCode).toBe(409);
@@ -78,7 +79,7 @@ describe('automatic approval routing + special-case flag', () => {
     expect(first.statusCode, first.body).toBe(200);
     expect(second.statusCode, second.body).toBe(200);
 
-    const flagged = await app.inject({ method: 'PUT', url: `/api/v1/findings/${first.json().id}/special-case`, headers: { 'x-user-id': 'user-internal-officer' }, payload: { isSpecialCase: true } });
+    const flagged = await app.inject({ method: 'PUT', url: `/api/v1/findings/${first.json().id}/special-case`, headers: { 'x-user-id': 'user-internal-officer' }, payload: { isSpecialCase: true, expectedVersion: first.json().version } });
     expect(flagged.statusCode, flagged.body).toBe(200);
 
     const customer = await app.inject({ method: 'GET', url: `/api/v1/customers/${base.cif}/case?branchCode=635`, headers: { 'x-user-id': 'user-internal-officer' } });
@@ -143,7 +144,7 @@ describe('automatic approval routing + special-case flag', () => {
       method: 'PUT',
       url: '/api/v1/findings/find-002/special-case',
       headers: { 'x-user-id': branchInput },
-      payload: { isSpecialCase: true },
+      payload: { isSpecialCase: true, expectedVersion: version },
     });
     expect(flag.statusCode, flag.body).toBe(200);
     expect(flag.json().isSpecialCase).toBe(true);
@@ -221,5 +222,24 @@ describe('automatic approval routing + special-case flag', () => {
     });
     expect(expiredDelegation.statusCode).toBe(422);
     expect(expiredDelegation.json()).toMatchObject({ code: 'APPROVAL_ASSIGNMENT_EXPIRY_INVALID' });
+  });
+
+  it('refuses to reassign a waiting stage to the person who already holds it', async () => {
+    const current = await app.inject({ method: 'GET', url: '/api/v1/findings/find-002', headers: adminHeaders });
+    expect(current.statusCode, current.body).toBe(200);
+    const holder = current.json().approvalRoute.branchLeaderUserId as string;
+    expect(holder).toBeTruthy();
+
+    const sameHolder = await app.inject({
+      method: 'POST', url: '/api/v1/findings/find-002/approval-route/reassign', headers: adminHeaders,
+      payload: {
+        expectedVersion: current.json().version,
+        stage: 'BRANCH_LEADER',
+        assigneeUserId: holder,
+        reason: 'Giao lại cho đúng người đang giữ bước thì không có ý nghĩa.',
+      },
+    });
+    expect(sameHolder.statusCode, sameHolder.body).toBe(422);
+    expect(sameHolder.json()).toMatchObject({ code: 'APPROVAL_ASSIGNEE_INELIGIBLE' });
   });
 });

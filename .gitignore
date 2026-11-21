@@ -25,3 +25,6 @@ __pycache__/
 
 .vercel
 .env*
+
+# Cau hinh clasp cuc bo (chua scriptId cua du an Apps Script)
+integrations/google-apps-script/.clasp.json

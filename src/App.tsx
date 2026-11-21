@@ -16,6 +16,7 @@ import { CodeChip, EmptyHint, SlaPill, WorkflowPill } from './components/common/
 import { QueueSearchCriteria, QueueSearchPanel, criteriaToQuery, emptySearchCriteria } from './components/portal/QueueSearchPanel';
 import { ScopeSummaryTabs, SummaryScope } from './components/portal/ScopeSummaryTabs';
 import { clearStagedImportSession } from './services/staged-import-retry';
+import { clearGridDrafts } from './services/grid-drafts';
 
 const AdminPortal = lazy(() => import('./components/admin/AdminPortal').then(module => ({ default: module.AdminPortal })));
 const FastDataIngestion = lazy(() => import('./components/internal/FastDataIngestion').then(module => ({ default: module.FastDataIngestion })));
@@ -323,7 +324,10 @@ export const App: React.FC = () => {
     try {
       setBootstrapping(true);
       await api.logout();
-      if (currentUser) clearStagedImportSession(sessionStorage, currentUser.id);
+      if (currentUser) {
+        clearStagedImportSession(sessionStorage, currentUser.id);
+        clearGridDrafts(sessionStorage, currentUser.id);
+      }
       setCurrentUser(null);
       setAdminCatalogLoaded(false);
       setUsers([]);

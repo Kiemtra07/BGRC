@@ -177,7 +177,7 @@ export const FindingDetailPage: React.FC<Props> = ({
     try {
       setBusy(true);
       setError(null);
-      await api.setSpecialCase(finding.id, { isSpecialCase });
+      await api.setSpecialCase(finding.id, { isSpecialCase, expectedVersion: finding.version });
       if (isSpecialCase) await api.watchTarget(targetCommand('CUSTOMER'));
       const customerCase = await api.getCustomerCase(finding.cif, finding.branchCode);
       setItems(customerCase.findings);
@@ -285,7 +285,7 @@ export const FindingDetailPage: React.FC<Props> = ({
 
   const addSubItem = async () => {
     if (newSubItem.trim().length < 5) return;
-    await commit(() => api.createFindingSubItem(finding.id, { content: newSubItem.trim() }));
+    await commit(() => api.createFindingSubItem(finding.id, { content: newSubItem.trim(), expectedVersion: finding.version }));
     setNewSubItem('');
   };
 

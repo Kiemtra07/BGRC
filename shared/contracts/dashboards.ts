@@ -654,8 +654,9 @@ export type ReportDrillRequest = z.infer<typeof ReportDrillRequestSchema>;
 
 export interface ReportDrillRow {
   findingId: string;
-  cif: string;
-  customerName: string;
+  /** Vắng mặt khi trường tương ứng bị ẩn với vai trò của người xem, hoặc bị tắt trong cấu hình trường báo cáo. */
+  cif?: string;
+  customerName?: string;
   branchCode: string;
   branchName: string;
   department?: string;
@@ -665,8 +666,8 @@ export interface ReportDrillRow {
   workflowStatusLabel: string;
   slaStatusLabel: string;
   deadlineDate: string;
-  exposureAmount: number;
-  creditBalance: number;
+  exposureAmount?: number;
+  creditBalance?: number;
 }
 
 export interface ReportDrillResult {

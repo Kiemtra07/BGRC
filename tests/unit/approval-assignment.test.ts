@@ -49,6 +49,20 @@ describe('approval assignment', () => {
     });
   });
 
+  it('does not let one person hold both the controller and the leader step', () => {
+    const submitter = { id: 'user-submit', roles: ['BRANCH_INPUT'], isActive: true, branchCode: '635' } as UserProfile;
+    const dual = { id: 'user-dual', roles: ['BRANCH_CONTROLLER', 'BRANCH_LEADER'], isActive: true, branchCode: '635' } as UserProfile;
+    const leader = { id: 'user-leader', roles: ['BRANCH_LEADER'], isActive: true, branchCode: '635' } as UserProfile;
+    const finding = { branchCode: '635', isSpecialCase: false } as Pick<Finding, 'branchCode' | 'isSpecialCase'>;
+    const assignedAt = '2026-11-21T00:00:00.000Z';
+
+    const withSecondLeader = resolveApprovalRoute(finding, 'THREE_TIER', submitter, [submitter, dual, leader], assignedAt);
+    expect(withSecondLeader).toMatchObject({ branchControllerUserId: dual.id, branchLeaderUserId: leader.id });
+
+    // Không còn người nào khác cho bước Lãnh đạo thì dừng tuyến, không dồn hai bước cho một người.
+    expect(resolveApprovalRoute(finding, 'THREE_TIER', submitter, [submitter, dual], assignedAt)).toBeUndefined();
+  });
+
   describe('choosing the recipient of the next step', () => {
     const user = (id: string, role: UserProfile['roles'][number]) =>
       ({ id, roles: [role], isActive: true, branchCode: '635', scopes: [{ scopeType: 'ALL' }] }) as UserProfile;

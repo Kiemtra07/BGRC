@@ -230,6 +230,8 @@ export type SetWorkspacePriorityDTO = z.infer<typeof SetWorkspacePrioritySchema>
 
 export const CreateFindingSubItemSchema = z.object({
   content: z.string().trim().min(5).max(1000),
+  /** Phiên bản hồ sơ người dùng đang xem; gửi lặp sau khi đã thêm thì lệch phiên bản và bị từ chối thay vì nhân đôi ý. */
+  expectedVersion: z.number().int().min(1),
 });
 
 export const ReviewFindingSubItemsSchema = z.object({

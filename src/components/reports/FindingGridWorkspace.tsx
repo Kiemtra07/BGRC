@@ -3,6 +3,7 @@ import { AlertTriangle, CheckCircle2, ChevronRight, Loader2, Paperclip, Send, Un
 import { Finding, RiskLevel, UserProfile, riskLevelLabels } from '../../../shared/contracts';
 import { api } from '../../services/api';
 import { workflowStatusLabels } from '../../content/ui-copy';
+import { discardLegacyGridDrafts, loadGridDrafts, saveGridDrafts } from '../../services/grid-drafts';
 
 interface Props {
   findings: Finding[];
@@ -24,16 +25,6 @@ const riskTone: Record<RiskLevel, string> = {
   THAP: 'bg-slate-100 text-slate-600 ring-slate-200',
 };
 
-const DRAFT_STORAGE_KEY = 'auditbgs.grid-drafts.v1';
-
-/** Notes typed but not yet submitted. Kept locally so a refresh does not discard typed work. */
-const loadDrafts = (): Record<string, string> => {
-  try {
-    const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
-    return raw ? JSON.parse(raw) as Record<string, string> : {};
-  } catch { return {}; }
-};
-
 /**
  * Tabular capture screen for report types configured as "Dạng bảng Excel". A branch officer types
  * the giải trình straight into the row and pushes selected rows through the approval chain without
@@ -41,15 +32,19 @@ const loadDrafts = (): Record<string, string> => {
  */
 export const FindingGridWorkspace: React.FC<Props> = ({ findings, currentUser, onOpenCase, onChanged }) => {
   const [selected, setSelected] = useState<Set<string>>(new Set());
-  const [drafts, setDrafts] = useState<Record<string, string>>(loadDrafts);
+  // Notes typed but not yet submitted. Kept in this tab and per account so a refresh does not discard typed work.
+  const [drafts, setDrafts] = useState<Record<string, string>>(() => {
+    discardLegacyGridDrafts(window.localStorage);
+    return loadGridDrafts(window.sessionStorage, currentUser.id);
+  });
   const [running, setRunning] = useState<BulkAction | null>(null);
   const [outcome, setOutcome] = useState<BulkOutcome | null>(null);
   const [reason, setReason] = useState('');
   const [decisionNumber, setDecisionNumber] = useState('');
 
   useEffect(() => {
-    try { window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(drafts)); } catch { /* quota or private mode */ }
-  }, [drafts]);
+    saveGridDrafts(window.sessionStorage, currentUser.id, drafts);
+  }, [drafts, currentUser.id]);
 
   const isBranchInput = currentUser.roles.includes('BRANCH_INPUT');
   const isBranchController = currentUser.roles.includes('BRANCH_CONTROLLER');

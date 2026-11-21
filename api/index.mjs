@@ -619,7 +619,8 @@ var init_workflow = __esm({
       reason: z7.string().min(5, "L\xFD do tr\u1EA3 v\u1EC1 b\u1EAFt bu\u1ED9c t\u1ED1i thi\u1EC3u 5 k\xFD t\u1EF1")
     });
     SetFindingSpecialCaseSchema = z7.object({
-      isSpecialCase: z7.boolean()
+      isSpecialCase: z7.boolean(),
+      expectedVersion: z7.number().int().min(1)
     });
     ReassignApprovalRouteSchema = z7.object({
       expectedVersion: z7.number().int().min(1),
@@ -783,7 +784,9 @@ var init_findings = __esm({
       isPriority: z11.boolean()
     });
     CreateFindingSubItemSchema = z11.object({
-      content: z11.string().trim().min(5).max(1e3)
+      content: z11.string().trim().min(5).max(1e3),
+      /** Phiên bản hồ sơ người dùng đang xem; gửi lặp sau khi đã thêm thì lệch phiên bản và bị từ chối thay vì nhân đôi ý. */
+      expectedVersion: z11.number().int().min(1)
     });
     ReviewFindingSubItemsSchema = z11.object({
       decisions: z11.array(z11.object({
@@ -1991,18 +1994,26 @@ function resolveApprovalRoute(finding, workflowType, actor, users, assignedAt, o
   const candidates = approvalCandidatesForFinding(finding, users);
   const requiresBranchLeaderApproval = workflowType === "THREE_TIER" || Boolean(finding.isSpecialCase);
   const stillEligible = (pool2, userId) => userId && userId !== actor.id && pool2.some((candidate) => candidate.id === userId) ? userId : void 0;
-  const branchControllerUserId = options.controllerUserId ?? stillEligible(candidates.branchControllers, options.previous?.branchControllerUserId) ?? selectIndependentApprover(actor.id, candidates.branchControllers);
-  const branchLeaderUserId = requiresBranchLeaderApproval ? stillEligible(candidates.branchLeaders, options.previous?.branchLeaderUserId) ?? selectIndependentApprover(actor.id, candidates.branchLeaders) : void 0;
-  if (!branchControllerUserId || requiresBranchLeaderApproval && !branchLeaderUserId) return void 0;
-  return {
-    branchControllerUserId,
-    branchLeaderUserId,
-    internalApproverUserId: stillEligible(candidates.internalApprovers, options.previous?.internalApproverUserId),
-    requiresBranchLeaderApproval,
-    assignedByUserId: actor.id,
-    assignedAt,
-    assignmentHistory: options.previous?.assignmentHistory
-  };
+  const controllerChoices = options.controllerUserId ? [options.controllerUserId] : [...new Set([
+    stillEligible(candidates.branchControllers, options.previous?.branchControllerUserId),
+    ...candidates.branchControllers.filter((candidate) => candidate.id !== actor.id).map((candidate) => candidate.id)
+  ].filter((id) => Boolean(id)))];
+  for (const branchControllerUserId of controllerChoices) {
+    const leaderPool = candidates.branchLeaders.filter((candidate) => candidate.id !== branchControllerUserId);
+    const branchLeaderUserId = requiresBranchLeaderApproval ? stillEligible(leaderPool, options.previous?.branchLeaderUserId) ?? selectIndependentApprover(actor.id, leaderPool) : void 0;
+    if (requiresBranchLeaderApproval && !branchLeaderUserId) continue;
+    const internalPool = candidates.internalApprovers.filter((candidate) => candidate.id !== branchControllerUserId && candidate.id !== branchLeaderUserId);
+    return {
+      branchControllerUserId,
+      branchLeaderUserId,
+      internalApproverUserId: stillEligible(internalPool, options.previous?.internalApproverUserId),
+      requiresBranchLeaderApproval,
+      assignedByUserId: actor.id,
+      assignedAt,
+      assignmentHistory: options.previous?.assignmentHistory
+    };
+  }
+  return void 0;
 }
 function reassignApprovalStage(route, stage, assignedUserId, record) {
   const field = fieldByStage[stage];
@@ -6817,6 +6828,20 @@ async function clearLoginFailures(usernameKey) {
   loginAttempts = loginAttempts.filter((item) => item.key !== usernameKey);
   return loginAttempts.length !== before;
 }
+async function assertAttemptsAllowed(req, key, subject, detail) {
+  try {
+    await assertLoginNotLocked(key, Date.now());
+  } catch (error) {
+    recordSecurityEvent({ type: "AUTH_LOGIN_THROTTLED", outcome: "FAILURE", subject, detail, ipAddress: req.ip });
+    await persistLocalState();
+    throw error;
+  }
+}
+async function recordAttemptFailure(req, key, subject, type, detail) {
+  const { locked } = await recordLoginFailure(key, Date.now());
+  recordSecurityEvent({ type, outcome: "FAILURE", subject, detail: locked ? `${detail} \u0110\xE3 kh\xF3a t\u1EA1m th\u1EDDi.` : detail, ipAddress: req.ip });
+  await persistLocalState();
+}
 function filterFindingsByScope(items, user) {
   return items.filter((finding) => hasFindingAccess(user, finding));
 }
@@ -7271,7 +7296,11 @@ function executeReportRun(items, query) {
     pivot
   };
 }
-function executeReportDrill(items, request) {
+function reportFieldKeysOfferedTo(roles, purpose) {
+  return new Set(normalizedReportCatalogConfiguration().fields.filter((field) => field.isActive && !isHiddenForRoles(field, roles) && (purpose === "view" || field.exportable)).map((field) => field.key));
+}
+function executeReportDrill(items, request, roles) {
+  const offered = reportFieldKeysOfferedTo(roles, "view");
   const { query, rowKey, columnKey } = request;
   const matched = applyCanonicalReportRules(items, query.rules, query.match);
   const inCell = matched.filter((finding) => {
@@ -7289,19 +7318,19 @@ function executeReportDrill(items, request) {
     columnLabel: sample && columnKey !== void 0 && query.pivotBy ? reportValueLabel(query.pivotBy, reportFieldAccessors[query.pivotBy](sample), sample) : void 0,
     rows: [...inCell].sort((left, right) => right.exposureAmount - left.exposureAmount || left.cif.localeCompare(right.cif, "vi-VN")).slice(start, start + request.pageSize).map((finding) => ({
       findingId: finding.id,
-      cif: finding.cif,
-      customerName: finding.customerName,
+      ...offered.has("dimension.cif") ? { cif: finding.cif } : {},
+      ...offered.has("dimension.customer") ? { customerName: finding.customerName } : {},
       branchCode: finding.branchCode,
       branchName: finding.branchName,
       department: finding.department,
-      officerName: finding.officerName,
+      ...offered.has("dimension.officer") ? { officerName: finding.officerName } : {},
       errorCode: finding.errorCode,
       errorTitle: finding.errorTitle,
       workflowStatusLabel: workflowStatusLabels[finding.workflowStatus],
       slaStatusLabel: slaStatusLabels[finding.slaStatus],
       deadlineDate: finding.deadlineDate,
-      exposureAmount: finding.exposureAmount,
-      creditBalance: finding.creditBalance
+      ...offered.has("measure.exposure") ? { exposureAmount: finding.exposureAmount } : {},
+      ...offered.has("measure.credit_balance") ? { creditBalance: finding.creditBalance } : {}
     }))
   };
 }
@@ -8449,7 +8478,7 @@ async function startServer() {
     process.exit(1);
   }
 }
-var app, allowedOrigins, API_CONTENT_SECURITY_POLICY, requestStartedAt, requestMeasurements, REQUEST_MEASUREMENT_LIMIT, lastSuccessfulSlaRunAt, internalSlaPath, internalOutboxPath, isEvidenceScanCallbackPath, publicPaths, requestUsers, idempotencyRequests, authSessionStore, supabaseAuthAdapter, unsafeHttpMethods, CSRF_COOKIE, CSRF_HEADER, CSRF_TOKEN_TTL_SECONDS, STEP_UP_TTL_MS, OIDC_STATE_COOKIE, OIDC_STATE_TTL_SECONDS, orgUnits, appUsers, localCredentialDirectory, seedUserDirectory, auditCampaigns, defaultSlaConfig, wholeNumberAtLeast, reportChannels, findings, workflowEvents, pendingWorkflowEvents, evidences, importBatches, stagingRows, pendingEvidenceUploads, slaExtensions, reportDefinitions, dashboardDefinitions, REPORT_EXPORT_MAX_ROWS, DEFAULT_REPORT_EXPORT_FIELDS, DEFAULT_REPORT_FILTER_FIELDS, DEFAULT_REPORT_METRICS, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows, workspaceAccepted, workspaceWatchTargets, reportChannelVersions, authSessions, authenticatorCredentials, googleDriveOAuthCredential, securityEvents, pendingSecurityEvents, SECURITY_EVENT_RETENTION, loginAttempts, usedTotpCounters, recoveryCodeSets, DEMO_SEED_ENABLED, DEMO_SEED_IDS, credentialDirectory, unknownUserPasswordHash, stateRepository, workflowEventLedger, securityEventLedger, postgresAuthSecurityState, postgresOutbox, findingRecords, findingsReadPath, usesPostgresIdempotency, idempotencyStore, hydratedState, repositoryHydrationBaseline, channelSlaBackfilled, STARTER_FORM_TEMPLATES, durableState, runtimeStateGate, runtimeRequestReleases, LOGIN_FAILURE_LIMIT, LOGIN_FAILURE_WINDOW_MS, LOGIN_LOCKOUT_MS, LOGIN_BURST_LIMIT, LOGIN_BURST_WINDOW_MS, loginBurstWindowStartedAt, loginBurstCount, TOTP_REPLAY_RETENTION_STEPS, reportFieldAccessors, workflowStatusLabels, slaStatusLabels, REDACTED_DIAGNOSTIC, catalogManagerRoles, HANDOVER_INELIGIBLE_MESSAGE, handoverStageLabels, PORT;
+var app, allowedOrigins, API_CONTENT_SECURITY_POLICY, requestStartedAt, requestMeasurements, REQUEST_MEASUREMENT_LIMIT, lastSuccessfulSlaRunAt, internalSlaPath, internalOutboxPath, isEvidenceScanCallbackPath, publicPaths, requestUsers, idempotencyRequests, authSessionStore, supabaseAuthAdapter, unsafeHttpMethods, CSRF_COOKIE, CSRF_HEADER, CSRF_TOKEN_TTL_SECONDS, STEP_UP_TTL_MS, OIDC_STATE_COOKIE, OIDC_STATE_TTL_SECONDS, orgUnits, appUsers, localCredentialDirectory, seedUserDirectory, auditCampaigns, defaultSlaConfig, wholeNumberAtLeast, reportChannels, findings, workflowEvents, pendingWorkflowEvents, evidences, importBatches, stagingRows, pendingEvidenceUploads, slaExtensions, reportDefinitions, dashboardDefinitions, REPORT_EXPORT_MAX_ROWS, DEFAULT_REPORT_EXPORT_FIELDS, DEFAULT_REPORT_FILTER_FIELDS, DEFAULT_REPORT_METRICS, reportCatalogConfiguration, securitySettings, idempotencyRecords, findingFollows, workspaceAccepted, workspaceWatchTargets, reportChannelVersions, authSessions, authenticatorCredentials, googleDriveOAuthCredential, securityEvents, pendingSecurityEvents, SECURITY_EVENT_RETENTION, loginAttempts, usedTotpCounters, recoveryCodeSets, DEMO_SEED_ENABLED, DEMO_SEED_IDS, credentialDirectory, unknownUserPasswordHash, stateRepository, workflowEventLedger, securityEventLedger, postgresAuthSecurityState, postgresOutbox, findingRecords, findingsReadPath, usesPostgresIdempotency, idempotencyStore, hydratedState, repositoryHydrationBaseline, channelSlaBackfilled, STARTER_FORM_TEMPLATES, durableState, runtimeStateGate, runtimeRequestReleases, LOGIN_FAILURE_LIMIT, LOGIN_FAILURE_WINDOW_MS, LOGIN_LOCKOUT_MS, LOGIN_BURST_LIMIT, LOGIN_BURST_WINDOW_MS, loginBurstWindowStartedAt, loginBurstCount, mfaAttemptKey, reauthAttemptKey, TOTP_REPLAY_RETENTION_STEPS, reportFieldAccessors, workflowStatusLabels, slaStatusLabels, REDACTED_DIAGNOSTIC, catalogManagerRoles, HANDOVER_INELIGIBLE_MESSAGE, handoverStageLabels, PORT;
 var init_app = __esm({
   async "server/src/app.ts"() {
     "use strict";
@@ -9363,6 +9392,8 @@ var init_app = __esm({
     LOGIN_BURST_WINDOW_MS = 6e4;
     loginBurstWindowStartedAt = 0;
     loginBurstCount = 0;
+    mfaAttemptKey = (user) => `mfa:${user.id}`;
+    reauthAttemptKey = (user) => `reauth:${user.id}`;
     TOTP_REPLAY_RETENTION_STEPS = 3;
     reportFieldAccessors = {
       "dimension.channel": (finding) => finding.channelCode,
@@ -9571,6 +9602,9 @@ var init_app = __esm({
           await persistLocalState();
           throw new HttpProblem(401, "INVALID_CREDENTIALS", "\u0110\u0103ng nh\u1EADp kh\xF4ng th\xE0nh c\xF4ng", "T\xE0i kho\u1EA3n ho\u1EB7c m\u1EADt kh\u1EA9u kh\xF4ng \u0111\xFAng.");
         }
+        if (mfaRequiredFor(user2)) {
+          await assertAttemptsAllowed(req, mfaAttemptKey(user2), email, "T\u1EEB ch\u1ED1i \u0111\u0103ng nh\u1EADp Supabase v\xEC m\xE3 Authenticator sai qu\xE1 nhi\u1EC1u l\u1EA7n.");
+        }
         let session;
         try {
           session = await supabaseAuthAdapter.signInWithPassword(email, credentials2.password);
@@ -9600,9 +9634,15 @@ var init_app = __esm({
               valid = false;
             }
           }
-          await supabaseAuthAdapter.signOut(session.accessToken).catch(() => void 0);
-          if (!valid) throw new HttpProblem(401, "MFA_REQUIRED", "C\u1EA7n m\xE3 Authenticator", "Nh\u1EADp m\xE3 6 ch\u1EEF s\u1ED1 \u0111ang hi\u1EC3n th\u1ECB trong Google Authenticator.");
+          if (!valid) {
+            await supabaseAuthAdapter.signOut(session.accessToken).catch(() => void 0);
+            if (credentials2.mfaCode) {
+              await recordAttemptFailure(req, mfaAttemptKey(user2), email, "AUTH_MFA_FAILED", "T\u1EEB ch\u1ED1i \u0111\u0103ng nh\u1EADp Supabase v\xEC m\xE3 Authenticator kh\xF4ng \u0111\xFAng.");
+            }
+            throw new HttpProblem(401, "MFA_REQUIRED", "C\u1EA7n m\xE3 Authenticator", "Nh\u1EADp m\xE3 6 ch\u1EEF s\u1ED1 \u0111ang hi\u1EC3n th\u1ECB trong Google Authenticator.");
+          }
           await persistLocalState();
+          await clearLoginFailures(mfaAttemptKey(user2));
         }
         await clearLoginFailures(email);
         recordUserSecurityEvent(req, user2, {
@@ -9634,8 +9674,12 @@ var init_app = __esm({
       }
       const emailOwner = appUsers.find((item) => item.isActive && item.email.toLocaleLowerCase("vi-VN") === normalizedUsername);
       const directoryEntry = credentialDirectory.find((item) => item.username === normalizedUsername || item.userId === emailOwner?.id);
+      const candidate = directoryEntry ? appUsers.find((item) => item.id === directoryEntry.userId && item.isActive) : void 0;
+      if (candidate && mfaRequiredFor(candidate)) {
+        await assertAttemptsAllowed(req, mfaAttemptKey(candidate), normalizedUsername, "T\u1EEB ch\u1ED1i \u0111\u0103ng nh\u1EADp v\xEC m\xE3 Authenticator sai qu\xE1 nhi\u1EC1u l\u1EA7n.");
+      }
       const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? unknownUserPasswordHash);
-      const user = directoryEntry ? appUsers.find((item) => item.id === directoryEntry.userId && item.isActive) : void 0;
+      const user = candidate;
       if (!passwordValid || !user) {
         const { locked } = await recordLoginFailure(normalizedUsername, nowMs);
         recordSecurityEvent({
@@ -9660,14 +9704,18 @@ var init_app = __esm({
           throw new HttpProblem(503, "MFA_CREDENTIAL_INVALID", "Authenticator ch\u01B0a s\u1EB5n s\xE0ng", "Kh\xF4ng th\u1EC3 \u0111\u1ECDc c\u1EA5u h\xECnh Google Authenticator c\u1EE7a t\xE0i kho\u1EA3n.");
         }
         if (!credentials.mfaCode || !await consumeMfaCode(user.id, secret, credentials.mfaCode, nowMs)) {
-          recordSecurityEvent({
-            type: "AUTH_MFA_FAILED",
-            outcome: "FAILURE",
-            subject: normalizedUsername,
-            detail: "T\u1EEB ch\u1ED1i \u0111\u0103ng nh\u1EADp v\xEC m\xE3 Google Authenticator kh\xF4ng \u0111\xFAng ho\u1EB7c \u0111\xE3 h\u1EBFt h\u1EA1n.",
-            ipAddress: req.ip
-          });
-          await persistLocalState();
+          if (credentials.mfaCode) {
+            await recordAttemptFailure(req, mfaAttemptKey(user), normalizedUsername, "AUTH_MFA_FAILED", "T\u1EEB ch\u1ED1i \u0111\u0103ng nh\u1EADp v\xEC m\xE3 Google Authenticator kh\xF4ng \u0111\xFAng ho\u1EB7c \u0111\xE3 h\u1EBFt h\u1EA1n.");
+          } else {
+            recordSecurityEvent({
+              type: "AUTH_MFA_FAILED",
+              outcome: "FAILURE",
+              subject: normalizedUsername,
+              detail: "T\u1EEB ch\u1ED1i \u0111\u0103ng nh\u1EADp v\xEC ch\u01B0a nh\u1EADp m\xE3 Google Authenticator.",
+              ipAddress: req.ip
+            });
+            await persistLocalState();
+          }
           throw new HttpProblem(401, "MFA_REQUIRED", "C\u1EA7n m\xE3 Authenticator", "Nh\u1EADp m\xE3 6 ch\u1EEF s\u1ED1 \u0111ang hi\u1EC3n th\u1ECB trong Google Authenticator.");
         }
         recordSecurityEvent({
@@ -9682,6 +9730,7 @@ var init_app = __esm({
         });
       }
       await clearLoginFailures(normalizedUsername);
+      await clearLoginFailures(mfaAttemptKey(user));
       recordSecurityEvent({
         type: "AUTH_LOGIN_SUCCEEDED",
         outcome: "SUCCESS",
@@ -9733,14 +9782,23 @@ var init_app = __esm({
       const session = authSessionStore.resolve(token ?? "");
       if (!session || session.userId !== user.id) throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Vui l\xF2ng \u0111\u0103ng nh\u1EADp l\u1EA1i \u0111\u1EC3 x\xE1c th\u1EF1c l\u1EA1i.");
       if (process.env.AUTH_MODE === "supabase") throw new HttpProblem(501, "STEP_UP_NOT_SUPPORTED", "Ch\u01B0a h\u1ED7 tr\u1EE3 x\xE1c th\u1EF1c l\u1EA1i", "C\u1EA5u h\xECnh Supabase c\u1EA7n lu\u1ED3ng x\xE1c th\u1EF1c l\u1EA1i ri\xEAng tr\u01B0\u1EDBc khi cho ph\xE9p thay \u0111\u1ED5i b\u1EA3o m\u1EADt.");
+      const attemptKey = reauthAttemptKey(user);
+      await assertAttemptsAllowed(req, attemptKey, user.username, "T\u1EEB ch\u1ED1i x\xE1c th\u1EF1c l\u1EA1i v\xEC nh\u1EADp sai qu\xE1 nhi\u1EC1u l\u1EA7n.");
       const credential = credentialDirectory.find((item) => item.userId === user.id);
       const passwordValid = await verifyPassword(body.password, credential?.passwordHash ?? unknownUserPasswordHash);
-      if (!credential || !passwordValid) throw new HttpProblem(401, "STEP_UP_INVALID", "X\xE1c th\u1EF1c l\u1EA1i kh\xF4ng th\xE0nh c\xF4ng", "M\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i kh\xF4ng \u0111\xFAng.");
+      if (!credential || !passwordValid) {
+        await recordAttemptFailure(req, attemptKey, user.username, "AUTH_LOGIN_FAILED", "X\xE1c th\u1EF1c l\u1EA1i kh\xF4ng th\xE0nh c\xF4ng: m\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i kh\xF4ng \u0111\xFAng.");
+        throw new HttpProblem(401, "STEP_UP_INVALID", "X\xE1c th\u1EF1c l\u1EA1i kh\xF4ng th\xE0nh c\xF4ng", "M\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i kh\xF4ng \u0111\xFAng.");
+      }
       if (mfaRequiredFor(user)) {
         const authenticator = authenticatorCredentials.find((item) => item.userId === user.id && isAuthenticatorConfirmed(item));
         const validMfa = authenticator && body.mfaCode ? await consumeTotpCode(user.id, decryptTotpSecret(authenticator.encryptedSecret, authenticatorEncryptionKey()), body.mfaCode, Date.now()) : false;
-        if (!validMfa) throw new HttpProblem(401, "MFA_REQUIRED", "C\u1EA7n m\xE3 Authenticator", "Nh\u1EADp m\xE3 6 ch\u1EEF s\u1ED1 \u0111ang hi\u1EC3n th\u1ECB trong Google Authenticator \u0111\u1EC3 x\xE1c th\u1EF1c l\u1EA1i.");
+        if (!validMfa) {
+          if (body.mfaCode) await recordAttemptFailure(req, attemptKey, user.username, "AUTH_MFA_FAILED", "X\xE1c th\u1EF1c l\u1EA1i kh\xF4ng th\xE0nh c\xF4ng: m\xE3 Authenticator kh\xF4ng \u0111\xFAng.");
+          throw new HttpProblem(401, "MFA_REQUIRED", "C\u1EA7n m\xE3 Authenticator", "Nh\u1EADp m\xE3 6 ch\u1EEF s\u1ED1 \u0111ang hi\u1EC3n th\u1ECB trong Google Authenticator \u0111\u1EC3 x\xE1c th\u1EF1c l\u1EA1i.");
+        }
       }
+      await clearLoginFailures(attemptKey);
       if (!authSessionStore.markStepUp(token ?? "")) throw new HttpProblem(401, "AUTH_REQUIRED", "Ch\u01B0a x\xE1c th\u1EF1c", "Phi\xEAn \u0111\u0103ng nh\u1EADp \u0111\xE3 h\u1EBFt h\u1EA1n.");
       authSessions = authSessionStore.records();
       recordUserSecurityEvent(req, user, { type: "AUTH_STEP_UP_SUCCEEDED", outcome: "SUCCESS", detail: "X\xE1c th\u1EF1c l\u1EA1i phi\xEAn tr\u01B0\u1EDBc thao t\xE1c nh\u1EA1y c\u1EA3m." });
@@ -9805,10 +9863,14 @@ var init_app = __esm({
         recordUserSecurityEvent(req, user, { type: "AUTH_PASSWORD_CHANGED", outcome: "SUCCESS", detail: "Ng\u01B0\u1EDDi d\xF9ng t\u1EF1 \u0111\u1ED5i m\u1EADt kh\u1EA9u b\u1EB1ng Supabase Auth." });
         return { user };
       }
+      const attemptKey = reauthAttemptKey(user);
+      await assertAttemptsAllowed(req, attemptKey, user.username, "T\u1EEB ch\u1ED1i \u0111\u1ED5i m\u1EADt kh\u1EA9u v\xEC nh\u1EADp sai m\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i qu\xE1 nhi\u1EC1u l\u1EA7n.");
       const credential = credentialDirectory.find((item) => item.userId === user.id);
       if (!credential || !body.currentPassword || !await verifyPassword(body.currentPassword, credential.passwordHash)) {
+        await recordAttemptFailure(req, attemptKey, user.username, "AUTH_LOGIN_FAILED", "\u0110\u1ED5i m\u1EADt kh\u1EA9u kh\xF4ng th\xE0nh c\xF4ng: m\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i kh\xF4ng \u0111\xFAng.");
         throw new HttpProblem(422, "CURRENT_PASSWORD_INVALID", "M\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i kh\xF4ng \u0111\xFAng", "Nh\u1EADp \u0111\xFAng m\u1EADt kh\u1EA9u hi\u1EC7n t\u1EA1i \u0111\u1EC3 ti\u1EBFp t\u1EE5c.");
       }
+      await clearLoginFailures(attemptKey);
       credential.passwordHash = await hashPassword(body.password);
       const revokedSessions = authSessionStore.revokeAllForUser(user.id);
       authSessions = authSessionStore.records();
@@ -10772,6 +10834,9 @@ var init_app = __esm({
         throw new HttpProblem(409, "FINDING_ALREADY_RESOLVED", "H\u1ED3 s\u01A1 \u0111\xE3 \u0111\xF3ng", "Kh\xF4ng th\u1EC3 b\u1ED5 sung \xFD sai s\xF3t v\xE0o h\u1ED3 s\u01A1 \u0111\xE3 \u0111\xF3ng.");
       }
       const dto = CreateFindingSubItemSchema.parse(req.body);
+      if (dto.expectedVersion !== finding.version) {
+        throw new HttpProblem(409, "VERSION_CONFLICT", "Xung \u0111\u1ED9t phi\xEAn b\u1EA3n", `H\u1ED3 s\u01A1 \u0111\xE3 \u0111\u01B0\u1EE3c c\u1EADp nh\u1EADt (version hi\u1EC7n t\u1EA1i: ${finding.version}, expected: ${dto.expectedVersion}). H\xE3y t\u1EA3i l\u1EA1i r\u1ED3i th\xEAm \xFD sai s\xF3t.`);
+      }
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const subItems = finding.subItems ?? [];
       subItems.push({
@@ -11162,11 +11227,14 @@ var init_app = __esm({
       const user = getCurrentUser(req);
       const finding = getScopedFindingOrThrow(req.params.id, user);
       requireRoles(user, ["ADMIN", "SUPERVISOR", "INTERNAL_OFFICER", "INTERNAL_APPROVER", "BRANCH_INPUT"]);
-      const customerFindings = filterFindingsByScope(findings, user).filter((item) => item.branchCode === finding.branchCode && item.cif === finding.cif);
+      const dto = SetFindingSpecialCaseSchema.parse(req.body);
+      if (dto.expectedVersion !== finding.version) {
+        throw new HttpProblem(409, "VERSION_CONFLICT", "Xung \u0111\u1ED9t phi\xEAn b\u1EA3n", `H\u1ED3 s\u01A1 \u0111\xE3 \u0111\u01B0\u1EE3c c\u1EADp nh\u1EADt (version hi\u1EC7n t\u1EA1i: ${finding.version}, expected: ${dto.expectedVersion}). H\xE3y t\u1EA3i l\u1EA1i r\u1ED3i \u0111\xE1nh d\u1EA5u.`);
+      }
+      const customerFindings = findings.filter((item) => item.branchCode === finding.branchCode && item.cif === finding.cif);
       if (customerFindings.some((item) => item.workflowStatus !== "PENDING" && item.workflowStatus !== "REJECTED")) {
         throw new HttpProblem(409, "SPECIAL_CASE_LOCKED_AFTER_SUBMISSION", "D\u1EA5u sao \u0111\xE3 kh\xF3a", "Ch\u1EC9 \u0111\xE1nh d\u1EA5u tr\u01B0\u1EDDng h\u1EE3p \u0111\u1EB7c bi\u1EC7t khi h\u1ED3 s\u01A1 \u0111ang ch\u1EDD kh\u1EAFc ph\u1EE5c ho\u1EB7c \u0111\xE3 b\u1ECB tr\u1EA3 v\u1EC1.");
       }
-      const dto = SetFindingSpecialCaseSchema.parse(req.body);
       const now = (/* @__PURE__ */ new Date()).toISOString();
       for (const customerFinding of customerFindings) {
         customerFinding.isSpecialCase = dto.isSpecialCase;
@@ -11231,18 +11299,17 @@ var init_app = __esm({
       if (dto.stage === "BRANCH_LEADER" && !route.requiresBranchLeaderApproval) {
         throw new HttpProblem(409, "APPROVAL_REASSIGNMENT_STAGE_INVALID", "B\u01B0\u1EDBc giao l\u1EA1i kh\xF4ng h\u1EE3p l\u1EC7", "H\u1ED3 s\u01A1 n\xE0y kh\xF4ng c\xF3 b\u01B0\u1EDBc L\xE3nh \u0111\u1EA1o chi nh\xE1nh.");
       }
-      const candidates = approvalCandidatesForFinding(finding, appUsers);
-      const eligible = dto.stage === "BRANCH_CONTROLLER" ? candidates.branchControllers : dto.stage === "BRANCH_LEADER" ? candidates.branchLeaders : candidates.internalApprovers;
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      if (dto.validUntil && Date.parse(dto.validUntil) <= Date.parse(now)) {
+        throw new HttpProblem(422, "APPROVAL_ASSIGNMENT_EXPIRY_INVALID", "Th\u1EDDi h\u1EA1n giao vi\u1EC7c kh\xF4ng h\u1EE3p l\u1EC7", "Th\u1EDDi h\u1EA1n giao vi\u1EC7c ph\u1EA3i n\u1EB1m sau th\u1EDDi \u0111i\u1EC3m giao l\u1EA1i tuy\u1EBFn duy\u1EC7t.");
+      }
+      const eligible = eligibleRecipientsForStage(finding, dto.stage, pinnedApproverForStage(route, dto.stage) ?? "", route, appUsers);
       const assignee = eligible.find((candidate) => candidate.id === dto.assigneeUserId);
       if (!assignee) {
         throw new HttpProblem(422, "APPROVAL_ASSIGNEE_INELIGIBLE", "Ng\u01B0\u1EDDi nh\u1EADn kh\xF4ng ph\xF9 h\u1EE3p", "Ng\u01B0\u1EDDi nh\u1EADn ph\u1EA3i \u0111ang ho\u1EA1t \u0111\u1ED9ng, \u0111\xFAng vai tr\xF2 v\xE0 \u0111\xFAng ph\u1EA1m vi c\u1EE7a b\u01B0\u1EDBc ph\xEA duy\u1EC7t.");
       }
       if (assignee.id === route.assignedByUserId) {
         throw new HttpProblem(409, "APPROVAL_SELF_ASSIGNMENT_FORBIDDEN", "Kh\xF4ng th\u1EC3 t\u1EF1 duy\u1EC7t", "Kh\xF4ng th\u1EC3 giao b\u01B0\u1EDBc duy\u1EC7t cho ch\xEDnh ng\u01B0\u1EDDi \u0111\xE3 n\u1ED9p h\u1ED3 s\u01A1.");
-      }
-      const now = (/* @__PURE__ */ new Date()).toISOString();
-      if (dto.validUntil && Date.parse(dto.validUntil) <= Date.parse(now)) {
-        throw new HttpProblem(422, "APPROVAL_ASSIGNMENT_EXPIRY_INVALID", "Th\u1EDDi h\u1EA1n giao vi\u1EC7c kh\xF4ng h\u1EE3p l\u1EC7", "Th\u1EDDi h\u1EA1n giao vi\u1EC7c ph\u1EA3i n\u1EB1m sau th\u1EDDi \u0111i\u1EC3m giao l\u1EA1i tuy\u1EBFn duy\u1EC7t.");
       }
       finding.approvalRoute = reassignApprovalStage(route, dto.stage, assignee.id, {
         actorUserId: actor.id,
@@ -11846,7 +11913,7 @@ var init_app = __esm({
       const drillingUser = getCurrentUser(req);
       assertReportConfigurationAvailable(request.query, void 0, drillingUser.roles);
       const scoped = await readScopedFindingsForAnalytics(drillingUser);
-      return executeReportDrill(scoped, request);
+      return executeReportDrill(scoped, request, drillingUser.roles);
     });
     app.post("/api/v1/reports/exports", async (req, reply) => {
       const exportingUser = getCurrentUser(req);
@@ -12009,8 +12076,25 @@ var init_app = __esm({
         detail: `Xu\u1EA5t CSV danh s\xE1ch h\u1ED3 s\u01A1 g\u1ED3m ${scoped.length} d\xF2ng trong ph\u1EA1m vi d\u1EEF li\u1EC7u \u0111\u01B0\u1EE3c c\u1EA5p.`
       });
       await flushSecurityEvents();
-      const header = "CIF,T\xEAn kh\xE1ch h\xE0ng,C\u1EE5m,Chi nh\xE1nh,Ph\xF2ng,M\xE3 chi nh\xE1nh,C\xE1n b\u1ED9,M\xE3 l\u1ED7i,Ti\xEAu \u0111\u1EC1 l\u1ED7i,Chi ti\u1EBFt l\u1ED7i,Tr\u1EA1ng th\xE1i,D\u01B0 n\u1EE3,Gi\xE1 tr\u1ECB \u1EA3nh h\u01B0\u1EDFng";
-      const rows = scoped.map((item) => [item.cif, item.customerName, item.clusterName, item.branchName, item.department, item.branchCode, item.officerName, item.errorCode, item.errorTitle, item.description, item.workflowStatus, item.creditBalance, item.exposureAmount]);
+      const exportable = reportFieldKeysOfferedTo(exportingUser.roles, "export");
+      const allLegacyColumns = [
+        { label: "CIF", field: "dimension.cif", value: (item) => item.cif },
+        { label: "T\xEAn kh\xE1ch h\xE0ng", field: "dimension.customer", value: (item) => item.customerName },
+        { label: "C\u1EE5m", field: "dimension.cluster", value: (item) => item.clusterName },
+        { label: "Chi nh\xE1nh", field: "dimension.branch", value: (item) => item.branchName },
+        { label: "Ph\xF2ng", field: "dimension.department", value: (item) => item.department },
+        { label: "M\xE3 chi nh\xE1nh", field: "dimension.branch", value: (item) => item.branchCode },
+        { label: "C\xE1n b\u1ED9", field: "dimension.officer", value: (item) => item.officerName },
+        { label: "M\xE3 l\u1ED7i", field: "dimension.error_code", value: (item) => item.errorCode },
+        { label: "Ti\xEAu \u0111\u1EC1 l\u1ED7i", field: "dimension.error_code", value: (item) => item.errorTitle },
+        { label: "Chi ti\u1EBFt l\u1ED7i", field: "dimension.error_code", value: (item) => item.description },
+        { label: "Tr\u1EA1ng th\xE1i", field: "dimension.workflow_status", value: (item) => item.workflowStatus },
+        { label: "D\u01B0 n\u1EE3", field: "measure.credit_balance", value: (item) => item.creditBalance },
+        { label: "Gi\xE1 tr\u1ECB \u1EA3nh h\u01B0\u1EDFng", field: "measure.exposure", value: (item) => item.exposureAmount }
+      ];
+      const legacyColumns = allLegacyColumns.filter((column) => exportable.has(column.field));
+      const header = legacyColumns.map((column) => column.label).join(",");
+      const rows = scoped.map((item) => legacyColumns.map((column) => column.value(item)));
       const csv = `\uFEFF${header}\r
 ${rows.map((row) => row.map(csvCell).join(",")).join("\r\n")}`;
       return reply.header("content-type", "text/csv; charset=utf-8").header("content-disposition", `attachment; filename="audit-bgs-findings-${(/* @__PURE__ */ new Date()).toISOString().slice(0, 10)}.csv"`).send(csv);

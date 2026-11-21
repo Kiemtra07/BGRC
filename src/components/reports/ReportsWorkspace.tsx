@@ -678,12 +678,12 @@ const DrillPanel: React.FC<{ groupLabel: string; loading: boolean; result: Repor
             <th className="px-3 py-2">Trạng thái</th><th className="px-3 py-2">Hạn xử lý</th><th className="px-3 py-2 text-right">Giá trị ảnh hưởng</th>
           </tr></thead>
           <tbody className="divide-y divide-slate-100">{result.rows.map(row => <tr key={row.findingId}>
-            <td className="px-3 py-2"><span className="block font-semibold text-slate-800">{row.customerName}</span><span className="block text-[0.75rem] text-slate-500">CIF {row.cif}{row.officerName ? ` · ${row.officerName}` : ''}</span></td>
+            <td className="px-3 py-2"><span className="block font-semibold text-slate-800">{row.customerName ?? '-'}</span><span className="block text-[0.75rem] text-slate-500">{[row.cif ? `CIF ${row.cif}` : '', row.officerName ?? ''].filter(Boolean).join(' · ')}</span></td>
             <td className="px-3 py-2 text-slate-700">{row.branchCode} · {row.branchName}{row.department ? <span className="block text-[0.75rem] text-slate-500">{row.department}</span> : null}</td>
             <td className="px-3 py-2"><span className="block font-semibold text-slate-800">{row.errorCode}</span><span className="block max-w-[16rem] truncate text-[0.75rem] text-slate-500">{row.errorTitle}</span></td>
             <td className="px-3 py-2 text-slate-700">{row.workflowStatusLabel}<span className="block text-[0.75rem] text-slate-500">{row.slaStatusLabel}</span></td>
             <td className="px-3 py-2 text-slate-700">{row.deadlineDate}</td>
-            <td className="px-3 py-2 text-right font-bold text-brand-600">{row.exposureAmount.toLocaleString('vi-VN')} triệu</td>
+            <td className="px-3 py-2 text-right font-bold text-brand-600">{row.exposureAmount === undefined ? '-' : `${row.exposureAmount.toLocaleString('vi-VN')} triệu`}</td>
           </tr>)}</tbody>
         </table>}
       </div>

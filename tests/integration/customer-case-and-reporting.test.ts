@@ -134,7 +134,7 @@ describe('customer case, branch control, import and reporting', () => {
       method: 'POST',
       url: '/api/v1/findings/find-003/sub-items',
       headers: { 'x-user-id': 'user-internal-officer' },
-      payload: { content: 'Chưa đối chiếu đầy đủ số liệu tồn kho với báo cáo tài chính.' },
+      payload: { content: 'Chưa đối chiếu đầy đủ số liệu tồn kho với báo cáo tài chính.', expectedVersion: detail.json().version },
     });
     expect(created.statusCode).toBe(201);
 

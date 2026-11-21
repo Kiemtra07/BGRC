@@ -125,7 +125,6 @@ import {
 } from '../../shared/contracts';
 import { workflowService } from './modules/workflow/workflow-service';
 import {
-  approvalCandidatesForFinding,
   approvalStageForStatus,
   approvalStagesHeldBy,
   eligibleRecipientsForStage,
@@ -2532,6 +2531,36 @@ async function clearLoginFailures(usernameKey: string): Promise<boolean> {
   return loginAttempts.length !== before;
 }
 
+/**
+ * Bộ đếm riêng cho các bước chỉ chạy sau khi đã qua mật khẩu: mã Authenticator khi đăng nhập, xác
+ * thực lại trước thao tác nhạy cảm và đổi mật khẩu. Khóa theo mã tài khoản thay vì chuỗi người dùng
+ * gõ, nên đổi qua lại giữa tên đăng nhập và email không nhân thêm số lần thử.
+ */
+const mfaAttemptKey = (user: Pick<UserProfile, 'id'>): string => `mfa:${user.id}`;
+const reauthAttemptKey = (user: Pick<UserProfile, 'id'>): string => `reauth:${user.id}`;
+
+async function assertAttemptsAllowed(req: FastifyRequest, key: string, subject: string, detail: string): Promise<void> {
+  try {
+    await assertLoginNotLocked(key, Date.now());
+  } catch (error) {
+    recordSecurityEvent({ type: 'AUTH_LOGIN_THROTTLED', outcome: 'FAILURE', subject, detail, ipAddress: req.ip });
+    await persistLocalState();
+    throw error;
+  }
+}
+
+async function recordAttemptFailure(
+  req: FastifyRequest,
+  key: string,
+  subject: string,
+  type: 'AUTH_LOGIN_FAILED' | 'AUTH_MFA_FAILED',
+  detail: string,
+): Promise<void> {
+  const { locked } = await recordLoginFailure(key, Date.now());
+  recordSecurityEvent({ type, outcome: 'FAILURE', subject, detail: locked ? `${detail} Đã khóa tạm thời.` : detail, ipAddress: req.ip });
+  await persistLocalState();
+}
+
 function filterFindingsByScope(items: Finding[], user: UserProfile): Finding[] {
   return items.filter(finding => hasFindingAccess(user, finding));
 }
@@ -3077,7 +3106,19 @@ function executeReportRun(items: Finding[], query: ReportRunRequest): ReportRunR
  * pivot fields rather than by a client-supplied list of ids, so the rows can only ever come from the
  * caller's own data scope re-applied here.
  */
-function executeReportDrill(items: Finding[], request: ReportDrillRequest): ReportDrillResult {
+/**
+ * Trường báo cáo mà người có các vai trò này được thấy (và, khi cần, được xuất). Mọi đường trả dữ
+ * liệu theo hồ sơ ngoài màn chạy báo cáo, như drill và CSV danh sách, phải qua đây để cấu hình
+ * "ẩn theo vai trò" và "cho phép xuất" của quản trị viên có hiệu lực ở mọi nơi chứ không chỉ ở danh mục.
+ */
+function reportFieldKeysOfferedTo(roles: readonly UserRole[], purpose: 'view' | 'export'): Set<ReportFieldKey> {
+  return new Set(normalizedReportCatalogConfiguration().fields
+    .filter(field => field.isActive && !isHiddenForRoles(field, roles) && (purpose === 'view' || field.exportable))
+    .map(field => field.key));
+}
+
+function executeReportDrill(items: Finding[], request: ReportDrillRequest, roles: readonly UserRole[]): ReportDrillResult {
+  const offered = reportFieldKeysOfferedTo(roles, 'view');
   const { query, rowKey, columnKey } = request;
   const matched = applyCanonicalReportRules(items, query.rules, query.match);
   const inCell = matched.filter(finding => {
@@ -3098,19 +3139,19 @@ function executeReportDrill(items: Finding[], request: ReportDrillRequest): Repo
       .slice(start, start + request.pageSize)
       .map(finding => ({
         findingId: finding.id,
-        cif: finding.cif,
-        customerName: finding.customerName,
+        ...(offered.has('dimension.cif') ? { cif: finding.cif } : {}),
+        ...(offered.has('dimension.customer') ? { customerName: finding.customerName } : {}),
         branchCode: finding.branchCode,
         branchName: finding.branchName,
         department: finding.department,
-        officerName: finding.officerName,
+        ...(offered.has('dimension.officer') ? { officerName: finding.officerName } : {}),
         errorCode: finding.errorCode,
         errorTitle: finding.errorTitle,
         workflowStatusLabel: workflowStatusLabels[finding.workflowStatus],
         slaStatusLabel: slaStatusLabels[finding.slaStatus],
         deadlineDate: finding.deadlineDate,
-        exposureAmount: finding.exposureAmount,
-        creditBalance: finding.creditBalance,
+        ...(offered.has('measure.exposure') ? { exposureAmount: finding.exposureAmount } : {}),
+        ...(offered.has('measure.credit_balance') ? { creditBalance: finding.creditBalance } : {}),
       })),
   };
 }
@@ -3580,6 +3621,9 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
       await persistLocalState();
       throw new HttpProblem(401, 'INVALID_CREDENTIALS', 'Đăng nhập không thành công', 'Tài khoản hoặc mật khẩu không đúng.');
     }
+    if (mfaRequiredFor(user)) {
+      await assertAttemptsAllowed(req, mfaAttemptKey(user), email, 'Từ chối đăng nhập Supabase vì mã Authenticator sai quá nhiều lần.');
+    }
     let session: Awaited<ReturnType<SupabaseAuthAdapter['signInWithPassword']>>;
     try {
       session = await supabaseAuthAdapter.signInWithPassword(email, credentials.password);
@@ -3606,9 +3650,16 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
         try { valid = await consumeMfaCode(user.id, decryptTotpSecret(credential.encryptedSecret, authenticatorEncryptionKey()), credentials.mfaCode, Date.now()); }
         catch { valid = false; }
       }
-      await supabaseAuthAdapter.signOut(session.accessToken).catch(() => undefined);
-      if (!valid) throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator.');
+      // Chỉ thu hồi phiên Supabase khi mã sai; mã đúng thì phiên này chính là phiên sẽ đặt vào cookie.
+      if (!valid) {
+        await supabaseAuthAdapter.signOut(session.accessToken).catch(() => undefined);
+        if (credentials.mfaCode) {
+          await recordAttemptFailure(req, mfaAttemptKey(user), email, 'AUTH_MFA_FAILED', 'Từ chối đăng nhập Supabase vì mã Authenticator không đúng.');
+        }
+        throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator.');
+      }
       await persistLocalState();
+      await clearLoginFailures(mfaAttemptKey(user));
     }
     await clearLoginFailures(email);
     recordUserSecurityEvent(req, user, {
@@ -3645,8 +3696,13 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
   const emailOwner = appUsers.find(item => item.isActive && item.email.toLocaleLowerCase('vi-VN') === normalizedUsername);
   const directoryEntry = credentialDirectory.find(item => item.username === normalizedUsername || item.userId === emailOwner?.id);
   // Always verify a hash, even for an unknown username, so timing does not disclose existence.
+  const candidate = directoryEntry ? appUsers.find(item => item.id === directoryEntry.userId && item.isActive) : undefined;
+  // Kiểm khóa MFA trước khi chạm mật khẩu để 429 không tiết lộ mật khẩu đã đúng hay chưa.
+  if (candidate && mfaRequiredFor(candidate)) {
+    await assertAttemptsAllowed(req, mfaAttemptKey(candidate), normalizedUsername, 'Từ chối đăng nhập vì mã Authenticator sai quá nhiều lần.');
+  }
   const passwordValid = await verifyPassword(credentials.password, directoryEntry?.passwordHash ?? unknownUserPasswordHash);
-  const user = directoryEntry ? appUsers.find(item => item.id === directoryEntry.userId && item.isActive) : undefined;
+  const user = candidate;
   if (!passwordValid || !user) {
     const { locked } = await recordLoginFailure(normalizedUsername, nowMs);
     recordSecurityEvent({
@@ -3674,14 +3730,19 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
       throw new HttpProblem(503, 'MFA_CREDENTIAL_INVALID', 'Authenticator chưa sẵn sàng', 'Không thể đọc cấu hình Google Authenticator của tài khoản.');
     }
     if (!credentials.mfaCode || !await consumeMfaCode(user.id, secret, credentials.mfaCode, nowMs)) {
-      recordSecurityEvent({
-        type: 'AUTH_MFA_FAILED',
-        outcome: 'FAILURE',
-        subject: normalizedUsername,
-        detail: 'Từ chối đăng nhập vì mã Google Authenticator không đúng hoặc đã hết hạn.',
-        ipAddress: req.ip,
-      });
-      await persistLocalState();
+      // Chưa nhập mã là bước hỏi mã bình thường của giao diện, chỉ mã đã nhập mà sai mới tính lần thử.
+      if (credentials.mfaCode) {
+        await recordAttemptFailure(req, mfaAttemptKey(user), normalizedUsername, 'AUTH_MFA_FAILED', 'Từ chối đăng nhập vì mã Google Authenticator không đúng hoặc đã hết hạn.');
+      } else {
+        recordSecurityEvent({
+          type: 'AUTH_MFA_FAILED',
+          outcome: 'FAILURE',
+          subject: normalizedUsername,
+          detail: 'Từ chối đăng nhập vì chưa nhập mã Google Authenticator.',
+          ipAddress: req.ip,
+        });
+        await persistLocalState();
+      }
       throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator.');
     }
     recordSecurityEvent({
@@ -3698,6 +3759,7 @@ app.post('/api/v1/auth/login', async (req: FastifyRequest<{ Body: unknown }>, re
 
   // Đăng nhập đúng xoá bộ đếm sai; createAuthenticatedSession bên dưới ghi state ngay sau đó.
   await clearLoginFailures(normalizedUsername);
+  await clearLoginFailures(mfaAttemptKey(user));
   recordSecurityEvent({
     type: 'AUTH_LOGIN_SUCCEEDED',
     outcome: 'SUCCESS',
@@ -3754,16 +3816,25 @@ app.post('/api/v1/auth/step-up', async (req: FastifyRequest<{ Body: unknown }>, 
   if (!session || session.userId !== user.id) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Vui lòng đăng nhập lại để xác thực lại.');
   if (process.env.AUTH_MODE === 'supabase') throw new HttpProblem(501, 'STEP_UP_NOT_SUPPORTED', 'Chưa hỗ trợ xác thực lại', 'Cấu hình Supabase cần luồng xác thực lại riêng trước khi cho phép thay đổi bảo mật.');
 
+  const attemptKey = reauthAttemptKey(user);
+  await assertAttemptsAllowed(req, attemptKey, user.username, 'Từ chối xác thực lại vì nhập sai quá nhiều lần.');
   const credential = credentialDirectory.find(item => item.userId === user.id);
   const passwordValid = await verifyPassword(body.password, credential?.passwordHash ?? unknownUserPasswordHash);
-  if (!credential || !passwordValid) throw new HttpProblem(401, 'STEP_UP_INVALID', 'Xác thực lại không thành công', 'Mật khẩu hiện tại không đúng.');
+  if (!credential || !passwordValid) {
+    await recordAttemptFailure(req, attemptKey, user.username, 'AUTH_LOGIN_FAILED', 'Xác thực lại không thành công: mật khẩu hiện tại không đúng.');
+    throw new HttpProblem(401, 'STEP_UP_INVALID', 'Xác thực lại không thành công', 'Mật khẩu hiện tại không đúng.');
+  }
   if (mfaRequiredFor(user)) {
     const authenticator = authenticatorCredentials.find(item => item.userId === user.id && isAuthenticatorConfirmed(item));
     const validMfa = authenticator && body.mfaCode
       ? await consumeTotpCode(user.id, decryptTotpSecret(authenticator.encryptedSecret, authenticatorEncryptionKey()), body.mfaCode, Date.now())
       : false;
-    if (!validMfa) throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator để xác thực lại.');
+    if (!validMfa) {
+      if (body.mfaCode) await recordAttemptFailure(req, attemptKey, user.username, 'AUTH_MFA_FAILED', 'Xác thực lại không thành công: mã Authenticator không đúng.');
+      throw new HttpProblem(401, 'MFA_REQUIRED', 'Cần mã Authenticator', 'Nhập mã 6 chữ số đang hiển thị trong Google Authenticator để xác thực lại.');
+    }
   }
+  await clearLoginFailures(attemptKey);
   if (!authSessionStore.markStepUp(token ?? '')) throw new HttpProblem(401, 'AUTH_REQUIRED', 'Chưa xác thực', 'Phiên đăng nhập đã hết hạn.');
   authSessions = authSessionStore.records();
   recordUserSecurityEvent(req, user, { type: 'AUTH_STEP_UP_SUCCEEDED', outcome: 'SUCCESS', detail: 'Xác thực lại phiên trước thao tác nhạy cảm.' });
@@ -3833,10 +3904,14 @@ app.post('/api/v1/auth/password', async (req: FastifyRequest<{ Body: unknown }>)
     recordUserSecurityEvent(req, user, { type: 'AUTH_PASSWORD_CHANGED', outcome: 'SUCCESS', detail: 'Người dùng tự đổi mật khẩu bằng Supabase Auth.' });
     return { user };
   }
+  const attemptKey = reauthAttemptKey(user);
+  await assertAttemptsAllowed(req, attemptKey, user.username, 'Từ chối đổi mật khẩu vì nhập sai mật khẩu hiện tại quá nhiều lần.');
   const credential = credentialDirectory.find(item => item.userId === user.id);
   if (!credential || !body.currentPassword || !(await verifyPassword(body.currentPassword, credential.passwordHash))) {
+    await recordAttemptFailure(req, attemptKey, user.username, 'AUTH_LOGIN_FAILED', 'Đổi mật khẩu không thành công: mật khẩu hiện tại không đúng.');
     throw new HttpProblem(422, 'CURRENT_PASSWORD_INVALID', 'Mật khẩu hiện tại không đúng', 'Nhập đúng mật khẩu hiện tại để tiếp tục.');
   }
+  await clearLoginFailures(attemptKey);
   credential.passwordHash = await hashPassword(body.password);
   const revokedSessions = authSessionStore.revokeAllForUser(user.id);
   authSessions = authSessionStore.records();
@@ -5547,6 +5622,9 @@ app.post('/api/v1/findings/:id/sub-items', async (req: FastifyRequest<{ Params: 
     throw new HttpProblem(409, 'FINDING_ALREADY_RESOLVED', 'Hồ sơ đã đóng', 'Không thể bổ sung ý sai sót vào hồ sơ đã đóng.');
   }
   const dto = CreateFindingSubItemSchema.parse(req.body);
+  if (dto.expectedVersion !== finding.version) {
+    throw new HttpProblem(409, 'VERSION_CONFLICT', 'Xung đột phiên bản', `Hồ sơ đã được cập nhật (version hiện tại: ${finding.version}, expected: ${dto.expectedVersion}). Hãy tải lại rồi thêm ý sai sót.`);
+  }
   const now = new Date().toISOString();
   const subItems = finding.subItems ?? [];
   subItems.push({
@@ -6201,12 +6279,17 @@ app.put('/api/v1/findings/:id/special-case', async (req: FastifyRequest<{ Params
   const user = getCurrentUser(req);
   const finding = getScopedFindingOrThrow(req.params.id, user);
   requireRoles(user, ['ADMIN', 'SUPERVISOR', 'INTERNAL_OFFICER', 'INTERNAL_APPROVER', 'BRANCH_INPUT']);
-  const customerFindings = filterFindingsByScope(findings, user)
-    .filter(item => item.branchCode === finding.branchCode && item.cif === finding.cif);
+  const dto = SetFindingSpecialCaseSchema.parse(req.body);
+  if (dto.expectedVersion !== finding.version) {
+    throw new HttpProblem(409, 'VERSION_CONFLICT', 'Xung đột phiên bản', `Hồ sơ đã được cập nhật (version hiện tại: ${finding.version}, expected: ${dto.expectedVersion}). Hãy tải lại rồi đánh dấu.`);
+  }
+  // Dấu sao thuộc về cả khách hàng trong chi nhánh, nên khóa và áp dụng cho mọi hồ sơ của họ chứ không
+  // chỉ phần người gọi nhìn thấy. Nếu không, người chỉ có phạm vi một phòng đổi được luồng duyệt của
+  // những hồ sơ ở phòng khác đã nộp.
+  const customerFindings = findings.filter(item => item.branchCode === finding.branchCode && item.cif === finding.cif);
   if (customerFindings.some(item => item.workflowStatus !== 'PENDING' && item.workflowStatus !== 'REJECTED')) {
     throw new HttpProblem(409, 'SPECIAL_CASE_LOCKED_AFTER_SUBMISSION', 'Dấu sao đã khóa', 'Chỉ đánh dấu trường hợp đặc biệt khi hồ sơ đang chờ khắc phục hoặc đã bị trả về.');
   }
-  const dto = SetFindingSpecialCaseSchema.parse(req.body);
   const now = new Date().toISOString();
   for (const customerFinding of customerFindings) {
     customerFinding.isSpecialCase = dto.isSpecialCase;
@@ -6360,12 +6443,13 @@ app.post('/api/v1/findings/:id/approval-route/reassign', async (req: FastifyRequ
     throw new HttpProblem(409, 'APPROVAL_REASSIGNMENT_STAGE_INVALID', 'Bước giao lại không hợp lệ', 'Hồ sơ này không có bước Lãnh đạo chi nhánh.');
   }
 
-  const candidates = approvalCandidatesForFinding(finding, appUsers);
-  const eligible = dto.stage === 'BRANCH_CONTROLLER'
-    ? candidates.branchControllers
-    : dto.stage === 'BRANCH_LEADER'
-      ? candidates.branchLeaders
-      : candidates.internalApprovers;
+  const now = new Date().toISOString();
+  if (dto.validUntil && Date.parse(dto.validUntil) <= Date.parse(now)) {
+    throw new HttpProblem(422, 'APPROVAL_ASSIGNMENT_EXPIRY_INVALID', 'Thời hạn giao việc không hợp lệ', 'Thời hạn giao việc phải nằm sau thời điểm giao lại tuyến duyệt.');
+  }
+
+  // Cùng luật với bàn giao hàng loạt: loại người nộp, người đang giữ bước này và người đã giữ bước đứng trước.
+  const eligible = eligibleRecipientsForStage(finding, dto.stage, pinnedApproverForStage(route, dto.stage) ?? '', route, appUsers);
   const assignee = eligible.find(candidate => candidate.id === dto.assigneeUserId);
   if (!assignee) {
     throw new HttpProblem(422, 'APPROVAL_ASSIGNEE_INELIGIBLE', 'Người nhận không phù hợp', 'Người nhận phải đang hoạt động, đúng vai trò và đúng phạm vi của bước phê duyệt.');
@@ -6374,10 +6458,6 @@ app.post('/api/v1/findings/:id/approval-route/reassign', async (req: FastifyRequ
     throw new HttpProblem(409, 'APPROVAL_SELF_ASSIGNMENT_FORBIDDEN', 'Không thể tự duyệt', 'Không thể giao bước duyệt cho chính người đã nộp hồ sơ.');
   }
 
-  const now = new Date().toISOString();
-  if (dto.validUntil && Date.parse(dto.validUntil) <= Date.parse(now)) {
-    throw new HttpProblem(422, 'APPROVAL_ASSIGNMENT_EXPIRY_INVALID', 'Thời hạn giao việc không hợp lệ', 'Thời hạn giao việc phải nằm sau thời điểm giao lại tuyến duyệt.');
-  }
   finding.approvalRoute = reassignApprovalStage(route, dto.stage, assignee.id, {
     actorUserId: actor.id,
     reason: dto.reason,
@@ -7269,7 +7349,7 @@ app.post('/api/v1/reports/drill', async (req: FastifyRequest<{ Body: any }>) => 
   const drillingUser = getCurrentUser(req);
   assertReportConfigurationAvailable(request.query, undefined, drillingUser.roles);
   const scoped = await readScopedFindingsForAnalytics(drillingUser);
-  return executeReportDrill(scoped, request);
+  return executeReportDrill(scoped, request, drillingUser.roles);
 });
 
 app.post('/api/v1/reports/exports', async (req: FastifyRequest<{ Body: any }>, reply) => {
@@ -7480,8 +7560,26 @@ app.get('/api/v1/reports/findings.csv', async (req: FastifyRequest<{ Querystring
     detail: `Xuất CSV danh sách hồ sơ gồm ${scoped.length} dòng trong phạm vi dữ liệu được cấp.`,
   });
   await flushSecurityEvents();
-  const header = 'CIF,Tên khách hàng,Cụm,Chi nhánh,Phòng,Mã chi nhánh,Cán bộ,Mã lỗi,Tiêu đề lỗi,Chi tiết lỗi,Trạng thái,Dư nợ,Giá trị ảnh hưởng';
-  const rows = scoped.map(item => [item.cif, item.customerName, item.clusterName, item.branchName, item.department, item.branchCode, item.officerName, item.errorCode, item.errorTitle, item.description, item.workflowStatus, item.creditBalance, item.exposureAmount]);
+  // Mỗi cột gắn với trường báo cáo tương ứng; cột nào trường đó bị ẩn với vai trò này hoặc bị tắt xuất thì bỏ.
+  const exportable = reportFieldKeysOfferedTo(exportingUser.roles, 'export');
+  const allLegacyColumns: Array<{ label: string; field: ReportFieldKey; value: (item: Finding) => unknown }> = [
+    { label: 'CIF', field: 'dimension.cif', value: item => item.cif },
+    { label: 'Tên khách hàng', field: 'dimension.customer', value: item => item.customerName },
+    { label: 'Cụm', field: 'dimension.cluster', value: item => item.clusterName },
+    { label: 'Chi nhánh', field: 'dimension.branch', value: item => item.branchName },
+    { label: 'Phòng', field: 'dimension.department', value: item => item.department },
+    { label: 'Mã chi nhánh', field: 'dimension.branch', value: item => item.branchCode },
+    { label: 'Cán bộ', field: 'dimension.officer', value: item => item.officerName },
+    { label: 'Mã lỗi', field: 'dimension.error_code', value: item => item.errorCode },
+    { label: 'Tiêu đề lỗi', field: 'dimension.error_code', value: item => item.errorTitle },
+    { label: 'Chi tiết lỗi', field: 'dimension.error_code', value: item => item.description },
+    { label: 'Trạng thái', field: 'dimension.workflow_status', value: item => item.workflowStatus },
+    { label: 'Dư nợ', field: 'measure.credit_balance', value: item => item.creditBalance },
+    { label: 'Giá trị ảnh hưởng', field: 'measure.exposure', value: item => item.exposureAmount },
+  ];
+  const legacyColumns = allLegacyColumns.filter(column => exportable.has(column.field));
+  const header = legacyColumns.map(column => column.label).join(',');
+  const rows = scoped.map(item => legacyColumns.map(column => column.value(item)));
   const csv = `\uFEFF${header}\r\n${rows.map(row => row.map(csvCell).join(',')).join('\r\n')}`;
   return reply
     .header('content-type', 'text/csv; charset=utf-8')

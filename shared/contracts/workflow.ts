@@ -76,6 +76,7 @@ export type BranchLeaderRejectCommandDTO = z.infer<typeof BranchLeaderRejectComm
 /** Dấu sao đánh dấu trường hợp đặc biệt; bật dấu sao là cách duy nhất chèn bước Lãnh đạo chi nhánh vào tuyến hai cấp. */
 export const SetFindingSpecialCaseSchema = z.object({
   isSpecialCase: z.boolean(),
+  expectedVersion: z.number().int().min(1),
 });
 export type SetFindingSpecialCaseDTO = z.infer<typeof SetFindingSpecialCaseSchema>;
 

@@ -146,23 +146,34 @@ export function resolveApprovalRoute(
   const requiresBranchLeaderApproval = workflowType === 'THREE_TIER' || Boolean(finding.isSpecialCase);
   const stillEligible = (pool: ReadonlyArray<{ id: string }>, userId?: string): string | undefined =>
     userId && userId !== actor.id && pool.some(candidate => candidate.id === userId) ? userId : undefined;
-  const branchControllerUserId = options.controllerUserId
-    ?? stillEligible(candidates.branchControllers, options.previous?.branchControllerUserId)
-    ?? selectIndependentApprover(actor.id, candidates.branchControllers);
-  const branchLeaderUserId = requiresBranchLeaderApproval
-    ? stillEligible(candidates.branchLeaders, options.previous?.branchLeaderUserId)
-      ?? selectIndependentApprover(actor.id, candidates.branchLeaders)
-    : undefined;
-  if (!branchControllerUserId || (requiresBranchLeaderApproval && !branchLeaderUserId)) return undefined;
-  return {
-    branchControllerUserId,
-    branchLeaderUserId,
-    internalApproverUserId: stillEligible(candidates.internalApprovers, options.previous?.internalApproverUserId),
-    requiresBranchLeaderApproval,
-    assignedByUserId: actor.id,
-    assignedAt,
-    assignmentHistory: options.previous?.assignmentHistory,
-  };
+
+  // Người chọn rõ ràng được giữ nguyên; còn lại thử lần lượt để một tài khoản mang cả hai vai trò
+  // không bị dồn vào cả bước Kiểm soát lẫn bước Lãnh đạo khi vẫn còn cách xếp tách biệt.
+  const controllerChoices: string[] = options.controllerUserId
+    ? [options.controllerUserId]
+    : [...new Set([
+      stillEligible(candidates.branchControllers, options.previous?.branchControllerUserId),
+      ...candidates.branchControllers.filter(candidate => candidate.id !== actor.id).map(candidate => candidate.id),
+    ].filter((id): id is string => Boolean(id)))];
+
+  for (const branchControllerUserId of controllerChoices) {
+    const leaderPool = candidates.branchLeaders.filter(candidate => candidate.id !== branchControllerUserId);
+    const branchLeaderUserId = requiresBranchLeaderApproval
+      ? stillEligible(leaderPool, options.previous?.branchLeaderUserId) ?? selectIndependentApprover(actor.id, leaderPool)
+      : undefined;
+    if (requiresBranchLeaderApproval && !branchLeaderUserId) continue;
+    const internalPool = candidates.internalApprovers.filter(candidate => candidate.id !== branchControllerUserId && candidate.id !== branchLeaderUserId);
+    return {
+      branchControllerUserId,
+      branchLeaderUserId,
+      internalApproverUserId: stillEligible(internalPool, options.previous?.internalApproverUserId),
+      requiresBranchLeaderApproval,
+      assignedByUserId: actor.id,
+      assignedAt,
+      assignmentHistory: options.previous?.assignmentHistory,
+    };
+  }
+  return undefined;
 }
 
 export function reassignApprovalStage(
